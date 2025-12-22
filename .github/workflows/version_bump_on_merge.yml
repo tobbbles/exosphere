@@ -1,0 +1,145 @@
+name: Version bump on merge
+
+on:
+  pull_request:
+    types: [closed]
+
+concurrency:
+  group: version-bump-main
+  cancel-in-progress: false
+
+permissions:
+  contents: write
+  pull-requests: read
+
+jobs:
+  bump:
+    name: Bump mix.exs version, tag, push
+    runs-on: ubuntu-latest
+    if: >-
+      ${{
+        github.event.pull_request.merged == true &&
+        github.event.pull_request.base.ref == 'main'
+      }}
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: main
+          fetch-depth: 0
+
+      - name: Determine bump type from PR labels
+        id: bump
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          labels="$(jq -r '.pull_request.labels[].name' "$GITHUB_EVENT_PATH" || true)"
+          echo "PR labels:"
+          echo "${labels:-<none>}"
+
+          bump=""
+          for candidate in major minor patch; do
+            if echo "$labels" | grep -qx "$candidate"; then
+              if [ -n "$bump" ]; then
+                echo "Error: multiple bump labels present (at least '$bump' and '$candidate')."
+                exit 1
+              fi
+              bump="$candidate"
+            fi
+          done
+
+          if [ -z "$bump" ]; then
+            echo "Error: PR must be labeled with exactly one of: major, minor, patch."
+            exit 1
+          fi
+
+          echo "bump=$bump" >> "$GITHUB_OUTPUT"
+
+      - name: Bump version in mix.exs
+        id: version
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          python3 - <<'PY'
+          import os, re
+
+          bump = os.environ["BUMP"]
+          path = "mix.exs"
+          s = open(path, "r", encoding="utf-8").read()
+
+          m = re.search(r'version:\s*"(\d+)\.(\d+)\.(\d+)"', s)
+          if not m:
+            raise SystemExit("Could not find version: \"X.Y.Z\" in mix.exs")
+
+          major, minor, patch = map(int, m.groups())
+          if bump == "major":
+            major, minor, patch = major + 1, 0, 0
+          elif bump == "minor":
+            major, minor, patch = major, minor + 1, 0
+          elif bump == "patch":
+            major, minor, patch = major, minor, patch + 1
+          else:
+            raise SystemExit(f"Unknown bump: {bump}")
+
+          new_version = f"{major}.{minor}.{patch}"
+          s2 = re.sub(
+            r'(version:\s*")(\d+\.\d+\.\d+)(")',
+            lambda m: m.group(1) + new_version + m.group(3),
+            s,
+            count=1,
+          )
+          open(path, "w", encoding="utf-8").write(s2)
+          print(new_version)
+          PY
+        env:
+          BUMP: ${{ steps.bump.outputs.bump }}
+
+      - name: Read new version
+        id: read_version
+        shell: bash
+        run: |
+          set -euo pipefail
+          new_version="$(python3 - <<'PY'
+          import re
+          s = open("mix.exs", "r", encoding="utf-8").read()
+          m = re.search(r'version:\s*"(\d+\.\d+\.\d+)"', s)
+          if not m:
+            raise SystemExit("Could not read bumped version from mix.exs")
+          print(m.group(1))
+          PY
+          )"
+          echo "new_version=$new_version" >> "$GITHUB_OUTPUT"
+          echo "tag=v$new_version" >> "$GITHUB_OUTPUT"
+
+      - name: Commit + tag + push
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          tag="${{ steps.read_version.outputs.tag }}"
+          version="${{ steps.read_version.outputs.new_version }}"
+
+          if git rev-parse "$tag" >/dev/null 2>&1; then
+            echo "Error: tag $tag already exists."
+            exit 1
+          fi
+
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+
+          git add mix.exs
+
+          if git diff --cached --quiet; then
+            echo "No changes to commit."
+            exit 0
+          fi
+
+          git commit -m "chore: bump version to v$version"
+          git tag -a "$tag" -m "$tag"
+
+          git pull --rebase origin main
+          git push origin HEAD:main --follow-tags
+
+
