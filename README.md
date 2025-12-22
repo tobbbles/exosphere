@@ -3,6 +3,8 @@
 [![Hex.pm](https://img.shields.io/hexpm/v/exosphere.svg)](https://hex.pm/packages/exosphere)
 [![HexDocs](https://img.shields.io/badge/docs-hexdocs-blue.svg)](https://hexdocs.pm/exosphere)
 
+![Logo](./docs/static/banner.png)
+
 Exosphere is a collection of protocol clients and utilities.
 
 ## Documentation
