@@ -5,7 +5,7 @@
 
 ![Logo](./docs/static/banner.png)
 
-Exosphere is a collection of protocol clients and utilities.
+Exosphere is a collection of AT Protocol clients and utilities.
 
 ## Documentation
 
