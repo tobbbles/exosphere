@@ -16,10 +16,18 @@ defmodule Exosphere.ATProto.HTTP do
 
   @default_timeout 30_000
 
+  @type json_term ::
+          nil
+          | boolean()
+          | number()
+          | binary()
+          | [json_term()]
+          | %{optional(binary()) => json_term()}
+
   @type response :: %{
           status: pos_integer(),
           headers: [{String.t(), String.t()}],
-          body: binary()
+          body: binary() | json_term()
         }
 
   @type request_opts :: [

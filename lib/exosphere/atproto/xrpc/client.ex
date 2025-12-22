@@ -277,10 +277,9 @@ defmodule Exosphere.ATProto.XRPC.Client do
 
   defp build_query_string(params) when is_list(params) do
     params
-    |> Enum.map(fn {k, v} ->
+    |> Enum.map_join("&", fn {k, v} ->
       "#{URI.encode_www_form(to_string(k))}=#{URI.encode_www_form(to_string(v))}"
     end)
-    |> Enum.join("&")
   end
 
   defp build_query_string(params) when is_map(params) do

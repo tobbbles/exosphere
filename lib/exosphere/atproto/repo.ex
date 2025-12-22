@@ -38,7 +38,7 @@ defmodule Exosphere.ATProto.Repo do
       "record" => add_type(record, collection)
     }
 
-    make_authenticated_request(:post, url, body, session)
+    make_authenticated_request(url, body, session)
   end
 
   @doc """
@@ -68,7 +68,7 @@ defmodule Exosphere.ATProto.Repo do
       "record" => add_type(record, collection)
     }
 
-    make_authenticated_request(:post, url, body, session)
+    make_authenticated_request(url, body, session)
   end
 
   @doc """
@@ -91,7 +91,7 @@ defmodule Exosphere.ATProto.Repo do
       "rkey" => rkey
     }
 
-    make_authenticated_request(:post, url, body, session)
+    make_authenticated_request(url, body, session)
   end
 
   @doc """
@@ -120,17 +120,17 @@ defmodule Exosphere.ATProto.Repo do
   end
 
   # Make an authenticated request with DPoP proof
-  defp make_authenticated_request(method, url, body, session, nonce \\ nil, retry_count \\ 0)
+  defp make_authenticated_request(url, body, session, nonce \\ nil, retry_count \\ 0)
 
-  defp make_authenticated_request(_method, _url, _body, _session, _nonce, retry_count)
+  defp make_authenticated_request(_url, _body, _session, _nonce, retry_count)
        when retry_count > 2 do
     Logger.error("[Exosphere.ATProto.Repo] Request failed after max retries")
     {:error, :max_retries}
   end
 
-  defp make_authenticated_request(method, url, body, session, nonce, retry_count) do
+  defp make_authenticated_request(url, body, session, nonce, retry_count) do
     with {:ok, dpop_key} <- decode_dpop_key(session.dpop_private_key) do
-      method_str = method |> to_string() |> String.upcase()
+      method_str = "POST"
       dpop_proof = create_dpop_proof(dpop_key, method_str, url, nonce, session.access_token)
 
       headers = [
@@ -139,10 +139,7 @@ defmodule Exosphere.ATProto.Repo do
       ]
 
       result =
-        case method do
-          :post -> HTTP.post(url, headers: headers, json: body)
-          :get -> HTTP.get(url, headers: headers)
-        end
+        HTTP.post(url, headers: headers, json: body)
 
       case result do
         {:ok, %{status: 200, body: response}} ->
@@ -155,7 +152,7 @@ defmodule Exosphere.ATProto.Repo do
 
           if new_nonce do
             Logger.debug("[Exosphere.ATProto.Repo] DPoP nonce required, retrying")
-            make_authenticated_request(method, url, body, session, new_nonce, retry_count + 1)
+            make_authenticated_request(url, body, session, new_nonce, retry_count + 1)
           else
             Logger.error("[Exosphere.ATProto.Repo] Nonce required but not provided")
             {:error, :nonce_required}
@@ -167,7 +164,7 @@ defmodule Exosphere.ATProto.Repo do
 
           if new_nonce && retry_count == 0 do
             Logger.debug("[Exosphere.ATProto.Repo] Got nonce from 401, retrying")
-            make_authenticated_request(method, url, body, session, new_nonce, retry_count + 1)
+            make_authenticated_request(url, body, session, new_nonce, retry_count + 1)
           else
             Logger.error("[Exosphere.ATProto.Repo] Unauthorized: #{inspect(response.body)}")
             {:error, {:unauthorized, response.body}}
@@ -207,7 +204,11 @@ defmodule Exosphere.ATProto.Repo do
     uri = URI.parse(url)
 
     htu =
-      "#{uri.scheme}://#{uri.host}#{if uri.port not in [80, 443], do: ":#{uri.port}", else: ""}#{uri.path}"
+      "#{uri.scheme}://#{uri.host}#{case uri.port do
+        80 -> ""
+        443 -> ""
+        port -> ":#{port}"
+      end}#{uri.path}"
 
     # Base claims
     claims = %{

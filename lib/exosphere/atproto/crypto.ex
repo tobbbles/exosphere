@@ -62,8 +62,8 @@ defmodule Exosphere.ATProto.Crypto do
         {:ok, compressed} = ExSecp256k1.public_key_compress(public_key)
         {:ok, %{private_key: private_key, public_key: compressed}}
 
-      {:error, _} = error ->
-        error
+      reason when is_atom(reason) ->
+        {:error, reason}
     end
   end
 
@@ -140,8 +140,7 @@ defmodule Exosphere.ATProto.Crypto do
       end
 
     case ExSecp256k1.verify(hash, signature, full_public_key) do
-      {:ok, true} -> :ok
-      {:ok, false} -> {:error, :invalid_signature}
+      :ok -> :ok
       {:error, _} -> {:error, :invalid_signature}
     end
   end
@@ -290,8 +289,6 @@ defmodule Exosphere.ATProto.Crypto do
     # For P-256, p ≡ 3 (mod 4), so we can use the simple formula
     pow_mod(n, div(p + 1, 4), p)
   end
-
-  defp pow_mod(_base, 0, _mod), do: 1
 
   defp pow_mod(base, exp, mod) do
     :crypto.mod_pow(base, exp, mod) |> :binary.decode_unsigned()

@@ -37,9 +37,8 @@ defmodule Exosphere.ATProto.CAR do
   end
 
   def decode(data) when is_binary(data) do
-    with {:ok, _header, rest} <- decode_header(data),
-         {:ok, blocks} <- decode_blocks(rest) do
-      {:ok, blocks}
+    with {:ok, _header, rest} <- decode_header(data) do
+      decode_blocks(rest)
     end
   rescue
     e ->
@@ -192,10 +191,8 @@ defmodule Exosphere.ATProto.CAR do
 
   # Read a varint from binary
   defp read_varint(data) do
-    case Varint.LEB128.decode(data) do
-      {value, rest} when is_integer(value) -> {:ok, value, rest}
-      _ -> {:error, :varint_decode_failed}
-    end
+    {value, rest} = Varint.LEB128.decode(data)
+    {:ok, value, rest}
   rescue
     _ -> {:error, :varint_decode_failed}
   end
