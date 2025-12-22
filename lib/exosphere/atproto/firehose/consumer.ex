@@ -126,7 +126,10 @@ defmodule Exosphere.ATProto.Firehose.Consumer do
 
   @impl Fresh
   def handle_disconnect(code, reason, _state) do
-    Logger.warning("[Exosphere.ATProto.Firehose] Disconnected: code=#{code}, reason=#{inspect(reason)}")
+    Logger.warning(
+      "[Exosphere.ATProto.Firehose] Disconnected: code=#{code}, reason=#{inspect(reason)}"
+    )
+
     :reconnect
   end
 
@@ -189,7 +192,10 @@ defmodule Exosphere.ATProto.Firehose.Consumer do
         %{state | stats: %{state.stats | errors: state.stats.errors + 1}}
     catch
       kind, reason ->
-        Logger.error("[Exosphere.ATProto.Firehose] on_event threw #{inspect(kind)}: #{inspect(reason)}")
+        Logger.error(
+          "[Exosphere.ATProto.Firehose] on_event threw #{inspect(kind)}: #{inspect(reason)}"
+        )
+
         %{state | stats: %{state.stats | errors: state.stats.errors + 1}}
     end
   end

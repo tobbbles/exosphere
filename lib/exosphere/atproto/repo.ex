@@ -174,7 +174,10 @@ defmodule Exosphere.ATProto.Repo do
           end
 
         {:ok, %{status: status, body: response_body}} ->
-          Logger.error("[Exosphere.ATProto.Repo] Request failed: HTTP #{status}, #{inspect(response_body)}")
+          Logger.error(
+            "[Exosphere.ATProto.Repo] Request failed: HTTP #{status}, #{inspect(response_body)}"
+          )
+
           {:error, {:http_error, status, response_body}}
 
         {:error, reason} ->

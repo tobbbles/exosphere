@@ -9,7 +9,8 @@ defmodule Exosphere.MixProject do
       start_permanent: Mix.env() == :prod,
       deps: deps(),
       name: "Exosphere",
-      description: "A collection of ATProto clients and utilities, including XRPC clients, firehose consumers, and more.",
+      description:
+        "A collection of ATProto clients and utilities, including XRPC clients, firehose consumers, and more.",
       source_url: "https://github.com/tobbbles/exosphere",
       docs: docs(),
       package: package(),
