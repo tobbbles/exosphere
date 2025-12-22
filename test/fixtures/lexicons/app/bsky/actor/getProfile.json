@@ -1,0 +1,70 @@
+{
+  "lexicon": 1,
+  "id": "app.bsky.actor.getProfile",
+  "defs": {
+    "main": {
+      "type": "query",
+      "description": "Get detailed profile view of an actor. Does not require auth, but contains relevant metadata with auth.",
+      "parameters": {
+        "type": "params",
+        "required": ["actor"],
+        "properties": {
+          "actor": {
+            "type": "string",
+            "format": "at-identifier",
+            "description": "Handle or DID of account to fetch profile of."
+          }
+        }
+      },
+      "output": {
+        "encoding": "application/json",
+        "schema": {
+          "type": "ref",
+          "ref": "#defs/profileViewDetailed"
+        }
+      }
+    },
+    "profileViewDetailed": {
+      "type": "object",
+      "required": ["did", "handle"],
+      "properties": {
+        "did": {
+          "type": "string",
+          "format": "did"
+        },
+        "handle": {
+          "type": "string",
+          "format": "handle"
+        },
+        "displayName": {
+          "type": "string",
+          "maxLength": 640,
+          "maxGraphemes": 64
+        },
+        "description": {
+          "type": "string",
+          "maxLength": 2560,
+          "maxGraphemes": 256
+        },
+        "avatar": {
+          "type": "string",
+          "format": "uri"
+        },
+        "banner": {
+          "type": "string",
+          "format": "uri"
+        },
+        "followersCount": {
+          "type": "integer"
+        },
+        "followsCount": {
+          "type": "integer"
+        },
+        "postsCount": {
+          "type": "integer"
+        }
+      }
+    }
+  }
+}
+
