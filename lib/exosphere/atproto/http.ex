@@ -15,6 +15,7 @@ defmodule Exosphere.ATProto.HTTP do
   require Logger
 
   @default_timeout 30_000
+  @user_agent "Exosphere/#{Mix.Project.config()[:version]}"
 
   @type json_term ::
           nil
@@ -247,7 +248,7 @@ defmodule Exosphere.ATProto.HTTP do
 
   # Build headers list
   defp build_headers(opts, content_type) do
-    base = [{"accept", "application/json"}, {"user-agent", "MediaLibrary/0.1.0"}]
+    base = [{"accept", "application/json"}, {"user-agent", @user_agent}]
     custom = Keyword.get(opts, :headers, [])
 
     headers =

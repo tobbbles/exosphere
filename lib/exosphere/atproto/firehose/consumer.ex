@@ -6,7 +6,14 @@ defmodule Exosphere.ATProto.Firehose.Consumer do
   decodes frames into structured messages, and dispatches those messages via an
   `:on_event` callback.
 
-  The `:on_event` callback receives `{message, state}` and must return an updated state.
+  The `:on_event` callback receives `(message, state)` and must return an
+  updated state. **It must not raise** — the consumer does not catch exceptions
+  from the callback. If your callback can fail, wrap the failing work in a
+  `Task` (or your own supervised process) and return the original state.
+
+  The cursor tracked in state is in-memory only. To resume a stream after a
+  restart, persist `msg.seq` from your callback and pass it back via the
+  `:cursor` option on next start.
   """
 
   use Fresh
@@ -183,21 +190,11 @@ defmodule Exosphere.ATProto.Firehose.Consumer do
     state
   end
 
+  # Invoke the user-supplied callback. We deliberately do not catch — if the
+  # callback raises, the consumer process will crash and Fresh's reconnect
+  # logic will restart it. See @moduledoc.
   defp dispatch(state, message) do
-    try do
-      state.on_event.(message, state)
-    rescue
-      e ->
-        Logger.error("[Exosphere.ATProto.Firehose] on_event crashed: #{Exception.message(e)}")
-        %{state | stats: %{state.stats | errors: state.stats.errors + 1}}
-    catch
-      kind, reason ->
-        Logger.error(
-          "[Exosphere.ATProto.Firehose] on_event threw #{inspect(kind)}: #{inspect(reason)}"
-        )
-
-        %{state | stats: %{state.stats | errors: state.stats.errors + 1}}
-    end
+    state.on_event.(message, state)
   end
 
   defp update_cursor(state, %{seq: seq}) when is_integer(seq), do: %{state | cursor: seq}

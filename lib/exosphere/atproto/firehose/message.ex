@@ -162,15 +162,25 @@ defmodule Exosphere.ATProto.Firehose.Message do
         records =
           ops
           |> Enum.filter(&(&1.action in [:create, :update]))
-          |> Enum.map(fn op ->
-            [collection, rkey] = String.split(op.path, "/", parts: 2)
+          |> Enum.flat_map(fn op ->
+            case split_path(op.path) do
+              {:ok, collection, rkey} ->
+                [
+                  %{
+                    collection: collection,
+                    rkey: rkey,
+                    cid: op.cid,
+                    record: CAR.get_block(block_map, op.cid)
+                  }
+                ]
 
-            %{
-              collection: collection,
-              rkey: rkey,
-              cid: op.cid,
-              record: CAR.get_block(block_map, op.cid)
-            }
+              :error ->
+                Logger.debug(
+                  "[Firehose.Message] dropping op with malformed path: #{inspect(op.path)}"
+                )
+
+                []
+            end
           end)
 
         {:ok, records}
@@ -183,9 +193,18 @@ defmodule Exosphere.ATProto.Firehose.Message do
         records =
           ops
           |> Enum.filter(&(&1.action in [:create, :update]))
-          |> Enum.map(fn op ->
-            [collection, rkey] = String.split(op.path, "/", parts: 2)
-            %{collection: collection, rkey: rkey, cid: op.cid, record: nil}
+          |> Enum.flat_map(fn op ->
+            case split_path(op.path) do
+              {:ok, collection, rkey} ->
+                [%{collection: collection, rkey: rkey, cid: op.cid, record: nil}]
+
+              :error ->
+                Logger.debug(
+                  "[Firehose.Message] dropping op with malformed path: #{inspect(op.path)}"
+                )
+
+                []
+            end
           end)
 
         {:ok, records}
@@ -193,6 +212,17 @@ defmodule Exosphere.ATProto.Firehose.Message do
   end
 
   def extract_records(_), do: {:ok, []}
+
+  # Split an op path into {collection, rkey}. Returns :error for nil or paths
+  # without a `/` separator (which are not valid Exosphere.ATProto record paths).
+  defp split_path(path) when is_binary(path) do
+    case String.split(path, "/", parts: 2) do
+      [collection, rkey] when collection != "" and rkey != "" -> {:ok, collection, rkey}
+      _ -> :error
+    end
+  end
+
+  defp split_path(_), do: :error
 
   @doc """
   Check if a commit contains operations for a specific collection.

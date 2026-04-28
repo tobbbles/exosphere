@@ -38,12 +38,9 @@ defmodule Exosphere.ATProto.CBOR do
   @doc """
   Encode a term to DAG-CBOR binary format.
 
-  Maps are encoded with keys in sorted order (lexicographic byte ordering).
-  CID structs are encoded with CBOR tag 42.
-
-  ## Options
-
-  - `:canonical` - Force canonical/deterministic encoding (default: true)
+  Encoding is always canonical / deterministic: maps are sorted by their
+  (lexicographic, byte-ordered) keys and CID structs are encoded with CBOR
+  tag 42.
 
   ## Examples
 
@@ -53,31 +50,21 @@ defmodule Exosphere.ATProto.CBOR do
       iex> Exosphere.ATProto.CBOR.encode(3.14)
       {:error, :floats_not_allowed}
   """
-  @spec encode(term(), keyword()) :: {:ok, binary()} | encode_error()
-  def encode(term, opts \\ []) do
-    canonical = Keyword.get(opts, :canonical, true)
-
-    term
-    |> prepare_for_encoding()
-    |> do_encode(canonical)
+  @spec encode(term()) :: {:ok, binary()} | encode_error()
+  def encode(term) do
+    with {:ok, prepared} <- prepare_for_encoding(term) do
+      {:ok, CBOR.encode(prepared)}
+    end
   rescue
-    e in [ArgumentError] ->
-      if Exception.message(e) == "floats_not_allowed" do
-        {:error, :floats_not_allowed}
-      else
-        {:error, e}
-      end
-
-    e ->
-      {:error, e}
+    e -> {:error, e}
   end
 
   @doc """
   Encode a term to DAG-CBOR, raising on error.
   """
-  @spec encode!(term(), keyword()) :: binary()
-  def encode!(term, opts \\ []) do
-    case encode(term, opts) do
+  @spec encode!(term()) :: binary()
+  def encode!(term) do
+    case encode(term) do
       {:ok, binary} -> binary
       {:error, reason} -> raise ArgumentError, "CBOR encoding failed: #{inspect(reason)}"
     end
@@ -125,43 +112,57 @@ defmodule Exosphere.ATProto.CBOR do
   # Prepare term for CBOR encoding by:
   # - Converting CID structs to tagged values
   # - Sorting map keys
-  # - Validating no floats
-  defp prepare_for_encoding(term) when is_map(term) and not is_struct(term) do
-    term
-    |> Enum.map(fn {k, v} -> {to_string(k), prepare_for_encoding(v)} end)
-    |> Enum.sort_by(fn {k, _v} -> k end)
-    |> Map.new()
-  end
-
-  defp prepare_for_encoding(term) when is_list(term) do
-    Enum.map(term, &prepare_for_encoding/1)
+  # - Rejecting floats (DAG-CBOR forbids them)
+  #
+  # Returns {:ok, prepared} or {:error, :floats_not_allowed}.
+  defp prepare_for_encoding(term) when is_float(term) do
+    {:error, :floats_not_allowed}
   end
 
   defp prepare_for_encoding(%CID{} = cid) do
     # CID links are encoded as CBOR tag 42 with binary CID bytes
     # The bytes include multibase prefix 0x00 for binary
     cid_bytes = <<0x00>> <> CID.to_bytes(cid)
-    %CBOR.Tag{tag: @cid_tag, value: cid_bytes}
+    {:ok, %CBOR.Tag{tag: @cid_tag, value: cid_bytes}}
   end
 
-  defp prepare_for_encoding(term) when is_float(term) do
-    raise ArgumentError, "floats_not_allowed"
+  defp prepare_for_encoding(term) when is_map(term) and not is_struct(term) do
+    Enum.reduce_while(term, {:ok, []}, fn {k, v}, {:ok, acc} ->
+      case prepare_for_encoding(v) do
+        {:ok, prepared} -> {:cont, {:ok, [{to_string(k), prepared} | acc]}}
+        {:error, _} = error -> {:halt, error}
+      end
+    end)
+    |> case do
+      {:ok, pairs} -> {:ok, pairs |> Enum.sort_by(fn {k, _} -> k end) |> Map.new()}
+      {:error, _} = error -> error
+    end
   end
 
-  defp prepare_for_encoding(term), do: term
-
-  defp do_encode(term, true = _canonical) do
-    {:ok, CBOR.encode(term)}
+  defp prepare_for_encoding(term) when is_list(term) do
+    Enum.reduce_while(term, {:ok, []}, fn item, {:ok, acc} ->
+      case prepare_for_encoding(item) do
+        {:ok, prepared} -> {:cont, {:ok, [prepared | acc]}}
+        {:error, _} = error -> {:halt, error}
+      end
+    end)
+    |> case do
+      {:ok, items} -> {:ok, Enum.reverse(items)}
+      {:error, _} = error -> error
+    end
   end
 
-  defp do_encode(term, false = _canonical) do
-    {:ok, CBOR.encode(term)}
+  defp prepare_for_encoding(term), do: {:ok, term}
+
+  # Transform decoded CBOR, converting tag 42 to CID structs.
+  # Tolerates tag-42 values both with and without the leading 0x00 multibase
+  # prefix to match `Frame.transform_payload/1` and `CAR.transform_cbor/1`.
+  defp transform_after_decode(%CBOR.Tag{tag: @cid_tag, value: <<0x00, cid_bytes::binary>>}) do
+    CID.from_bytes!(cid_bytes)
   end
 
-  # Transform decoded CBOR, converting tag 42 to CID structs
-  defp transform_after_decode(%CBOR.Tag{tag: @cid_tag, value: bytes}) when is_binary(bytes) do
-    # Remove the 0x00 multibase prefix for binary encoding
-    <<0x00, cid_bytes::binary>> = bytes
+  defp transform_after_decode(%CBOR.Tag{tag: @cid_tag, value: cid_bytes})
+       when is_binary(cid_bytes) do
     CID.from_bytes!(cid_bytes)
   end
 

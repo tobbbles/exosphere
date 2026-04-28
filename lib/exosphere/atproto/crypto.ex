@@ -29,8 +29,10 @@ defmodule Exosphere.ATProto.Crypto do
       :ok = Exosphere.ATProto.Crypto.verify(data, signature, keypair.public_key, :secp256k1)
 
       # Convert to did:key
-      did_key = Exosphere.ATProto.Crypto.to_did_key(keypair.public_key, :secp256k1)
+      {:ok, did_key} = Exosphere.ATProto.Crypto.to_did_key(keypair.public_key, :secp256k1)
   """
+
+  alias Exosphere.ATProto.Base58
 
   @type curve :: :secp256k1 | :p256
   @type keypair :: %{public_key: binary(), private_key: binary()}
@@ -163,59 +165,87 @@ defmodule Exosphere.ATProto.Crypto do
   @doc """
   Convert a public key to did:key format.
 
+  Accepts either a compressed (33-byte, 0x02/0x03 prefix) or uncompressed
+  (65-byte, 0x04 prefix) public key. Returns `{:error, :invalid_public_key}`
+  for any other shape.
+
   ## Examples
 
-      iex> Exosphere.ATProto.Crypto.to_did_key(public_key, :secp256k1)
+      iex> {:ok, did} = Exosphere.ATProto.Crypto.to_did_key(public_key, :secp256k1)
+      iex> did
       "did:key:zQ3shXjHeiBuRCKmM36cuYnm7YEMzhGnCmCyW92sRJ9pribSF"
   """
-  @spec to_did_key(binary(), curve()) :: String.t()
+  @spec to_did_key(binary(), curve()) ::
+          {:ok, String.t()} | {:error, :invalid_public_key}
   def to_did_key(public_key, :secp256k1) do
-    # Compress if not already
-    compressed =
-      case public_key do
-        <<prefix, _::binary-32>> when prefix in [0x02, 0x03] -> public_key
-        _ -> compress_secp256k1_public_key(public_key)
-      end
-
-    bytes = <<@multicodec_secp256k1>> <> compressed
-    encoded = Base58.encode(bytes)
-    "did:key:" <> @multibase_base58btc <> encoded
+    with {:ok, compressed} <- compress_for_did_key(public_key, :secp256k1) do
+      bytes = <<@multicodec_secp256k1>> <> compressed
+      {:ok, "did:key:" <> @multibase_base58btc <> Base58.encode(bytes)}
+    end
   end
 
   def to_did_key(public_key, :p256) do
-    # Compress if not already
-    compressed =
-      case public_key do
-        <<prefix, _::binary-32>> when prefix in [0x02, 0x03] -> public_key
-        _ -> compress_p256_public_key(public_key)
-      end
-
-    bytes = @multicodec_p256 <> compressed
-    encoded = Base58.encode(bytes)
-    "did:key:" <> @multibase_base58btc <> encoded
+    with {:ok, compressed} <- compress_for_did_key(public_key, :p256) do
+      bytes = @multicodec_p256 <> compressed
+      {:ok, "did:key:" <> @multibase_base58btc <> Base58.encode(bytes)}
+    end
   end
+
+  # Accepts an already-compressed (33 bytes, 0x02/0x03 prefix) or uncompressed
+  # (65 bytes, 0x04 prefix) key. Returns {:error, :invalid_public_key} for
+  # anything else rather than crashing in compress_*_public_key/1.
+  defp compress_for_did_key(<<prefix, _::binary-32>> = key, _curve)
+       when prefix in [0x02, 0x03],
+       do: {:ok, key}
+
+  defp compress_for_did_key(<<0x04, _x::binary-32, _y::binary-32>> = key, :secp256k1),
+    do: {:ok, compress_secp256k1_public_key(key)}
+
+  defp compress_for_did_key(<<0x04, _x::binary-32, _y::binary-32>> = key, :p256),
+    do: {:ok, compress_p256_public_key(key)}
+
+  defp compress_for_did_key(_, _), do: {:error, :invalid_public_key}
 
   @doc """
   Parse a did:key string to extract the public key and curve type.
+
+  Returns:
+
+  - `{:error, :invalid_did_key_format}` if the input doesn't start with `did:key:`
+  - `{:error, :unsupported_multibase}` if the multibase prefix isn't `z` (base58btc)
+  - `{:error, :invalid_base58}` if base58 decoding fails
+  - `{:error, :unsupported_key_type}` if the multicodec prefix isn't recognised
 
   ## Examples
 
       iex> {:ok, public_key, :secp256k1} = Exosphere.ATProto.Crypto.from_did_key("did:key:zQ3sh...")
   """
-  @spec from_did_key(String.t()) :: {:ok, binary(), curve()} | {:error, term()}
-  def from_did_key("did:key:" <> @multibase_base58btc <> encoded) do
-    case Base58.decode(encoded) do
-      {:ok, <<@multicodec_secp256k1, public_key::binary-33>>} ->
-        {:ok, public_key, :secp256k1}
+  @spec from_did_key(String.t()) ::
+          {:ok, binary(), curve()}
+          | {:error,
+             :invalid_did_key_format
+             | :unsupported_multibase
+             | :invalid_base58
+             | :unsupported_key_type}
+  def from_did_key("did:key:" <> rest) do
+    case rest do
+      @multibase_base58btc <> encoded ->
+        case Base58.decode(encoded) do
+          {:ok, <<@multicodec_secp256k1, public_key::binary-33>>} ->
+            {:ok, public_key, :secp256k1}
 
-      {:ok, <<0x80, 0x24, public_key::binary-33>>} ->
-        {:ok, public_key, :p256}
+          {:ok, <<0x80, 0x24, public_key::binary-33>>} ->
+            {:ok, public_key, :p256}
 
-      {:ok, _} ->
-        {:error, :unsupported_key_type}
+          {:ok, _} ->
+            {:error, :unsupported_key_type}
 
-      :error ->
-        {:error, :invalid_base58}
+          :error ->
+            {:error, :invalid_base58}
+        end
+
+      _ ->
+        {:error, :unsupported_multibase}
     end
   end
 
@@ -226,11 +256,12 @@ defmodule Exosphere.ATProto.Crypto do
 
   Uses the Multikey format with base58btc encoding.
   """
-  @spec to_multibase(binary(), curve()) :: String.t()
+  @spec to_multibase(binary(), curve()) ::
+          {:ok, String.t()} | {:error, :invalid_public_key}
   def to_multibase(public_key, curve) do
-    # Extract just the encoded part from did:key
-    "did:key:" <> key_part = to_did_key(public_key, curve)
-    key_part
+    with {:ok, "did:key:" <> key_part} <- to_did_key(public_key, curve) do
+      {:ok, key_part}
+    end
   end
 
   # Helper functions
@@ -375,51 +406,4 @@ defmodule Exosphere.ATProto.Crypto do
     do: trim_leading_zeros(rest)
 
   defp trim_leading_zeros(bytes), do: bytes
-end
-
-# Simple Base58 implementation for did:key encoding
-defmodule Base58 do
-  @moduledoc false
-
-  @alphabet ~c"123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz"
-
-  def encode(bytes) when is_binary(bytes) do
-    bytes
-    |> :binary.decode_unsigned()
-    |> encode_int([])
-    |> prepend_zeros(bytes)
-    |> to_string()
-  end
-
-  defp encode_int(0, acc), do: acc
-
-  defp encode_int(n, acc) do
-    encode_int(div(n, 58), [Enum.at(@alphabet, rem(n, 58)) | acc])
-  end
-
-  defp prepend_zeros(acc, <<0, rest::binary>>), do: prepend_zeros([?1 | acc], rest)
-  defp prepend_zeros(acc, _), do: acc
-
-  def decode(string) when is_binary(string) do
-    chars = String.to_charlist(string)
-    zeros = Enum.take_while(chars, &(&1 == ?1)) |> length()
-
-    case decode_chars(chars, 0) do
-      {:ok, num} ->
-        bytes = :binary.encode_unsigned(num)
-        {:ok, :binary.copy(<<0>>, zeros) <> bytes}
-
-      :error ->
-        :error
-    end
-  end
-
-  defp decode_chars([], acc), do: {:ok, acc}
-
-  defp decode_chars([char | rest], acc) do
-    case Enum.find_index(@alphabet, &(&1 == char)) do
-      nil -> :error
-      idx -> decode_chars(rest, acc * 58 + idx)
-    end
-  end
 end

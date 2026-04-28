@@ -19,7 +19,7 @@ defmodule Exosphere.ATProto.Repo do
   - `session` - OAuth session with access_token and dpop_private_key
   - `pds_url` - URL of the user's PDS
   - `did` - The user's DID
-  - `collection` - The collection NSID (e.g., "media.library.profile")
+  - `collection` - The collection NSID (e.g., "app.bsky.actor.profile")
   - `rkey` - The record key (e.g., "self")
   - `record` - The record data to write
 
