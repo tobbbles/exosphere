@@ -32,6 +32,8 @@ defmodule Exosphere.ATProto.CID do
       :raw
   """
 
+  alias Exosphere.ATProto.CBOR
+
   @enforce_keys [:version, :codec, :hash]
   defstruct [:version, :codec, :hash]
 
@@ -65,7 +67,7 @@ defmodule Exosphere.ATProto.CID do
   """
   @spec create(term()) :: {:ok, t()} | {:error, term()}
   def create(term) do
-    case Exosphere.ATProto.CBOR.hash(term) do
+    case CBOR.hash(term) do
       {:ok, hash} ->
         {:ok,
          %__MODULE__{
@@ -136,12 +138,6 @@ defmodule Exosphere.ATProto.CID do
       {:ok, bytes} -> from_bytes(bytes)
       :error -> {:error, :invalid_base32}
     end
-  end
-
-  def decode("bafy" <> _ = string) do
-    # Handle legacy base32 encoding that might have different casing
-    @multibase_base32_lower <> rest = String.downcase(string)
-    decode(@multibase_base32_lower <> rest)
   end
 
   def decode(_), do: {:error, :unsupported_multibase}
@@ -230,19 +226,25 @@ defmodule Exosphere.ATProto.CID do
   defp codec_from_int(_), do: {:error, :unsupported_codec}
 
   defimpl String.Chars do
-    def to_string(cid), do: Exosphere.ATProto.CID.encode(cid)
+    alias Exosphere.ATProto.CID
+
+    def to_string(cid), do: CID.encode(cid)
   end
 
   defimpl Jason.Encoder do
+    alias Exosphere.ATProto.CID
+
     def encode(cid, opts) do
       # Exosphere.ATProto JSON encoding for CID links
-      Jason.Encode.map(%{"$link" => Exosphere.ATProto.CID.encode(cid)}, opts)
+      Jason.Encode.map(%{"$link" => CID.encode(cid)}, opts)
     end
   end
 
   defimpl Inspect do
+    alias Exosphere.ATProto.CID
+
     def inspect(cid, _opts) do
-      "#CID<#{Exosphere.ATProto.CID.encode(cid)}>"
+      "#CID<#{CID.encode(cid)}>"
     end
   end
 end

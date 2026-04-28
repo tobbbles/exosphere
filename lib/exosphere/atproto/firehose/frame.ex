@@ -8,6 +8,8 @@ defmodule Exosphere.ATProto.Firehose.Frame do
   2. Payload with the actual message data
   """
 
+  alias Exosphere.ATProto.CID
+
   @type header :: %{op: integer(), t: String.t() | nil}
 
   @doc """
@@ -74,7 +76,7 @@ defmodule Exosphere.ATProto.Firehose.Frame do
 
   # Handle CID tags (tag 42)
   defp transform_payload(%CBOR.Tag{tag: 42, value: <<0x00, cid_bytes::binary>>}) do
-    case Exosphere.ATProto.CID.from_bytes(cid_bytes) do
+    case CID.from_bytes(cid_bytes) do
       {:ok, cid} -> cid
       {:error, _} -> nil
     end
@@ -82,7 +84,7 @@ defmodule Exosphere.ATProto.Firehose.Frame do
 
   defp transform_payload(%CBOR.Tag{tag: 42, value: cid_bytes}) when is_binary(cid_bytes) do
     # Some CIDs might not have the 0x00 prefix
-    case Exosphere.ATProto.CID.from_bytes(cid_bytes) do
+    case CID.from_bytes(cid_bytes) do
       {:ok, cid} -> cid
       {:error, _} -> nil
     end

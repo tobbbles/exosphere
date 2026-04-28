@@ -9,6 +9,8 @@ defmodule Exosphere.ATProto.Identity.Document do
   - Also known as (handles)
   """
 
+  alias Exosphere.ATProto.Base58
+
   @enforce_keys [:id]
   defstruct [
     :id,

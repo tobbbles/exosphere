@@ -1,6 +1,7 @@
 defmodule Exosphere.ATProto.Identity.DocumentTest do
   use ExUnit.Case, async: true
 
+  alias Exosphere.ATProto.Base58
   alias Exosphere.ATProto.Identity.Document
 
   test "parse/1 builds a Document struct and exposes helpers" do
