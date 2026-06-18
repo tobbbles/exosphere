@@ -115,6 +115,10 @@ defmodule Exosphere.ATProto.Crypto do
   @doc """
   Verify an ECDSA-SHA256 signature.
 
+  atproto requires signatures to be in "low-S" form for both curves, so
+  signatures whose S value is in the upper half of the curve order (malleable
+  / "high-S") are rejected even when otherwise cryptographically valid.
+
   ## Examples
 
       iex> Exosphere.ATProto.Crypto.verify("hello", signature, public_key, :secp256k1)
@@ -124,7 +128,18 @@ defmodule Exosphere.ATProto.Crypto do
       {:error, :invalid_signature}
   """
   @spec verify(binary(), signature(), binary(), curve()) :: :ok | {:error, :invalid_signature}
-  def verify(data, signature, public_key, :secp256k1) when byte_size(signature) == 64 do
+  def verify(data, signature, public_key, curve)
+      when byte_size(signature) == 64 and curve in [:secp256k1, :p256] do
+    if low_s?(signature, curve) do
+      do_verify(data, signature, public_key, curve)
+    else
+      {:error, :invalid_signature}
+    end
+  end
+
+  def verify(_, _, _, _), do: {:error, :invalid_signature}
+
+  defp do_verify(data, signature, public_key, :secp256k1) do
     hash = :crypto.hash(:sha256, data)
 
     # Decompress public key if needed
@@ -147,7 +162,7 @@ defmodule Exosphere.ATProto.Crypto do
     end
   end
 
-  def verify(data, signature, public_key, :p256) when byte_size(signature) == 64 do
+  defp do_verify(data, signature, public_key, :p256) do
     hash = :crypto.hash(:sha256, data)
     # Decompress public key
     full_public_key = decompress_p256_public_key(public_key)
@@ -159,8 +174,6 @@ defmodule Exosphere.ATProto.Crypto do
       false -> {:error, :invalid_signature}
     end
   end
-
-  def verify(_, _, _, _), do: {:error, :invalid_signature}
 
   @doc """
   Convert a public key to did:key format.
@@ -328,19 +341,30 @@ defmodule Exosphere.ATProto.Crypto do
   defp pad_to_32(bytes) when byte_size(bytes) >= 32, do: bytes
   defp pad_to_32(bytes), do: :binary.copy(<<0>>, 32 - byte_size(bytes)) <> bytes
 
+  # secp256k1 order / 2
+  @secp256k1_half_order 0x7FFFFFFFFFFFFFFFFFFFFFFFFFFFFFFF5D576E7357A4501DDFE92F46681B20A0
+  # P-256 order / 2
+  @p256_half_order 0x7FFFFFFF800000007FFFFFFFFFFFFFFFDE737D56D38BCF4279DCE5617E3192A8
+
+  # Whether a raw (r, s) signature is in canonical "low-S" form for the curve.
+  # atproto requires low-S; high-S signatures are malleable and must be rejected.
+  defp low_s?(<<_r::binary-32, s::binary-32>>, :secp256k1),
+    do: :binary.decode_unsigned(s) <= @secp256k1_half_order
+
+  defp low_s?(<<_r::binary-32, s::binary-32>>, :p256),
+    do: :binary.decode_unsigned(s) <= @p256_half_order
+
+  # secp256k1 curve order
+  @secp256k1_order 0xFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFEBAAEDCE6AF48A03BBFD25E8CD0364141
+  # P-256 curve order
+  @p256_order 0xFFFFFFFF00000000FFFFFFFFFFFFFFFFBCE6FAADA7179E84F3B9CAC2FC632551
+
   # Ensure "low-S" form for secp256k1 (BIP-62)
   defp ensure_low_s_secp256k1(<<r::binary-32, s::binary-32>>) do
     s_int = :binary.decode_unsigned(s)
-    # secp256k1 order / 2
-    half_order =
-      0x7FFFFFFFFFFFFFFFFFFFFFFFFFFFFFFF5D576E7357A4501DDFE92F46681B20A0
 
-    if s_int > half_order do
-      # secp256k1 order
-      order =
-        0xFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFEBAAEDCE6AF48A03BBFD25E8CD0364141
-
-      new_s = order - s_int
+    if s_int > @secp256k1_half_order do
+      new_s = @secp256k1_order - s_int
       new_s_bytes = :binary.encode_unsigned(new_s) |> pad_to_32()
       <<r::binary, new_s_bytes::binary>>
     else
@@ -351,16 +375,9 @@ defmodule Exosphere.ATProto.Crypto do
   # Ensure "low-S" form for P-256
   defp ensure_low_s_p256(<<r::binary-32, s::binary-32>>) do
     s_int = :binary.decode_unsigned(s)
-    # P-256 order / 2
-    half_order =
-      0x7FFFFFFF800000007FFFFFFFFFFFFFFFDE737D56D38BCF4279DCE5617E3192A8
 
-    if s_int > half_order do
-      # P-256 order
-      order =
-        0xFFFFFFFF00000000FFFFFFFFFFFFFFFFBCE6FAADA7179E84F3B9CAC2FC632551
-
-      new_s = order - s_int
+    if s_int > @p256_half_order do
+      new_s = @p256_order - s_int
       new_s_bytes = :binary.encode_unsigned(new_s) |> pad_to_32()
       <<r::binary, new_s_bytes::binary>>
     else

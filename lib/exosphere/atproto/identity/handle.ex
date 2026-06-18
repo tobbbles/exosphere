@@ -154,6 +154,7 @@ defmodule Exosphere.ATProto.Identity.Handle do
   - No consecutive dots or leading/trailing dots
   - Labels between 1-63 characters
   - Total length under 253 characters
+  - A final segment (the TLD) that does not start with a digit
   """
   @spec valid?(String.t()) :: boolean()
   def valid?(handle) when is_binary(handle) do
@@ -171,14 +172,17 @@ defmodule Exosphere.ATProto.Identity.Handle do
   def valid?(_), do: false
 
   defp valid_labels?(handle) do
-    handle
-    |> String.split(".")
-    |> Enum.all?(fn label ->
+    labels = String.split(handle, ".")
+
+    Enum.all?(labels, fn label ->
       byte_size(label) >= 1 and
         byte_size(label) <= 63 and
         Regex.match?(~r/^[a-zA-Z0-9]([a-zA-Z0-9-]*[a-zA-Z0-9])?$/, label)
-    end)
+    end) and valid_tld?(List.last(labels))
   end
+
+  # The last segment (the "top level domain") must not start with a digit.
+  defp valid_tld?(tld), do: Regex.match?(~r/^[a-zA-Z]/, tld)
 
   @doc """
   Normalize a handle to lowercase.

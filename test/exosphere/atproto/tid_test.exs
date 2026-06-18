@@ -42,4 +42,22 @@ defmodule Exosphere.ATProto.TIDTest do
     assert TID.valid?(bad) == false
     assert {:error, :invalid_tid} = TID.to_datetime(bad)
   end
+
+  test "valid?/1 enforces the restricted leading character" do
+    # 'z' is a valid base32-sortable char but not allowed as the FIRST char
+    # (the top bit of the 64-bit TID value must be 0).
+    bad_first = "z" <> String.duplicate("a", 12)
+    assert byte_size(bad_first) == 13
+    assert TID.valid?(bad_first) == false
+
+    # Every allowed leading character is accepted.
+    for c <- ~c"234567abcdefghij" do
+      assert TID.valid?(<<c>> <> String.duplicate("2", 12))
+    end
+
+    # A disallowed leading character ('k'..'z') is rejected.
+    for c <- ~c"klmnopqrstuvwxyz" do
+      refute TID.valid?(<<c>> <> String.duplicate("2", 12))
+    end
+  end
 end
