@@ -6,9 +6,9 @@ defmodule Exosphere.ATProto.Identity.DocumentTest do
 
   test "parse/1 builds a Document struct and exposes helpers" do
     # Build a valid Multikey secp256k1 compressed key:
-    # multicodec prefix 0xE7 + 33-byte compressed public key
+    # multicodec varint 0xE7 0x01 + 33-byte compressed public key
     compressed_pubkey = <<0x02, 0::unsigned-integer-size(256)>>
-    multicodec = <<0xE7, compressed_pubkey::binary>>
+    multicodec = <<0xE7, 0x01, compressed_pubkey::binary>>
     multibase = "z" <> Base58.encode(multicodec)
 
     raw = %{

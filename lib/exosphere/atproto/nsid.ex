@@ -8,10 +8,9 @@ defmodule Exosphere.ATProto.NSID do
   Syntax rules (see [the NSID spec](https://atproto.com/specs/nsid)):
 
   - At least 3 segments, max total length 317 characters.
-  - The domain authority (all segments except the last) is at most 253
-    characters, each segment 1-63 characters of `[a-zA-Z0-9-]`, not starting or
-    ending with a hyphen. The first segment (the TLD) must not start with a
-    digit.
+  - The domain authority segments (all but the last) are each 1-63 characters of
+    `[a-zA-Z0-9-]`, not starting or ending with a hyphen. The first segment (the
+    TLD) must not start with a digit.
   - The final segment (the *name*) is 1-63 characters of `[a-zA-Z0-9]` only (no
     hyphens) and must not start with a digit.
 
@@ -25,7 +24,6 @@ defmodule Exosphere.ATProto.NSID do
   """
 
   @max_length 317
-  @max_authority_length 253
 
   # Reference regex from the spec.
   @nsid_regex ~r/^[a-zA-Z]([a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?(\.[a-zA-Z0-9]([a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?)+(\.[a-zA-Z]([a-zA-Z0-9]{0,62})?)$/
@@ -37,9 +35,7 @@ defmodule Exosphere.ATProto.NSID do
   """
   @spec valid?(String.t()) :: boolean()
   def valid?(nsid) when is_binary(nsid) do
-    byte_size(nsid) <= @max_length and
-      authority_length(nsid) <= @max_authority_length and
-      Regex.match?(@nsid_regex, nsid)
+    byte_size(nsid) <= @max_length and Regex.match?(@nsid_regex, nsid)
   end
 
   def valid?(_), do: false
@@ -67,15 +63,4 @@ defmodule Exosphere.ATProto.NSID do
   end
 
   def parse(_), do: {:error, :invalid_nsid}
-
-  # Length of the authority portion (everything before the final segment).
-  defp authority_length(nsid) do
-    case String.split(nsid, ".") do
-      segments when length(segments) >= 2 ->
-        segments |> Enum.drop(-1) |> Enum.join(".") |> byte_size()
-
-      _ ->
-        0
-    end
-  end
 end

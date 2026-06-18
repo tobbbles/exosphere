@@ -13,9 +13,9 @@ defmodule Exosphere.ATProto.Crypto do
 
       did:key:zQ3shXjHeiBuRCKmM36cuYnm7YEMzhGnCmCyW92sRJ9pribSF
 
-  The multicodec prefixes are:
-  - `0xe7` for secp256k1 (compressed)
-  - `0x80 0x24` (varint) for P-256 (compressed)
+  The multicodec prefixes (unsigned varints) are:
+  - `0xe7 0x01` for secp256k1 (compressed)
+  - `0x80 0x24` for P-256 (compressed)
 
   ## Examples
 
@@ -38,8 +38,10 @@ defmodule Exosphere.ATProto.Crypto do
   @type keypair :: %{public_key: binary(), private_key: binary()}
   @type signature :: binary()
 
-  # Multicodec prefixes for did:key encoding
-  @multicodec_secp256k1 0xE7
+  # Multicodec prefixes for did:key encoding, as unsigned varints:
+  #   secp256k1-pub = 0xe7   -> varint <<0xE7, 0x01>>
+  #   p256-pub      = 0x1200 -> varint <<0x80, 0x24>>
+  @multicodec_secp256k1 <<0xE7, 0x01>>
   @multicodec_p256 <<0x80, 0x24>>
 
   # Multibase prefix for base58btc
@@ -192,7 +194,7 @@ defmodule Exosphere.ATProto.Crypto do
           {:ok, String.t()} | {:error, :invalid_public_key}
   def to_did_key(public_key, :secp256k1) do
     with {:ok, compressed} <- compress_for_did_key(public_key, :secp256k1) do
-      bytes = <<@multicodec_secp256k1>> <> compressed
+      bytes = @multicodec_secp256k1 <> compressed
       {:ok, "did:key:" <> @multibase_base58btc <> Base58.encode(bytes)}
     end
   end
@@ -244,7 +246,7 @@ defmodule Exosphere.ATProto.Crypto do
     case rest do
       @multibase_base58btc <> encoded ->
         case Base58.decode(encoded) do
-          {:ok, <<@multicodec_secp256k1, public_key::binary-33>>} ->
+          {:ok, <<0xE7, 0x01, public_key::binary-33>>} ->
             {:ok, public_key, :secp256k1}
 
           {:ok, <<0x80, 0x24, public_key::binary-33>>} ->

@@ -45,6 +45,7 @@ defmodule Exosphere.ATProto.AtUri do
           | :invalid_collection
           | :invalid_rkey
           | :rkey_without_collection
+          | :invalid_fragment
           | :invalid_at_uri
 
   @doc """
@@ -54,7 +55,7 @@ defmodule Exosphere.ATProto.AtUri do
   def parse(uri) when is_binary(uri) do
     with :ok <- check_length(uri),
          {:ok, rest} <- strip_scheme(uri),
-         {body, fragment} <- split_fragment(rest),
+         {:ok, body, fragment} <- split_fragment(rest),
          {:ok, parts} <- split_path(body) do
       build(parts, fragment)
     end
@@ -91,10 +92,21 @@ defmodule Exosphere.ATProto.AtUri do
   defp strip_scheme("at://" <> rest), do: {:ok, rest}
   defp strip_scheme(_), do: {:error, :invalid_scheme}
 
+  # At most one '#' is allowed. A present fragment must be non-empty and contain
+  # no whitespace (AT URIs never contain whitespace).
   defp split_fragment(rest) do
-    case String.split(rest, "#", parts: 2) do
-      [body] -> {body, nil}
-      [body, fragment] -> {body, fragment}
+    case String.split(rest, "#") do
+      [body] -> {:ok, body, nil}
+      [body, fragment] -> validate_fragment(body, fragment)
+      _ -> {:error, :invalid_fragment}
+    end
+  end
+
+  defp validate_fragment(body, fragment) do
+    if fragment != "" and not Regex.match?(~r/\s/, fragment) do
+      {:ok, body, fragment}
+    else
+      {:error, :invalid_fragment}
     end
   end
 

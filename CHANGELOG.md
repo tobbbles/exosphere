@@ -39,6 +39,18 @@ record-key primitives plus commit-signature verification.
   are no longer considered valid.
 - **Handle TLD rule.** `Exosphere.ATProto.Identity.Handle.valid?/1` now rejects
   handles whose final (TLD) segment starts with a digit.
+- **secp256k1 did:key multicodec.** `Crypto.to_did_key/2`, `to_multibase/2`,
+  `from_did_key/1`, and `Identity.Document` now use the correct unsigned-varint
+  multicodec prefix `0xe7 0x01` for secp256k1 (previously a bare `0xe7`). The old
+  encoding was self-consistent but **not interoperable** with other atproto
+  implementations; secp256k1 `did:key` strings produced/parsed before this change
+  were wrong. Verified against the interop crypto fixtures.
+- **NSID length rule.** `NSID.valid?/1` no longer imposes a 253-character cap on
+  the domain-authority portion (only the spec's 317-character total and the
+  per-segment rules apply), matching the interop `nsid_syntax` tables.
+- **AT-URI fragments.** `AtUri.parse/1` now rejects URIs with more than one `#`,
+  empty fragments, and fragments containing whitespace, matching the interop
+  `aturi_syntax` tables.
 
 ### Added
 
@@ -54,6 +66,13 @@ record-key primitives plus commit-signature verification.
   `#identity`; and `prev_data` (MST root) on `#commit` plus `prev` on commit
   operations.
 - 33 new tests covering all of the above.
+- **Interop conformance suite** (`test/interop/`) running Exosphere against a
+  vendored, pinned snapshot of
+  [`bluesky-social/atproto-interop-tests`](https://github.com/bluesky-social/atproto-interop-tests)
+  (CC0): syntax tables (handle, DID, NSID, record-key, TID, AT-URI), the crypto
+  signature fixtures (valid, high-S, and DER-encoded), and the DAG-CBOR
+  data-model fixtures (exact bytes + CID). Documented gaps (general CID-string
+  syntax, full record/data-model validation) are tracked as skips.
 
 ### Changed
 
@@ -69,8 +88,10 @@ record-key primitives plus commit-signature verification.
 - Corrected the canonical CID example in `CID`/`CBOR` moduledocs
   (`{"hello":"world"}` → `bafyreidykglsfhoixmivffc5uwhcgshx4j465xwqntbmu43nb2dzqwfvae`);
   the previous value was wrong and never exercised by a doctest.
+- Added `elixirc_paths` for `test/support` (interop fixture helpers).
 - `mix compile --warnings-as-errors`, `mix credo --strict`, `mix dialyzer`, and
-  `mix format --check-formatted` all clean. Test suite at 77 tests, 0 failures.
+  `mix format --check-formatted` all clean. Test suite at 96 tests, 0 failures
+  (1 skipped, tracking an unimplemented validator).
 
 ## [0.2.0] - 2026-04-28
 
