@@ -65,7 +65,6 @@ record-key primitives plus commit-signature verification.
   `Exosphere.ATProto.Firehose.Message`; the optional `handle` field on
   `#identity`; and `prev_data` (MST root) on `#commit` plus `prev` on commit
   operations.
-- 33 new tests covering all of the above.
 - **Interop conformance suite** (`test/interop/`) running Exosphere against a
   vendored, pinned snapshot of
   [`bluesky-social/atproto-interop-tests`](https://github.com/bluesky-social/atproto-interop-tests)
@@ -73,6 +72,15 @@ record-key primitives plus commit-signature verification.
   signature fixtures (valid, high-S, and DER-encoded), and the DAG-CBOR
   data-model fixtures (exact bytes + CID). Documented gaps (general CID-string
   syntax, full record/data-model validation) are tracked as skips.
+- `Exosphere.ATProto.MST` — Merkle Search Tree support: `build/1` constructs an
+  MST from `path => CID` entries (returning the root CID and encoded node
+  blocks), `read/2` walks a tree from a root CID and block store back into a
+  `path => CID` map (accepting raw bytes or decoded nodes), and `depth/1` /
+  `valid_key?/1` expose the layer algorithm and key validation. Verified
+  byte-for-byte against the atproto interop root-CID vectors.
+- `Exosphere.ATProto.Repo.Commit.verify_data/2` — confirm a commit's `data`
+  (MST root) matches a set of records, completing repository verification
+  alongside `verify/3`.
 
 ### Changed
 
@@ -90,8 +98,7 @@ record-key primitives plus commit-signature verification.
   the previous value was wrong and never exercised by a doctest.
 - Added `elixirc_paths` for `test/support` (interop fixture helpers).
 - `mix compile --warnings-as-errors`, `mix credo --strict`, `mix dialyzer`, and
-  `mix format --check-formatted` all clean. Test suite at 96 tests, 0 failures
-  (1 skipped, tracking an unimplemented validator).
+  `mix format --check-formatted` all clean.
 
 ## [0.2.0] - 2026-04-28
 

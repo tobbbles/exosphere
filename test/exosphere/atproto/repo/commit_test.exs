@@ -1,7 +1,7 @@
 defmodule Exosphere.ATProto.Repo.CommitTest do
   use ExUnit.Case, async: true
 
-  alias Exosphere.ATProto.{CBOR, CID, Crypto, TID}
+  alias Exosphere.ATProto.{CBOR, CID, Crypto, MST, TID}
   alias Exosphere.ATProto.Identity.Document
   alias Exosphere.ATProto.Repo.Commit
 
@@ -53,6 +53,32 @@ defmodule Exosphere.ATProto.Repo.CommitTest do
     {:ok, encoded} = CBOR.encode(commit)
     {:ok, decoded} = CBOR.decode(encoded)
     assert :ok = Commit.verify(decoded, pub, :secp256k1)
+  end
+
+  describe "verify_data/2" do
+    setup do
+      records = %{
+        "app.bsky.feed.post/3jqfcqzm3fp2j" => CID.create!(%{"text" => "one"}),
+        "app.bsky.feed.post/3jqfcqzm3fr2j" => CID.create!(%{"text" => "two"})
+      }
+
+      {:ok, data_root} = MST.root_cid(records)
+      %{records: records, data_root: data_root}
+    end
+
+    test "accepts a commit whose data root matches the records", ctx do
+      commit = %{"did" => "did:plc:abc", "data" => ctx.data_root}
+      assert :ok = Commit.verify_data(commit, ctx.records)
+    end
+
+    test "rejects a commit whose data root does not match", ctx do
+      commit = %{"did" => "did:plc:abc", "data" => CID.create!(%{"other" => true})}
+      assert {:error, :data_mismatch} = Commit.verify_data(commit, ctx.records)
+    end
+
+    test "reports a missing data field", ctx do
+      assert {:error, :missing_data} = Commit.verify_data(%{"did" => "x"}, ctx.records)
+    end
   end
 
   test "verify_with_document/2 extracts the signing key from a DID document" do
