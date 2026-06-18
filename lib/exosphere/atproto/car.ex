@@ -22,6 +22,10 @@ defmodule Exosphere.ATProto.CAR do
 
   alias Exosphere.ATProto.CID
 
+  # Aliased under a distinct name so the bare `CBOR` below still refers to the
+  # `:cbor` library (whose decode/1 returns the trailing bytes we need).
+  alias Exosphere.ATProto.CBOR, as: DagCBOR
+
   require Logger
 
   @type block_map :: %{CID.t() => term()}
@@ -110,7 +114,7 @@ defmodule Exosphere.ATProto.CAR do
         # Decode CBOR block data
         decoded =
           case CBOR.decode(block_data) do
-            {:ok, value, _} -> transform_cbor(value)
+            {:ok, value, _} -> DagCBOR.transform_links(value)
             _ -> block_data
           end
 
@@ -196,35 +200,4 @@ defmodule Exosphere.ATProto.CAR do
   rescue
     _ -> {:error, :varint_decode_failed}
   end
-
-  # Transform CBOR values (handle tags, etc.)
-  defp transform_cbor(value) when is_map(value) and not is_struct(value) do
-    Map.new(value, fn {k, v} -> {k, transform_cbor(v)} end)
-  end
-
-  defp transform_cbor(value) when is_list(value) do
-    Enum.map(value, &transform_cbor/1)
-  end
-
-  defp transform_cbor(%CBOR.Tag{tag: :bytes, value: bytes}) when is_binary(bytes) do
-    bytes
-  end
-
-  defp transform_cbor(%CBOR.Tag{tag: 42, value: <<0x00, cid_bytes::binary>>}) do
-    case CID.from_bytes(cid_bytes) do
-      {:ok, cid} -> cid
-      _ -> nil
-    end
-  end
-
-  defp transform_cbor(%CBOR.Tag{tag: 42, value: cid_bytes}) when is_binary(cid_bytes) do
-    case CID.from_bytes(cid_bytes) do
-      {:ok, cid} -> cid
-      _ -> nil
-    end
-  end
-
-  defp transform_cbor(%CBOR.Tag{value: value}), do: value
-
-  defp transform_cbor(value), do: value
 end

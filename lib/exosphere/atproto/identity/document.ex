@@ -9,6 +9,7 @@ defmodule Exosphere.ATProto.Identity.Document do
   - Also known as (handles)
   """
 
+  alias Exosphere.ATProto.AtUri
   alias Exosphere.ATProto.Base58
 
   @enforce_keys [:id]
@@ -189,10 +190,14 @@ defmodule Exosphere.ATProto.Identity.Document do
   """
   @spec get_handle(t()) :: {:ok, String.t()} | {:error, :not_found}
   def get_handle(%__MODULE__{also_known_as: aliases}) when is_list(aliases) do
-    case Enum.find(aliases, &String.starts_with?(&1, "at://")) do
-      "at://" <> handle -> {:ok, handle}
-      _ -> {:error, :not_found}
-    end
+    aliases
+    |> Enum.filter(&is_binary/1)
+    |> Enum.find_value({:error, :not_found}, fn aka ->
+      case AtUri.parse(aka) do
+        {:ok, %{authority: authority}} -> {:ok, authority}
+        {:error, _} -> nil
+      end
+    end)
   end
 
   def get_handle(_), do: {:error, :not_found}

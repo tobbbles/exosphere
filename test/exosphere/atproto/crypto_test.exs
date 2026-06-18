@@ -92,6 +92,33 @@ defmodule Exosphere.ATProto.CryptoTest do
         assert :binary.decode_unsigned(s) <= @p256_half_order
       end)
     end
+
+    # secp256k1 / P-256 group orders
+    @secp256k1_order 0xFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFEBAAEDCE6AF48A03BBFD25E8CD0364141
+    @p256_order 0xFFFFFFFF00000000FFFFFFFFFFFFFFFFBCE6FAADA7179E84F3B9CAC2FC632551
+
+    test "secp256k1 verify rejects the malleable high-S counterpart of a valid signature" do
+      {:ok, %{private_key: priv, public_key: pub}} = Crypto.generate_keypair(:secp256k1)
+      data = "malleability"
+      {:ok, <<r::binary-32, s::binary-32>>} = Crypto.sign(data, priv, :secp256k1)
+
+      # The low-S signature verifies; its high-S counterpart (order - s) must not.
+      assert :ok = Crypto.verify(data, <<r::binary, s::binary>>, pub, :secp256k1)
+      high_s = @secp256k1_order - :binary.decode_unsigned(s)
+      high_sig = <<r::binary, high_s::unsigned-big-integer-size(256)>>
+      assert {:error, :invalid_signature} = Crypto.verify(data, high_sig, pub, :secp256k1)
+    end
+
+    test "p256 verify rejects the malleable high-S counterpart of a valid signature" do
+      {:ok, %{private_key: priv, public_key: pub}} = Crypto.generate_keypair(:p256)
+      data = "malleability"
+      {:ok, <<r::binary-32, s::binary-32>>} = Crypto.sign(data, priv, :p256)
+
+      assert :ok = Crypto.verify(data, <<r::binary, s::binary>>, pub, :p256)
+      high_s = @p256_order - :binary.decode_unsigned(s)
+      high_sig = <<r::binary, high_s::unsigned-big-integer-size(256)>>
+      assert {:error, :invalid_signature} = Crypto.verify(data, high_sig, pub, :p256)
+    end
   end
 
   describe "to_did_key/2 + from_did_key/1 round-trip" do

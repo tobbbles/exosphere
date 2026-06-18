@@ -4,10 +4,17 @@ defmodule Exosphere.ATProto.Firehose.Message do
 
   Message types from `com.atproto.sync.subscribeRepos`:
   - `#commit` - Repository commit with record operations
-  - `#identity` - Identity update
-  - `#handle` - Handle change
-  - `#tombstone` - Repository deletion
+  - `#sync` - Asserts the current repository state (commit + CAR blocks)
+  - `#identity` - Identity update (DID document and/or handle change)
+  - `#account` - Account hosting status change (active / takendown / suspended /
+    deleted / deactivated)
   - `#info` - Informational message
+
+  The following event types are **deprecated** by the current sync spec and
+  retained only for backwards compatibility with older relays:
+
+  - `#handle` - Handle change (superseded by `#identity`)
+  - `#tombstone` - Repository deletion (superseded by `#account`)
   """
 
   alias Exosphere.ATProto.CAR
@@ -22,6 +29,7 @@ defmodule Exosphere.ATProto.Firehose.Message do
           commit: CID.t(),
           rev: String.t(),
           since: String.t() | nil,
+          prev_data: CID.t() | nil,
           ops: [operation()],
           blocks: binary(),
           time: String.t()
@@ -30,13 +38,33 @@ defmodule Exosphere.ATProto.Firehose.Message do
   @type operation :: %{
           action: :create | :update | :delete,
           path: String.t(),
-          cid: CID.t() | nil
+          cid: CID.t() | nil,
+          prev: CID.t() | nil
+        }
+
+  @type sync :: %{
+          type: :sync,
+          seq: integer(),
+          did: String.t(),
+          rev: String.t() | nil,
+          blocks: binary(),
+          time: String.t()
         }
 
   @type identity :: %{
           type: :identity,
           seq: integer(),
           did: String.t(),
+          handle: String.t() | nil,
+          time: String.t()
+        }
+
+  @type account :: %{
+          type: :account,
+          seq: integer(),
+          did: String.t(),
+          active: boolean(),
+          status: String.t() | nil,
           time: String.t()
         }
 
@@ -48,7 +76,7 @@ defmodule Exosphere.ATProto.Firehose.Message do
           time: String.t()
         }
 
-  @type message :: commit() | identity() | handle() | map()
+  @type message :: commit() | sync() | identity() | account() | handle() | map()
 
   @doc """
   Decode a message payload based on its type.
@@ -56,16 +84,42 @@ defmodule Exosphere.ATProto.Firehose.Message do
   @spec decode(String.t(), map()) :: {:ok, message()}
   def decode("#commit", payload), do: decode_commit(payload)
 
+  def decode("#sync", payload) do
+    {:ok,
+     %{
+       type: :sync,
+       seq: Map.get(payload, "seq"),
+       did: Map.get(payload, "did"),
+       rev: Map.get(payload, "rev"),
+       blocks: Map.get(payload, "blocks", <<>>),
+       time: Map.get(payload, "time")
+     }}
+  end
+
   def decode("#identity", payload) do
     {:ok,
      %{
        type: :identity,
        seq: Map.get(payload, "seq"),
        did: Map.get(payload, "did"),
+       handle: Map.get(payload, "handle"),
        time: Map.get(payload, "time")
      }}
   end
 
+  def decode("#account", payload) do
+    {:ok,
+     %{
+       type: :account,
+       seq: Map.get(payload, "seq"),
+       did: Map.get(payload, "did"),
+       active: Map.get(payload, "active"),
+       status: Map.get(payload, "status"),
+       time: Map.get(payload, "time")
+     }}
+  end
+
+  # Deprecated: superseded by #identity. Retained for older relays.
   def decode("#handle", payload) do
     {:ok,
      %{
@@ -77,6 +131,7 @@ defmodule Exosphere.ATProto.Firehose.Message do
      }}
   end
 
+  # Deprecated: superseded by #account. Retained for older relays.
   def decode("#tombstone", payload) do
     {:ok,
      %{
@@ -104,20 +159,15 @@ defmodule Exosphere.ATProto.Firehose.Message do
       |> Map.get("ops", [])
       |> Enum.map(&decode_operation/1)
 
-    commit_cid =
-      case Map.get(payload, "commit") do
-        %CID{} = cid -> cid
-        _ -> nil
-      end
-
     {:ok,
      %{
        type: :commit,
        seq: Map.get(payload, "seq"),
        repo: Map.get(payload, "repo"),
-       commit: commit_cid,
+       commit: as_cid(Map.get(payload, "commit")),
        rev: Map.get(payload, "rev"),
        since: Map.get(payload, "since"),
+       prev_data: as_cid(Map.get(payload, "prevData")),
        ops: ops,
        blocks: Map.get(payload, "blocks", <<>>),
        time: Map.get(payload, "time")
@@ -133,20 +183,18 @@ defmodule Exosphere.ATProto.Firehose.Message do
         other -> other
       end
 
-    cid =
-      case Map.get(op, "cid") do
-        %CID{} = c -> c
-        _ -> nil
-      end
-
     %{
       action: action,
       path: Map.get(op, "path"),
-      cid: cid
+      cid: as_cid(Map.get(op, "cid")),
+      prev: as_cid(Map.get(op, "prev"))
     }
   end
 
   defp decode_operation(op), do: op
+
+  defp as_cid(%CID{} = cid), do: cid
+  defp as_cid(_), do: nil
 
   @doc """
   Extract records from a commit's CAR blocks.

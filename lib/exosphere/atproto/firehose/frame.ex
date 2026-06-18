@@ -8,7 +8,9 @@ defmodule Exosphere.ATProto.Firehose.Frame do
   2. Payload with the actual message data
   """
 
-  alias Exosphere.ATProto.CID
+  # Aliased under a distinct name so the bare `CBOR` below still refers to the
+  # `:cbor` library (whose decode/1 returns the trailing bytes we need).
+  alias Exosphere.ATProto.CBOR, as: DagCBOR
 
   @type header :: %{op: integer(), t: String.t() | nil}
 
@@ -51,7 +53,7 @@ defmodule Exosphere.ATProto.Firehose.Frame do
   defp decode_payload(data) do
     case CBOR.decode(data) do
       {:ok, payload, _rest} ->
-        {:ok, transform_payload(payload)}
+        {:ok, DagCBOR.transform_links(payload)}
 
       {:error, reason} ->
         {:error, {:payload_decode_error, reason}}
@@ -59,41 +61,4 @@ defmodule Exosphere.ATProto.Firehose.Frame do
   rescue
     e -> {:error, {:payload_decode_failed, e}}
   end
-
-  # Transform CBOR tags and nested structures after decoding
-  defp transform_payload(term) when is_map(term) and not is_struct(term) do
-    Map.new(term, fn {k, v} -> {k, transform_payload(v)} end)
-  end
-
-  defp transform_payload(term) when is_list(term) do
-    Enum.map(term, &transform_payload/1)
-  end
-
-  # Handle byte strings (CBOR major type 2) - the :cbor library wraps these in a Tag
-  defp transform_payload(%CBOR.Tag{tag: :bytes, value: bytes}) when is_binary(bytes) do
-    bytes
-  end
-
-  # Handle CID tags (tag 42)
-  defp transform_payload(%CBOR.Tag{tag: 42, value: <<0x00, cid_bytes::binary>>}) do
-    case CID.from_bytes(cid_bytes) do
-      {:ok, cid} -> cid
-      {:error, _} -> nil
-    end
-  end
-
-  defp transform_payload(%CBOR.Tag{tag: 42, value: cid_bytes}) when is_binary(cid_bytes) do
-    # Some CIDs might not have the 0x00 prefix
-    case CID.from_bytes(cid_bytes) do
-      {:ok, cid} -> cid
-      {:error, _} -> nil
-    end
-  end
-
-  defp transform_payload(%CBOR.Tag{} = tag) do
-    # Unknown tag, return the value
-    tag.value
-  end
-
-  defp transform_payload(term), do: term
 end

@@ -5,6 +5,73 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+Spec-conformance pass against the [AT Protocol specifications](https://atproto.com/specs).
+Fixes several DAG-CBOR / cryptography correctness bugs (some of which change
+wire output or reject previously-accepted input) and adds the AT-URI, NSID, and
+record-key primitives plus commit-signature verification.
+
+### Fixed (breaking — output / acceptance changes)
+
+- **DAG-CBOR canonical encoding.** `Exosphere.ATProto.CBOR.encode/1` now sorts
+  map keys with RFC 8949 *length-first* ordering (shorter keys first, ties
+  broken bytewise) instead of pure lexicographic ordering, and encodes CID
+  links (tag 42) as CBOR **byte strings** instead of text strings. The previous
+  behaviour produced non-spec bytes and therefore **incorrect CIDs** for any
+  record containing a map with differing-length keys or a CID link. CIDs for
+  such values will change. The manual encoder no longer delegates map/list/CID
+  serialization to the `:cbor` library (which neither sorts keys nor emits byte
+  strings for binaries).
+- **Real CID-link decoding.** `CBOR.decode/1`, `Firehose.Frame`, and `CAR` now
+  decode CID links produced by other implementations (byte strings, which the
+  `:cbor` library surfaces as nested `%CBOR.Tag{tag: :bytes}`). Previously these
+  were silently dropped, so firehose commit operations and record links lost
+  their CIDs. Link transformation is centralized in
+  `Exosphere.ATProto.CBOR.transform_links/1`.
+- **High-S signature rejection.** `Exosphere.ATProto.Crypto.verify/4` now
+  rejects non-low-S ("malleable") signatures for both secp256k1 and p256, as
+  required by the cryptography spec. Callers relying on high-S signatures being
+  accepted will now get `{:error, :invalid_signature}`.
+- **Strict TID validation.** `Exosphere.ATProto.TID.valid?/1` enforces the spec
+  regex `/^[234567abcdefghij][234567abcdefghijklmnopqrstuvwxyz]{12}$/`,
+  including the restricted leading character. Strings that merely base32-decode
+  are no longer considered valid.
+- **Handle TLD rule.** `Exosphere.ATProto.Identity.Handle.valid?/1` now rejects
+  handles whose final (TLD) segment starts with a digit.
+
+### Added
+
+- `Exosphere.ATProto.AtUri` — parse/validate/render `at://` URIs (authority,
+  collection, rkey, fragment), with the authority validated as a DID or handle.
+- `Exosphere.ATProto.NSID` — NSID syntax validation and parsing.
+- `Exosphere.ATProto.RecordKey` — record-key syntax validation.
+- `Exosphere.ATProto.Repo.Commit` — verify a repository commit's signature
+  against a public key (`verify/3`) or a DID document's signing key
+  (`verify_with_document/2`), tying together `CBOR`, `Crypto`, and `Identity`.
+- Firehose `#account` (hosting status) and `#sync` event decoding in
+  `Exosphere.ATProto.Firehose.Message`; the optional `handle` field on
+  `#identity`; and `prev_data` (MST root) on `#commit` plus `prev` on commit
+  operations.
+- 33 new tests covering all of the above.
+
+### Changed
+
+- `Exosphere.ATProto.Identity.Document.get_handle/1` now extracts the handle via
+  `AtUri` parsing rather than naive string-prefix stripping.
+- `Exosphere.ATProto.Firehose.Message` documents `#handle` and `#tombstone` as
+  deprecated (superseded by `#identity` and `#account`); they are still decoded
+  for backwards compatibility. Commit operations gained a `prev` field and the
+  commit map gained `prev_data`.
+
+### Internal
+
+- Corrected the canonical CID example in `CID`/`CBOR` moduledocs
+  (`{"hello":"world"}` → `bafyreidykglsfhoixmivffc5uwhcgshx4j465xwqntbmu43nb2dzqwfvae`);
+  the previous value was wrong and never exercised by a doctest.
+- `mix compile --warnings-as-errors`, `mix credo --strict`, `mix dialyzer`, and
+  `mix format --check-formatted` all clean. Test suite at 77 tests, 0 failures.
+
 ## [0.2.0] - 2026-04-28
 
 Hardening pass following a full package audit. Several public functions in

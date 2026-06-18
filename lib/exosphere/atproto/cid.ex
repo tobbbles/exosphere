@@ -19,10 +19,10 @@ defmodule Exosphere.ATProto.CID do
       # Create a CID from data
       iex> {:ok, cid} = Exosphere.ATProto.CID.create(%{"hello" => "world"})
       iex> to_string(cid)
-      "bafyreigdyrzt5sfp7udm7hu76uh7y26nf3efuylqabf3oclgtqy55fbzdi"
+      "bafyreidykglsfhoixmivffc5uwhcgshx4j465xwqntbmu43nb2dzqwfvae"
 
       # Parse a CID string
-      iex> {:ok, cid} = Exosphere.ATProto.CID.decode("bafyreigdyrzt5sfp7udm7hu76uh7y26nf3efuylqabf3oclgtqy55fbzdi")
+      iex> {:ok, cid} = Exosphere.ATProto.CID.decode("bafyreidykglsfhoixmivffc5uwhcgshx4j465xwqntbmu43nb2dzqwfvae")
       iex> cid.codec
       :dag_cbor
 
@@ -129,7 +129,7 @@ defmodule Exosphere.ATProto.CID do
 
   ## Examples
 
-      iex> Exosphere.ATProto.CID.decode("bafyreigdyrzt5sfp7udm7hu76uh7y26nf3efuylqabf3oclgtqy55fbzdi")
+      iex> Exosphere.ATProto.CID.decode("bafyreidykglsfhoixmivffc5uwhcgshx4j465xwqntbmu43nb2dzqwfvae")
       {:ok, %Exosphere.ATProto.CID{...}}
   """
   @spec decode(String.t()) :: {:ok, t()} | {:error, term()}

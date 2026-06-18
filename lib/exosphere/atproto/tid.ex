@@ -92,15 +92,21 @@ defmodule Exosphere.ATProto.TID do
 
   def to_datetime(_), do: {:error, :invalid_tid}
 
+  # Per the TID spec, a TID is exactly 13 base32-sortable characters and the
+  # first character is restricted to `234567abcdefghij` (the high bit of the
+  # 64-bit value is always 0).
+  @tid_regex ~r/^[234567abcdefghij][234567abcdefghijklmnopqrstuvwxyz]{12}$/
+
   @doc """
-  Validate a TID string.
+  Validate a TID string against the spec syntax.
+
+  Enforces the reference regex
+  `/^[234567abcdefghij][234567abcdefghijklmnopqrstuvwxyz]{12}$/`: exactly 13
+  base32-sortable characters with a restricted leading character.
   """
   @spec valid?(String.t()) :: boolean()
   def valid?(tid) when is_binary(tid) and byte_size(tid) == 13 do
-    case decode(tid) do
-      {:ok, _} -> true
-      :error -> false
-    end
+    Regex.match?(@tid_regex, tid)
   end
 
   def valid?(_), do: false
