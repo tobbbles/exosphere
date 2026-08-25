@@ -10,10 +10,13 @@ defmodule Mix.Tasks.Exosphere.Lexicons.Sync do
 
   - `app/bsky/**`: the full corpus from github.com/bluesky-social/atproto
     at the latest `main` commit (the resolved commit is recorded)
-  - `com/atproto/**` and `community/**`: refresh-in-place. Only the files
-    already vendored are re-downloaded (Tangled has no raw listing), so the
-    curated set stays intentional; new com.atproto schemas are added by
-    hand when a generated lexicon needs them
+  - `community/**`: full corpus. The file list comes from the GitHub
+    mirror (lexicon-community/lexicon); every file downloads from Tangled,
+    the canonical source. New community lexicons appear on the next sync.
+  - `com/atproto/**`: refresh-in-place. Only the files already vendored
+    are re-downloaded, keeping the curated set intentional; new
+    com.atproto schemas are added by hand when a generated lexicon needs
+    them
 
   After syncing, run `mix exosphere.gen.bsky` to regenerate modules and
   review the diff.
@@ -85,9 +88,39 @@ defmodule Mix.Tasks.Exosphere.Lexicons.Sync do
   end
 
   # Tangled raw endpoints serve individual files (no listing over raw), so
-  # the sync refreshes every community file already vendored.
+  # the file list comes from the GitHub mirror while every download hits
+  # Tangled (the canonical source).
   defp sync_community do
-    refresh_existing("community/**/*.json", @tangled_base)
+    tree =
+      "lexicon-community/lexicon"
+      |> gh("git/trees/main?recursive=1")
+      |> Map.fetch!("tree")
+
+    files =
+      tree
+      |> Enum.filter(fn entry ->
+        String.starts_with?(entry["path"], "community/") and
+          String.ends_with?(entry["path"], ".json")
+      end)
+      |> Enum.map(fn entry ->
+        rel = entry["path"]
+
+        case fetch("#{@tangled_base}/#{rel}") do
+          {:ok, body} ->
+            dest = Path.join(@lexicon_dir, rel)
+            File.mkdir_p!(Path.dirname(dest))
+            File.write!(dest, body)
+            Mix.shell().info("community: synced #{rel}")
+            rel
+
+          :error ->
+            Mix.shell().error("community: failed to fetch #{rel} from Tangled; skipped")
+            nil
+        end
+      end)
+      |> Enum.reject(&is_nil/1)
+
+    length(files)
   end
 
   defp sync_atproto_com(refresh_base) do

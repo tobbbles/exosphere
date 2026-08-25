@@ -2,14 +2,15 @@ defmodule Exosphere.ATProto.Bsky do
   @moduledoc """
   Bluesky API client for app.bsky.* lexicons.
 
+  **Deprecated.** app.bsky endpoints are now generated from vendored
+  lexicons. Use the generated modules with an
+  `Exosphere.ATProto.XRPC.Client` instead:
+
+      client = Exosphere.ATProto.XRPC.Client.new("https://public.api.bsky.app")
+      {:ok, profile} = Exosphere.Bsky.Actor.get_profile(client, actor: "alice.bsky.social")
+
   Note: app.bsky.* endpoints are served by the Bluesky App View service,
   not the user's PDS. The PDS only handles com.atproto.* endpoints.
-
-  ## Examples
-
-      # Fetch a user's profile
-      {:ok, profile} = Exosphere.ATProto.Bsky.get_profile("alice.bsky.social")
-
   """
 
   alias Exosphere.ATProto.HTTP
@@ -19,6 +20,8 @@ defmodule Exosphere.ATProto.Bsky do
   # The Bluesky App View service URL for app.bsky.* endpoints
   # This is different from the user's PDS which only handles com.atproto.* endpoints
   @bsky_app_view "https://public.api.bsky.app"
+
+  @deprecated "Use Exosphere.Bsky.Actor.get_profile/2 with an XRPC client instead"
 
   @doc """
   Fetch a user's profile.
