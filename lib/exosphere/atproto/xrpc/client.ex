@@ -133,10 +133,10 @@ defmodule Exosphere.ATProto.XRPC.Client do
           record: %{"$type" => "app.bsky.feed.post", "text" => "Hello!"}
         )
   """
-  @spec procedure(t(), String.t(), procedure_body() | keyword()) ::
+  @spec procedure(t(), String.t(), procedure_body() | keyword(), query_params()) ::
           {:ok, HTTP.json_term()} | {:error, error()}
-  def procedure(%__MODULE__{} = client, nsid, body \\ %{}) do
-    url = build_url(client, nsid)
+  def procedure(%__MODULE__{} = client, nsid, body \\ %{}, params \\ []) do
+    url = build_url(client, nsid, params)
     headers = build_headers(client)
     json_body = if is_list(body), do: Map.new(body), else: body
 
