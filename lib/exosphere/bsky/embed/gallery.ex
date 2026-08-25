@@ -14,13 +14,15 @@ defmodule Exosphere.Bsky.Embed.Gallery do
   """
 
   alias Exosphere.Bsky.Runtime
+
+  alias Exosphere.Bsky.Embed.Gallery.Image
   @type_id "app.bsky.embed.gallery"
   @variants_items [{"app.bsky.embed.gallery#image", Exosphere.Bsky.Embed.Gallery.Image}]
 
   @enforce_keys [:items]
   defstruct items: nil, extra: %{}
 
-  @type t :: %__MODULE__{items: [Exosphere.Bsky.Embed.Gallery.Image.t() | map()]}
+  @type t :: %__MODULE__{items: [Image.t() | map()]}
 
   @fields %{items: "items"}
 
@@ -78,12 +80,7 @@ defmodule Exosphere.Bsky.Embed.Gallery do
   defp encode_items(values), do: Enum.map(values, &encode_items_item/1)
 
   defp encode_items_item(v) when is_struct(v, Exosphere.Bsky.Embed.Gallery.Image),
-    do:
-      Map.put(
-        Exosphere.Bsky.Embed.Gallery.Image.to_map(v),
-        "$type",
-        "app.bsky.embed.gallery#image"
-      )
+    do: Map.put(Image.to_map(v), "$type", "app.bsky.embed.gallery#image")
 
   defp encode_items_item(v) when is_map(v), do: v
 end

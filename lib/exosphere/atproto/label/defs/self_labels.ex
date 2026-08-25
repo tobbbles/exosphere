@@ -14,12 +14,14 @@ defmodule Exosphere.ATProto.Label.Defs.SelfLabels do
   """
 
   alias Exosphere.Bsky.Runtime
+
+  alias Exosphere.ATProto.Label.Defs.SelfLabel
   @type_id "com.atproto.label.defs#selfLabels"
 
   @enforce_keys [:values]
   defstruct values: nil, extra: %{}
 
-  @type t :: %__MODULE__{values: [Exosphere.ATProto.Label.Defs.SelfLabel.t()]}
+  @type t :: %__MODULE__{values: [SelfLabel.t()]}
 
   @fields %{values: "values"}
 

@@ -18,6 +18,8 @@ defmodule Exosphere.Community.App.Defs.Image do
   """
 
   alias Exosphere.Bsky.Runtime
+
+  alias Exosphere.Community.App.Defs.AspectRatio
   @type_id "community.lexicon.app.defs#image"
 
   @enforce_keys [:alt]
@@ -25,7 +27,7 @@ defmodule Exosphere.Community.App.Defs.Image do
 
   @type t :: %__MODULE__{
           alt: String.t(),
-          aspect_ratio: Exosphere.Community.App.Defs.AspectRatio.t() | nil,
+          aspect_ratio: AspectRatio.t() | nil,
           image: term() | nil,
           purpose: String.t() | nil,
           uri: String.t() | nil

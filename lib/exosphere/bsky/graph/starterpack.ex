@@ -17,6 +17,9 @@ defmodule Exosphere.Bsky.Graph.Starterpack do
   """
 
   alias Exosphere.Bsky.Runtime
+
+  alias Exosphere.Bsky.Graph.Starterpack.FeedItem
+  alias Exosphere.Bsky.Richtext.Facet
   @type_id "app.bsky.graph.starterpack"
 
   @enforce_keys [:created_at, :list, :name]
@@ -31,8 +34,8 @@ defmodule Exosphere.Bsky.Graph.Starterpack do
   @type t :: %__MODULE__{
           created_at: String.t(),
           description: String.t() | nil,
-          description_facets: [Exosphere.Bsky.Richtext.Facet.t()] | nil,
-          feeds: [Exosphere.Bsky.Graph.Starterpack.FeedItem.t()] | nil,
+          description_facets: [Facet.t()] | nil,
+          feeds: [FeedItem.t()] | nil,
           list: String.t(),
           name: String.t()
         }

@@ -15,6 +15,12 @@ defmodule Exosphere.Bsky.Embed.RecordWithMedia do
   """
 
   alias Exosphere.Bsky.Runtime
+
+  alias Exosphere.Bsky.Embed.External
+  alias Exosphere.Bsky.Embed.Gallery
+  alias Exosphere.Bsky.Embed.Images
+  alias Exosphere.Bsky.Embed.Record
+  alias Exosphere.Bsky.Embed.Video
   @type_id "app.bsky.embed.recordWithMedia"
   @variants_media [
     {"app.bsky.embed.images", Exosphere.Bsky.Embed.Images},
@@ -27,13 +33,8 @@ defmodule Exosphere.Bsky.Embed.RecordWithMedia do
   defstruct media: nil, record: nil, extra: %{}
 
   @type t :: %__MODULE__{
-          media:
-            Exosphere.Bsky.Embed.Images.t()
-            | Exosphere.Bsky.Embed.Video.t()
-            | Exosphere.Bsky.Embed.Gallery.t()
-            | Exosphere.Bsky.Embed.External.t()
-            | map(),
-          record: Exosphere.Bsky.Embed.Record.t()
+          media: Images.t() | Video.t() | Gallery.t() | External.t() | map(),
+          record: Record.t()
         }
 
   @fields %{media: "media", record: "record"}
@@ -95,16 +96,16 @@ defmodule Exosphere.Bsky.Embed.RecordWithMedia do
   defp encode_ref(v, _module) when is_map(v), do: v
 
   defp encode_media(v) when is_struct(v, Exosphere.Bsky.Embed.Images),
-    do: Map.put(Exosphere.Bsky.Embed.Images.to_map(v), "$type", "app.bsky.embed.images")
+    do: Map.put(Images.to_map(v), "$type", "app.bsky.embed.images")
 
   defp encode_media(v) when is_struct(v, Exosphere.Bsky.Embed.Video),
-    do: Map.put(Exosphere.Bsky.Embed.Video.to_map(v), "$type", "app.bsky.embed.video")
+    do: Map.put(Video.to_map(v), "$type", "app.bsky.embed.video")
 
   defp encode_media(v) when is_struct(v, Exosphere.Bsky.Embed.Gallery),
-    do: Map.put(Exosphere.Bsky.Embed.Gallery.to_map(v), "$type", "app.bsky.embed.gallery")
+    do: Map.put(Gallery.to_map(v), "$type", "app.bsky.embed.gallery")
 
   defp encode_media(v) when is_struct(v, Exosphere.Bsky.Embed.External),
-    do: Map.put(Exosphere.Bsky.Embed.External.to_map(v), "$type", "app.bsky.embed.external")
+    do: Map.put(External.to_map(v), "$type", "app.bsky.embed.external")
 
   defp encode_media(v) when is_map(v), do: v
 

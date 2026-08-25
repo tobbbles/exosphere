@@ -15,6 +15,8 @@ defmodule Exosphere.Bsky.Feed.Postgate do
   """
 
   alias Exosphere.Bsky.Runtime
+
+  alias Exosphere.Bsky.Feed.Postgate.DisableRule
   @type_id "app.bsky.feed.postgate"
   @variants_embedding_rules [
     {"app.bsky.feed.postgate#disableRule", Exosphere.Bsky.Feed.Postgate.DisableRule}
@@ -30,7 +32,7 @@ defmodule Exosphere.Bsky.Feed.Postgate do
   @type t :: %__MODULE__{
           created_at: String.t(),
           detached_embedding_uris: [String.t()] | nil,
-          embedding_rules: [Exosphere.Bsky.Feed.Postgate.DisableRule.t() | map()] | nil,
+          embedding_rules: [DisableRule.t() | map()] | nil,
           post: String.t()
         }
 
@@ -120,12 +122,7 @@ defmodule Exosphere.Bsky.Feed.Postgate do
   defp encode_embedding_rules(values), do: Enum.map(values, &encode_embedding_rules_item/1)
 
   defp encode_embedding_rules_item(v) when is_struct(v, Exosphere.Bsky.Feed.Postgate.DisableRule),
-    do:
-      Map.put(
-        Exosphere.Bsky.Feed.Postgate.DisableRule.to_map(v),
-        "$type",
-        "app.bsky.feed.postgate#disableRule"
-      )
+    do: Map.put(DisableRule.to_map(v), "$type", "app.bsky.feed.postgate#disableRule")
 
   defp encode_embedding_rules_item(v) when is_map(v), do: v
 end

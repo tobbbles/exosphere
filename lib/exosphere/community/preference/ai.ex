@@ -16,6 +16,11 @@ defmodule Exosphere.Community.Preference.Ai do
   """
 
   alias Exosphere.Bsky.Runtime
+
+  alias Exosphere.Community.Preference.Ai.CollectionScope
+  alias Exosphere.Community.Preference.Ai.EntityScope
+  alias Exosphere.Community.Preference.Ai.GlobalScope
+  alias Exosphere.Community.Preference.Ai.PreferenceSet
   @type_id "community.lexicon.preference.ai"
   @variants_scope [
     {"community.lexicon.preference.ai#globalScope",
@@ -30,12 +35,8 @@ defmodule Exosphere.Community.Preference.Ai do
   defstruct preferences: nil, scope: nil, updated_at: nil, extra: %{}
 
   @type t :: %__MODULE__{
-          preferences: Exosphere.Community.Preference.Ai.PreferenceSet.t(),
-          scope:
-            Exosphere.Community.Preference.Ai.GlobalScope.t()
-            | Exosphere.Community.Preference.Ai.EntityScope.t()
-            | Exosphere.Community.Preference.Ai.CollectionScope.t()
-            | map(),
+          preferences: PreferenceSet.t(),
+          scope: GlobalScope.t() | EntityScope.t() | CollectionScope.t() | map(),
           updated_at: String.t()
         }
 
@@ -117,25 +118,15 @@ defmodule Exosphere.Community.Preference.Ai do
   defp encode_preferences(v), do: encode_ref(v, Exosphere.Community.Preference.Ai.PreferenceSet)
 
   defp encode_scope(v) when is_struct(v, Exosphere.Community.Preference.Ai.GlobalScope),
-    do:
-      Map.put(
-        Exosphere.Community.Preference.Ai.GlobalScope.to_map(v),
-        "$type",
-        "community.lexicon.preference.ai#globalScope"
-      )
+    do: Map.put(GlobalScope.to_map(v), "$type", "community.lexicon.preference.ai#globalScope")
 
   defp encode_scope(v) when is_struct(v, Exosphere.Community.Preference.Ai.EntityScope),
-    do:
-      Map.put(
-        Exosphere.Community.Preference.Ai.EntityScope.to_map(v),
-        "$type",
-        "community.lexicon.preference.ai#entityScope"
-      )
+    do: Map.put(EntityScope.to_map(v), "$type", "community.lexicon.preference.ai#entityScope")
 
   defp encode_scope(v) when is_struct(v, Exosphere.Community.Preference.Ai.CollectionScope),
     do:
       Map.put(
-        Exosphere.Community.Preference.Ai.CollectionScope.to_map(v),
+        CollectionScope.to_map(v),
         "$type",
         "community.lexicon.preference.ai#collectionScope"
       )

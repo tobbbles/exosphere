@@ -19,6 +19,8 @@ defmodule Exosphere.ATProto.Label.Defs.LabelValueDefinition do
   """
 
   alias Exosphere.Bsky.Runtime
+
+  alias Exosphere.ATProto.Label.Defs.LabelValueDefinitionStrings
   @type_id "com.atproto.label.defs#labelValueDefinition"
 
   @enforce_keys [:blurs, :identifier, :locales, :severity]
@@ -35,7 +37,7 @@ defmodule Exosphere.ATProto.Label.Defs.LabelValueDefinition do
           blurs: String.t(),
           default_setting: String.t() | nil,
           identifier: String.t(),
-          locales: [Exosphere.ATProto.Label.Defs.LabelValueDefinitionStrings.t()],
+          locales: [LabelValueDefinitionStrings.t()],
           severity: String.t()
         }
 

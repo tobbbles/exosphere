@@ -17,6 +17,9 @@ defmodule Exosphere.Bsky.Labeler.Service do
   """
 
   alias Exosphere.Bsky.Runtime
+
+  alias Exosphere.ATProto.Label.Defs.SelfLabels
+  alias Exosphere.Bsky.Labeler.Defs.LabelerPolicies
   @type_id "app.bsky.labeler.service"
   @variants_labels [
     {"com.atproto.label.defs#selfLabels", Exosphere.ATProto.Label.Defs.SelfLabels}
@@ -33,8 +36,8 @@ defmodule Exosphere.Bsky.Labeler.Service do
 
   @type t :: %__MODULE__{
           created_at: String.t(),
-          labels: Exosphere.ATProto.Label.Defs.SelfLabels.t() | map() | nil,
-          policies: Exosphere.Bsky.Labeler.Defs.LabelerPolicies.t(),
+          labels: SelfLabels.t() | map() | nil,
+          policies: LabelerPolicies.t(),
           reason_types: [term()] | nil,
           subject_collections: [String.t()] | nil,
           subject_types: [term()] | nil
@@ -140,12 +143,7 @@ defmodule Exosphere.Bsky.Labeler.Service do
   defp encode_ref(v, _module) when is_map(v), do: v
 
   defp encode_labels(v) when is_struct(v, Exosphere.ATProto.Label.Defs.SelfLabels),
-    do:
-      Map.put(
-        Exosphere.ATProto.Label.Defs.SelfLabels.to_map(v),
-        "$type",
-        "com.atproto.label.defs#selfLabels"
-      )
+    do: Map.put(SelfLabels.to_map(v), "$type", "com.atproto.label.defs#selfLabels")
 
   defp encode_labels(v) when is_map(v), do: v
 

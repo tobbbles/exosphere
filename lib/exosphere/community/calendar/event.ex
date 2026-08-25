@@ -21,6 +21,12 @@ defmodule Exosphere.Community.Calendar.Event do
   """
 
   alias Exosphere.Bsky.Runtime
+
+  alias Exosphere.Community.Calendar.Event.Uri
+  alias Exosphere.Community.Location.Address
+  alias Exosphere.Community.Location.Fsq
+  alias Exosphere.Community.Location.Geo
+  alias Exosphere.Community.Location.Hthree
   @type_id "community.lexicon.calendar.event"
   @variants_locations [
     {"community.lexicon.calendar.event#uri", Exosphere.Community.Calendar.Event.Uri},
@@ -47,22 +53,13 @@ defmodule Exosphere.Community.Calendar.Event do
           created_at: String.t(),
           description: String.t() | nil,
           ends_at: String.t() | nil,
-          locations:
-            [
-              Exosphere.Community.Calendar.Event.Uri.t()
-              | Exosphere.Community.Location.Address.t()
-              | Exosphere.Community.Location.Fsq.t()
-              | Exosphere.Community.Location.Geo.t()
-              | Exosphere.Community.Location.Hthree.t()
-              | map()
-            ]
-            | nil,
+          locations: [Uri.t() | Address.t() | Fsq.t() | Geo.t() | Hthree.t() | map()] | nil,
           mode: term() | nil,
           name: String.t(),
           rsvp_expected: boolean() | nil,
           starts_at: String.t() | nil,
           status: term() | nil,
-          uris: [Exosphere.Community.Calendar.Event.Uri.t()] | nil
+          uris: [Uri.t()] | nil
         }
 
   @fields %{
@@ -176,44 +173,19 @@ defmodule Exosphere.Community.Calendar.Event do
   defp encode_locations(values), do: Enum.map(values, &encode_locations_item/1)
 
   defp encode_locations_item(v) when is_struct(v, Exosphere.Community.Calendar.Event.Uri),
-    do:
-      Map.put(
-        Exosphere.Community.Calendar.Event.Uri.to_map(v),
-        "$type",
-        "community.lexicon.calendar.event#uri"
-      )
+    do: Map.put(Uri.to_map(v), "$type", "community.lexicon.calendar.event#uri")
 
   defp encode_locations_item(v) when is_struct(v, Exosphere.Community.Location.Address),
-    do:
-      Map.put(
-        Exosphere.Community.Location.Address.to_map(v),
-        "$type",
-        "community.lexicon.location.address"
-      )
+    do: Map.put(Address.to_map(v), "$type", "community.lexicon.location.address")
 
   defp encode_locations_item(v) when is_struct(v, Exosphere.Community.Location.Fsq),
-    do:
-      Map.put(
-        Exosphere.Community.Location.Fsq.to_map(v),
-        "$type",
-        "community.lexicon.location.fsq"
-      )
+    do: Map.put(Fsq.to_map(v), "$type", "community.lexicon.location.fsq")
 
   defp encode_locations_item(v) when is_struct(v, Exosphere.Community.Location.Geo),
-    do:
-      Map.put(
-        Exosphere.Community.Location.Geo.to_map(v),
-        "$type",
-        "community.lexicon.location.geo"
-      )
+    do: Map.put(Geo.to_map(v), "$type", "community.lexicon.location.geo")
 
   defp encode_locations_item(v) when is_struct(v, Exosphere.Community.Location.Hthree),
-    do:
-      Map.put(
-        Exosphere.Community.Location.Hthree.to_map(v),
-        "$type",
-        "community.lexicon.location.hthree"
-      )
+    do: Map.put(Hthree.to_map(v), "$type", "community.lexicon.location.hthree")
 
   defp encode_locations_item(v) when is_map(v), do: v
 

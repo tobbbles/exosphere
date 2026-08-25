@@ -13,12 +13,14 @@ defmodule Exosphere.Community.Interaction.Like do
   """
 
   alias Exosphere.Bsky.Runtime
+
+  alias Exosphere.ATProto.Repo.StrongRef
   @type_id "community.lexicon.interaction.like"
 
   @enforce_keys [:created_at, :subject]
   defstruct created_at: nil, subject: nil, extra: %{}
 
-  @type t :: %__MODULE__{created_at: String.t(), subject: Exosphere.ATProto.Repo.StrongRef.t()}
+  @type t :: %__MODULE__{created_at: String.t(), subject: StrongRef.t()}
 
   @fields %{created_at: "createdAt", subject: "subject"}
 

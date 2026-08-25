@@ -15,6 +15,8 @@ defmodule Exosphere.Bsky.Actor.Status do
   """
 
   alias Exosphere.Bsky.Runtime
+
+  alias Exosphere.Bsky.Embed.External
   @type_id "app.bsky.actor.status"
   @variants_embed [{"app.bsky.embed.external", Exosphere.Bsky.Embed.External}]
 
@@ -24,7 +26,7 @@ defmodule Exosphere.Bsky.Actor.Status do
   @type t :: %__MODULE__{
           created_at: String.t(),
           duration_minutes: integer() | nil,
-          embed: Exosphere.Bsky.Embed.External.t() | map() | nil,
+          embed: External.t() | map() | nil,
           status: String.t()
         }
 
@@ -102,7 +104,7 @@ defmodule Exosphere.Bsky.Actor.Status do
   def from_map(_), do: {:error, [{"", "expected a map"}]}
 
   defp encode_embed(v) when is_struct(v, Exosphere.Bsky.Embed.External),
-    do: Map.put(Exosphere.Bsky.Embed.External.to_map(v), "$type", "app.bsky.embed.external")
+    do: Map.put(External.to_map(v), "$type", "app.bsky.embed.external")
 
   defp encode_embed(v) when is_map(v), do: v
 end
