@@ -37,7 +37,7 @@ defmodule Exosphere.Changelog do
       new_lines =
         case List.keyfind(headings, group, 1) do
           {_index, _name} = existing ->
-            insert_into_group(lines, existing, headings, entry)
+            insert_into_group(lines, existing, headings, stop, entry)
 
           nil ->
             insert_new_group(lines, start, stop, headings, group, entry)
@@ -103,6 +103,25 @@ defmodule Exosphere.Changelog do
     else
       :error
     end
+  end
+
+  @spec set_readme_dep(String.t(), String.t()) :: {:ok, String.t()} | :error
+  def set_readme_dep(contents, version) do
+    if Regex.match?(~r/\{:exosphere,\s*"~> [\d.]+"/, contents) do
+      {:ok,
+       Regex.replace(
+         ~r/(\{:exosphere,\s*"~> )[\d.]+(")/,
+         contents,
+         "\\g{1}#{requirement(version)}\\g{2}"
+       )}
+    else
+      :error
+    end
+  end
+
+  defp requirement(version) do
+    %{major: major, minor: minor} = Version.parse!(version)
+    "#{major}.#{minor}"
   end
 
   @spec next_version([String.t()], intent()) ::
@@ -173,11 +192,13 @@ defmodule Exosphere.Changelog do
     end)
   end
 
-  defp insert_into_group(lines, {heading_index, _name}, headings, entry) do
+  defp insert_into_group(lines, {heading_index, _name}, headings, stop, entry) do
+    # When the group is the last one in the section, its block ends at the
+    # section boundary (the next `## ` heading), not at the end of the file.
     block_end =
       case Enum.find(headings, fn {index, _} -> index > heading_index end) do
         {next_index, _} -> next_index
-        nil -> length(lines)
+        nil -> stop
       end
 
     trailing_blanks =
