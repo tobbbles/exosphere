@@ -216,13 +216,18 @@ defmodule Exosphere.Lexicon.Generator do
 
   # --- Endpoint modules -----------------------------------------------------------
 
-  # One module per app.bsky namespace (e.g. Exosphere.Bsky.Actor) holding a
-  # typed function for each XRPC query/procedure lexicon in that namespace.
+  # One module per generated namespace (e.g. Exosphere.Bsky.Actor,
+  # Exosphere.Community.Bookmarks) holding a typed function for each XRPC
+  # query/procedure lexicon in that namespace.
+  @endpoint_namespaces ["app.bsky.", "community.lexicon."]
+
   defp endpoint_specs(lexicons) do
     lexicons
     |> Enum.filter(fn {nsid, lexicon} ->
       main = lexicon.defs["main"]
-      String.starts_with?(nsid, "app.bsky.") and main != nil and main.kind in [:query, :procedure]
+
+      String.starts_with?(nsid, @endpoint_namespaces) and main != nil and
+        main.kind in [:query, :procedure]
     end)
     |> Enum.group_by(fn {nsid, _lexicon} -> namespace_of(nsid) end)
     |> Enum.map(fn {namespace, endpoints} ->
