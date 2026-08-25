@@ -152,6 +152,7 @@ record-key primitives plus commit-signature verification.
 - run the release pipeline on GITHUB_TOKEN with a deploy key for pushes (#15)
 - harden firehose reconnect, socket cleanup, DID injection, and validation edges (#14)
 - normalize the deploy key secret and validate it before pushing (#16)
+- repair cut workflow, key parsing, and backfill lost entries (#17)
 
 ### Internal
 
