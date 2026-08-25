@@ -41,8 +41,13 @@ defmodule Exosphere.Lexicon.Generator do
   @doc """
   Generate all modules for `lexicons` (as from `Parser.parse_dir/1`).
 
-  Returns specs (module, path relative to `lib/exosphere/bsky`, formatted
-  code), ordered parents-first.
+  Every vendored lexicon is generated except `com.atproto.*` (the hand-written
+  core). `app.bsky.*` maps to `Exosphere.Bsky.*`; any other authority maps
+  by its NSID segments (e.g. `community.lexicon.interaction.like` →
+  `Exosphere.Community.Lexicon.Interaction.Like`).
+
+  Returns specs (module, path relative to `lib/exosphere`, formatted code),
+  ordered parents-first.
   """
   @spec generate(%{String.t() => Parser.lexicon()}) :: [
           %{module: module(), path: String.t(), code: String.t()}
@@ -50,7 +55,7 @@ defmodule Exosphere.Lexicon.Generator do
   def generate(lexicons) do
     specs =
       lexicons
-      |> Enum.filter(fn {nsid, _} -> String.starts_with?(nsid, "app.bsky.") end)
+      |> Enum.reject(fn {nsid, _} -> String.starts_with?(nsid, "com.atproto.") end)
       |> Enum.sort()
       |> Enum.flat_map(fn {_nsid, lexicon} ->
         main = lexicon.defs["main"]
@@ -71,11 +76,11 @@ defmodule Exosphere.Lexicon.Generator do
   end
 
   @doc """
-  Write generated specs under `lib_dir` (default `lib/exosphere/bsky`),
+  Write generated specs under `lib_dir` (default `lib/exosphere`),
   creating directories as needed. Returns the paths written.
   """
   @spec write!([%{module: module(), path: String.t(), code: String.t()}], Path.t()) :: [Path.t()]
-  def write!(specs, lib_dir \\ "lib/exosphere/bsky") do
+  def write!(specs, lib_dir \\ "lib/exosphere") do
     Enum.map(specs, fn %{path: rel, code: code} ->
       path = Path.join(lib_dir, rel)
       File.mkdir_p!(Path.dirname(path))
@@ -132,13 +137,20 @@ defmodule Exosphere.Lexicon.Generator do
   # --- Naming --------------------------------------------------------------------
 
   # app.bsky.feed.post => Exosphere.Bsky.Feed.Post (the app.bsky prefix is
-  # dropped; only app.bsky.* lexicons are generated)
+  # collapsed to Bsky); community.lexicon.interaction.like =>
+  # Exosphere.Community.Lexicon.Interaction.Like (segments kept).
+  defp main_module("app.bsky." <> rest) do
+    rest
+    |> String.split(".")
+    |> Enum.map(&Macro.camelize/1)
+    |> then(&Module.concat([Exosphere, Bsky | &1]))
+  end
+
   defp main_module(nsid) do
     nsid
     |> String.split(".")
-    |> Enum.drop(2)
     |> Enum.map(&Macro.camelize/1)
-    |> then(&Module.concat([Exosphere, Bsky | &1]))
+    |> then(&Module.concat([Exosphere | &1]))
   end
 
   defp def_module(nsid, def_name),
@@ -158,11 +170,11 @@ defmodule Exosphere.Lexicon.Generator do
     }
   end
 
-  # Exosphere.Bsky.Feed.Post => "feed/post.ex" (relative to lib/exosphere/bsky)
+  # Exosphere.Bsky.Feed.Post => "bsky/feed/post.ex" (relative to lib/exosphere)
   defp module_path(module) do
     module
     |> Module.split()
-    |> Enum.drop(2)
+    |> Enum.drop(1)
     |> Enum.map(&Macro.underscore/1)
     |> Path.join()
     |> then(&"#{&1}.ex")

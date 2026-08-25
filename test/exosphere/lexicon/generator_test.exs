@@ -9,7 +9,7 @@ defmodule Exosphere.Lexicon.GeneratorTest do
 
   alias Exosphere.Lexicon.{Generator, Parser}
 
-  @output_dir "lib/exosphere/bsky"
+  @output_dir "lib/exosphere"
 
   test "generated files on disk match regeneration (no drift)" do
     {:ok, lexicons} = Parser.parse_dir("priv/lexicons")
@@ -45,7 +45,8 @@ defmodule Exosphere.Lexicon.GeneratorTest do
                Exosphere.Bsky.Embed.Images.Image,
                Exosphere.Bsky.Embed.External,
                Exosphere.Bsky.Embed.External.External,
-               Exosphere.Bsky.Embed.Record
+               Exosphere.Bsky.Embed.Record,
+               Exosphere.Community.Lexicon.Interaction.Like
              ]),
              modules
            )
@@ -55,10 +56,11 @@ defmodule Exosphere.Lexicon.GeneratorTest do
     {:ok, lexicons} = Parser.parse_dir("priv/lexicons")
     paths = MapSet.new(Generator.generate(lexicons), & &1.path)
 
-    assert "feed/post.ex" in paths
-    assert "feed/post/reply_ref.ex" in paths
-    assert "richtext/facet.ex" in paths
-    assert "richtext/facet/byte_slice.ex" in paths
-    assert "embed/images.ex" in paths
+    assert "bsky/feed/post.ex" in paths
+    assert "bsky/feed/post/reply_ref.ex" in paths
+    assert "bsky/richtext/facet.ex" in paths
+    assert "bsky/richtext/facet/byte_slice.ex" in paths
+    assert "bsky/embed/images.ex" in paths
+    assert "community/lexicon/interaction/like.ex" in paths
   end
 end

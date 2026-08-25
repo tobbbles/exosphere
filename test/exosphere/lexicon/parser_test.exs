@@ -14,7 +14,8 @@ defmodule Exosphere.Lexicon.ParserTest do
                "app.bsky.embed.images",
                "app.bsky.embed.record",
                "app.bsky.feed.post",
-               "app.bsky.richtext.facet"
+               "app.bsky.richtext.facet",
+               "community.lexicon.interaction.like"
              ]
     end
 
