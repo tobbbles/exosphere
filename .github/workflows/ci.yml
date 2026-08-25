@@ -13,6 +13,31 @@ permissions:
   contents: read
 
 jobs:
+  pr-title:
+    name: PR title (Conventional Commits)
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    permissions:
+      pull-requests: read
+    steps:
+      - uses: amannn/action-semantic-pull-request@v6
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          # Types map to changelog groups in tasks/mix/tasks/changelog/add.ex
+          types: |
+            feat
+            fix
+            perf
+            refactor
+            docs
+            build
+            ci
+            test
+            chore
+            style
+            revert
+
   test:
     name: Test (Elixir ${{ matrix.elixir }} / OTP ${{ matrix.otp }})
     runs-on: ubuntu-latest
@@ -26,16 +51,13 @@ jobs:
       MIX_ENV: test
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - uses: erlef/setup-beam@v1
         with:
           elixir-version: ${{ matrix.elixir }}
           otp-version: ${{ matrix.otp }}
           version-type: loose
-          hex-cache: true
-          rebar-cache: true
-          mix-cache: true
 
       - name: Install deps
         run: mix deps.get
@@ -54,16 +76,13 @@ jobs:
       MIX_ENV: test
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - uses: erlef/setup-beam@v1
         with:
           elixir-version: "1.19"
           otp-version: "27"
           version-type: loose
-          hex-cache: true
-          rebar-cache: true
-          mix-cache: true
 
       - name: Install deps
         run: mix deps.get
@@ -80,19 +99,17 @@ jobs:
 
     env:
       MIX_ENV: test
-      PLT_CACHE_VERSION: v2
+      # v3: rebuilt with :mix in the PLT (plt_add_apps) for the tasks/ modules
+      PLT_CACHE_VERSION: v3
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - uses: erlef/setup-beam@v1
         with:
           elixir-version: "1.19"
           otp-version: "27"
           version-type: loose
-          hex-cache: true
-          rebar-cache: true
-          mix-cache: true
 
       - name: Compute toolchain versions (for PLT cache key)
         id: toolchain
@@ -103,7 +120,7 @@ jobs:
           echo "erts=$(erl -noshell -eval 'io:format(\"~s\", [erlang:system_info(version)]), init:stop().' )" >> "$GITHUB_OUTPUT"
 
       - name: Restore PLT cache
-        uses: actions/cache@v4
+        uses: actions/cache@v6
         with:
           path: priv/plts
           key: ${{ runner.os }}-dialyzer-${{ env.PLT_CACHE_VERSION }}-elixir-${{ steps.toolchain.outputs.elixir }}-erts-${{ steps.toolchain.outputs.erts }}-${{ hashFiles('**/mix.lock') }}

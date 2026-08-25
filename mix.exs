@@ -4,7 +4,7 @@ defmodule Exosphere.MixProject do
   def project do
     [
       app: :exosphere,
-      version: "0.2.0",
+      version: "0.2.1",
       elixir: "~> 1.19",
       elixirc_paths: elixirc_paths(Mix.env()),
       start_permanent: Mix.env() == :prod,
@@ -17,12 +17,17 @@ defmodule Exosphere.MixProject do
       package: package(),
       dialyzer: [
         # Put the project-level PLT in the priv/ directory (instead of the default _build/ location)
-        plt_file: {:no_warn, "priv/plts/project.plt"}
+        plt_file: {:no_warn, "priv/plts/project.plt"},
+        # The maintenance tasks in tasks/ call Mix.raise/Mix.shell/OptionParser
+        plt_add_apps: [:mix]
       ]
     ]
   end
 
-  defp elixirc_paths(:test), do: ["lib", "test/support"]
+  # The tasks/ directory holds repo-maintenance Mix tasks (changelog.add,
+  # changelog.cut); compiling them only in :test keeps them out of the Hex
+  # package and the published docs.
+  defp elixirc_paths(:test), do: ["lib", "tasks", "test/support"]
   defp elixirc_paths(_), do: ["lib"]
 
   # Run "mix help compile.app" to learn about applications.
@@ -59,7 +64,7 @@ defmodule Exosphere.MixProject do
   defp package do
     [
       name: "exosphere",
-      files: ["lib", "mix.exs", "README.md", "LICENSE"],
+      files: ["lib", "mix.exs", "README.md", "LICENSE", "CHANGELOG.md"],
       maintainers: ["Toby Archer"],
       licenses: ["MIT"],
       links: %{"GitHub" => "https://github.com/tobbbles/exosphere"}

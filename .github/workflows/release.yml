@@ -1,10 +1,10 @@
 name: Release
 
+# Triggered by the GitHub Release that "Cut release" creates; the tag always
+# points at the release commit on main.
 on:
-  push:
-    tags:
-      - "v*"
-  workflow_dispatch:
+  release:
+    types: [published]
 
 permissions:
   contents: read
@@ -19,7 +19,7 @@ jobs:
       HEX_API_KEY: ${{ secrets.HEX_API_KEY }}
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           fetch-depth: 0
 
@@ -28,18 +28,17 @@ jobs:
           elixir-version: "1.19"
           otp-version: "27"
           version-type: loose
-          hex-cache: true
-          rebar-cache: true
-          mix-cache: true
 
       - name: Install deps
         run: mix deps.get
 
-      - name: Publish package
-        run: mix hex.publish --yes
-
+      # Build docs before publishing: a docs failure should abort the run
+      # while nothing irreversible has happened yet.
       - name: Build docs (ExDoc)
         run: mix docs
+
+      - name: Publish package
+        run: mix hex.publish --yes
 
       - name: Publish docs
         run: mix hex.publish docs --yes
