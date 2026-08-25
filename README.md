@@ -97,6 +97,28 @@ defmodule MyApp.Firehose do
 end
 ```
 
+## Verifying repositories
+
+You don't have to trust a PDS's word for what's in a repository. Exosphere can
+fetch a full repository archive and prove it against the key the account
+advertises in its DID document:
+
+```elixir
+{:ok, %{rev: rev, records: records}} =
+  Exosphere.ATProto.Repo.verify_checkout("https://bsky.network", "did:plc:abc123")
+```
+
+That one call downloads `com.atproto.sync.getRepo`, reads every record out of
+the Merkle Search Tree, confirms the record set matches the commit's signed
+root, resolves the DID document, and verifies the commit signature. If it
+returns `{:ok, _}`, the records provably come from the account controlling
+that DID.
+
+For firehose events, `Exosphere.ATProto.Firehose.Message.verify_commit/1`
+checks a `#commit` message's embedded blocks against its signed MST root —
+see the [Firehose guide](firehose.html) for when that succeeds (incremental
+CARs only carry new blocks) and how to build on it.
+
 ## Notes
 
 - The consumer will attempt to **reconnect** on disconnects and errors.

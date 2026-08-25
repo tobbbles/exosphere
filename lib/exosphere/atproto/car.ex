@@ -52,7 +52,7 @@ defmodule Exosphere.ATProto.CAR do
   Decode a CAR file into its header roots and block map.
 
   Returns `{:ok, %{roots: [%CID{}, ...], blocks: %{cid => data}}}`. The roots
-  come from the CAR header (CID links decoded via `CBOR.transform_links/1`);
+  come from the CAR header (CID links decoded via `Exosphere.ATProto.CBOR.transform_links/1`);
   for atproto repository archives the single root is the CID of the top commit
   block, which is itself present in `blocks`.
   """
