@@ -52,19 +52,26 @@ jobs:
         run: |
           set -euo pipefail
           mkdir -p ~/.ssh
-          # Secrets pasted as a single line keep literal \n sequences; convert
-          # them back to newlines and strip CR / stray quotes so libcrypto
-          # can actually parse the key (OpenSSH or PKCS#8/PEM).
+          # Secrets pasted as a single line keep literal \n (and sometimes
+          # \r\n) sequences; convert them back and strip CR / stray quotes so
+          # libcrypto can parse the key (OpenSSH or PKCS#8/PEM).
           printf '%s' "$EXOSPHERE_DEPLOY_KEY" \
-            | sed -e 's/^"//' -e 's/"$//' -e 's/\\n/\n/g' \
+            | sed -e 's/^"//' -e 's/"$//' -e 's/\\r//g' -e 's/\\n/\n/g' \
             | tr -d '\r' > ~/.ssh/id_ed25519
           # Key parsers reject files without a final newline.
           if [ -n "$(tail -c 1 ~/.ssh/id_ed25519)" ]; then
             echo >> ~/.ssh/id_ed25519
           fi
           chmod 600 ~/.ssh/id_ed25519
-          if ! ssh-keygen -y -f ~/.ssh/id_ed25519 >/dev/null 2>&1; then
-            echo "::error::EXOSPHERE_DEPLOY_KEY is not a parsable private key (OpenSSH or PKCS#8/PEM, no passphrase). Re-paste the key into the secret with newlines preserved, or as a single line with literal \n sequences."
+          if ! ssh-keygen -y -f ~/.ssh/id_ed25519 >/dev/null 2>~/key_err.txt </dev/null; then
+            echo "::error::EXOSPHERE_DEPLOY_KEY is not a parsable private key."
+            echo "Diagnostics (no secret material): $(wc -c < ~/.ssh/id_ed25519) bytes, $(wc -l < ~/.ssh/id_ed25519) lines, header: $(head -1 ~/.ssh/id_ed25519)"
+            head -1 ~/key_err.txt
+            if head -1 ~/.ssh/id_ed25519 | grep -qE '^(ssh-|ecdsa-|sk-)'; then
+              echo "Hint: this looks like a PUBLIC key — the secret must hold the private half of the deploy key pair."
+            elif grep -qi 'passphrase' ~/key_err.txt; then
+              echo "Hint: the key appears to be passphrase-protected — deploy keys must be generated without a passphrase."
+            fi
             exit 1
           fi
           ssh-keyscan -t ed25519 github.com >> ~/.ssh/known_hosts 2>/dev/null

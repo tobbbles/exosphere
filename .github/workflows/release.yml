@@ -1,7 +1,9 @@
 name: Release
 
 # Reusable publish job, invoked by "Cut release" in the same workflow run —
-# a GITHUB_TOKEN-created release would not trigger an `on: release` workflow.
+# a GITHUB_TOKEN-created release would not trigger an `on: release` workflow,
+# hence the in-run call. Releases created by a user (e.g. a manual cut) do
+# fire the trigger below.
 on:
   workflow_call:
     inputs:
@@ -9,6 +11,8 @@ on:
         description: The git ref to publish (the release commit on main)
         required: true
         type: string
+  release:
+    types: [published]
 
 permissions:
   contents: read
@@ -25,7 +29,9 @@ jobs:
     steps:
       - uses: actions/checkout@v7
         with:
-          ref: ${{ inputs.ref }}
+          # Via workflow_call: the release commit passed by "Cut release".
+          # Via on: release: github.ref is the tag, which is that same commit.
+          ref: ${{ inputs.ref || github.ref }}
           fetch-depth: 0
 
       - uses: erlef/setup-beam@v1
