@@ -80,7 +80,7 @@ jobs:
 
     env:
       MIX_ENV: test
-      PLT_CACHE_VERSION: v1
+      PLT_CACHE_VERSION: v2
 
     steps:
       - uses: actions/checkout@v4
@@ -107,8 +107,6 @@ jobs:
         with:
           path: priv/plts
           key: ${{ runner.os }}-dialyzer-${{ env.PLT_CACHE_VERSION }}-elixir-${{ steps.toolchain.outputs.elixir }}-erts-${{ steps.toolchain.outputs.erts }}-${{ hashFiles('**/mix.lock') }}
-          restore-keys: |
-            ${{ runner.os }}-dialyzer-${{ env.PLT_CACHE_VERSION }}-
 
       - name: Install deps
         run: mix deps.get
@@ -123,7 +121,10 @@ jobs:
           if [ -f priv/plts/project.plt ]; then
             if ! dialyzer --check_plt --plt priv/plts/project.plt; then
               echo "Cached PLT is incompatible/old; deleting and rebuilding..."
-              rm -f priv/plts/project.plt
+              # Remove the whole directory: the project.plt.hash sidecar must go too,
+              # otherwise mix dialyzer --plt sees a matching hash and skips rebuilding
+              # the deleted project.plt.
+              rm -rf priv/plts
             fi
           fi
 
