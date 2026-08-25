@@ -19,16 +19,18 @@ defmodule Exosphere.Community.Preference.Ai.PreferenceSet do
   """
 
   alias Exosphere.Bsky.Runtime
+
+  alias Exosphere.Community.Preference.Ai.Preference
   @type_id "community.lexicon.preference.ai#preferenceSet"
 
   @enforce_keys []
   defstruct embedding: nil, inference: nil, synthetic_content: nil, training: nil, extra: %{}
 
   @type t :: %__MODULE__{
-          embedding: Exosphere.Community.Preference.Ai.Preference.t() | nil,
-          inference: Exosphere.Community.Preference.Ai.Preference.t() | nil,
-          synthetic_content: Exosphere.Community.Preference.Ai.Preference.t() | nil,
-          training: Exosphere.Community.Preference.Ai.Preference.t() | nil
+          embedding: Preference.t() | nil,
+          inference: Preference.t() | nil,
+          synthetic_content: Preference.t() | nil,
+          training: Preference.t() | nil
         }
 
   @fields %{

@@ -16,13 +16,15 @@ defmodule Exosphere.Bsky.Embed.External.External do
   """
 
   alias Exosphere.Bsky.Runtime
+
+  alias Exosphere.ATProto.Repo.StrongRef
   @type_id "app.bsky.embed.external#external"
 
   @enforce_keys [:description, :title, :uri]
   defstruct associated_refs: nil, description: nil, thumb: nil, title: nil, uri: nil, extra: %{}
 
   @type t :: %__MODULE__{
-          associated_refs: [Exosphere.ATProto.Repo.StrongRef.t()] | nil,
+          associated_refs: [StrongRef.t()] | nil,
           description: String.t(),
           thumb: term() | nil,
           title: String.t(),

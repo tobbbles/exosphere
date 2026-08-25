@@ -44,7 +44,10 @@ defmodule Exosphere.Bsky.PostTest do
     test "builds a post from wire-format attrs" do
       assert {:ok, %Post{} = post} = Post.new(post_attrs())
       assert post.text == "Hello @alice.bsky.social from the exosphere!"
-      assert %StrongRef{cid: "bafyreihdwdcefgh4dqkjv67uzcmw7ojee6xedzdetojuzjevtenxquvyku"} = post.reply.parent
+
+      assert %StrongRef{cid: "bafyreihdwdcefgh4dqkjv67uzcmw7ojee6xedzdetojuzjevtenxquvyku"} =
+               post.reply.parent
+
       assert post.created_at == @created_at
       assert post.langs == ["en"]
       assert [%Facet{} = facet] = post.facets
@@ -78,7 +81,11 @@ defmodule Exosphere.Bsky.PostTest do
                Post.new(%{"text" => "hi", "createdAt" => "not-a-date"})
 
       assert {:error, [{"langs[1]", "is not a valid language"}]} =
-               Post.new(%{"text" => "hi", "createdAt" => @created_at, "langs" => ["en", "not a language!"]})
+               Post.new(%{
+                 "text" => "hi",
+                 "createdAt" => @created_at,
+                 "langs" => ["en", "not a language!"]
+               })
     end
 
     test "validates nested facets" do
@@ -120,12 +127,16 @@ defmodule Exosphere.Bsky.PostTest do
 
       [facet_map] = map["facets"]
       assert facet_map["index"]["byteStart"] == 6
+
       assert facet_map["features"] == [
                %{"$type" => "app.bsky.richtext.facet#mention", "did" => "did:plc:abc123def456"}
              ]
 
       # strongRef is generated: encodes as uri/cid (plain refs carry no $type)
-      assert %{"uri" => "at://did:plc:root/app.bsky.feed.post/3jzfcijpj2z2a", "cid" => "bafyreihdwdcefgh4dqkjv67uzcmw7ojee6xedzdetojuzjevtenxquvyku"} = map["reply"]["root"]
+      assert %{
+               "uri" => "at://did:plc:root/app.bsky.feed.post/3jzfcijpj2z2a",
+               "cid" => "bafyreihdwdcefgh4dqkjv67uzcmw7ojee6xedzdetojuzjevtenxquvyku"
+             } = map["reply"]["root"]
     end
 
     test "re-emits unknown fields" do
@@ -135,13 +146,18 @@ defmodule Exosphere.Bsky.PostTest do
 
     test "embed unions carry their $type" do
       {:ok, embed} =
-        Images.new(%{"images" => [%{"image" => %{"$type" => "blob", "ref" => "bafy..."}, "alt" => "cat"}]})
+        Images.new(%{
+          "images" => [%{"image" => %{"$type" => "blob", "ref" => "bafy..."}, "alt" => "cat"}]
+        })
 
       {:ok, post} = Post.new(%{text: "cat pic", created_at: @created_at, embed: embed})
       map = Post.to_map(post)
 
       assert map["embed"]["$type"] == "app.bsky.embed.images"
-      assert map["embed"]["images"] == [%{"image" => %{"$type" => "blob", "ref" => "bafy..."}, "alt" => "cat"}]
+
+      assert map["embed"]["images"] == [
+               %{"image" => %{"$type" => "blob", "ref" => "bafy..."}, "alt" => "cat"}
+             ]
     end
   end
 

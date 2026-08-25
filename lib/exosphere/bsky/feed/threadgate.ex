@@ -15,6 +15,11 @@ defmodule Exosphere.Bsky.Feed.Threadgate do
   """
 
   alias Exosphere.Bsky.Runtime
+
+  alias Exosphere.Bsky.Feed.Threadgate.FollowerRule
+  alias Exosphere.Bsky.Feed.Threadgate.FollowingRule
+  alias Exosphere.Bsky.Feed.Threadgate.ListRule
+  alias Exosphere.Bsky.Feed.Threadgate.MentionRule
   @type_id "app.bsky.feed.threadgate"
   @variants_allow [
     {"app.bsky.feed.threadgate#mentionRule", Exosphere.Bsky.Feed.Threadgate.MentionRule},
@@ -28,14 +33,7 @@ defmodule Exosphere.Bsky.Feed.Threadgate do
 
   @type t :: %__MODULE__{
           allow:
-            [
-              Exosphere.Bsky.Feed.Threadgate.MentionRule.t()
-              | Exosphere.Bsky.Feed.Threadgate.FollowerRule.t()
-              | Exosphere.Bsky.Feed.Threadgate.FollowingRule.t()
-              | Exosphere.Bsky.Feed.Threadgate.ListRule.t()
-              | map()
-            ]
-            | nil,
+            [MentionRule.t() | FollowerRule.t() | FollowingRule.t() | ListRule.t() | map()] | nil,
           created_at: String.t(),
           hidden_replies: [String.t()] | nil,
           post: String.t()
@@ -123,36 +121,16 @@ defmodule Exosphere.Bsky.Feed.Threadgate do
   defp encode_allow(values), do: Enum.map(values, &encode_allow_item/1)
 
   defp encode_allow_item(v) when is_struct(v, Exosphere.Bsky.Feed.Threadgate.MentionRule),
-    do:
-      Map.put(
-        Exosphere.Bsky.Feed.Threadgate.MentionRule.to_map(v),
-        "$type",
-        "app.bsky.feed.threadgate#mentionRule"
-      )
+    do: Map.put(MentionRule.to_map(v), "$type", "app.bsky.feed.threadgate#mentionRule")
 
   defp encode_allow_item(v) when is_struct(v, Exosphere.Bsky.Feed.Threadgate.FollowerRule),
-    do:
-      Map.put(
-        Exosphere.Bsky.Feed.Threadgate.FollowerRule.to_map(v),
-        "$type",
-        "app.bsky.feed.threadgate#followerRule"
-      )
+    do: Map.put(FollowerRule.to_map(v), "$type", "app.bsky.feed.threadgate#followerRule")
 
   defp encode_allow_item(v) when is_struct(v, Exosphere.Bsky.Feed.Threadgate.FollowingRule),
-    do:
-      Map.put(
-        Exosphere.Bsky.Feed.Threadgate.FollowingRule.to_map(v),
-        "$type",
-        "app.bsky.feed.threadgate#followingRule"
-      )
+    do: Map.put(FollowingRule.to_map(v), "$type", "app.bsky.feed.threadgate#followingRule")
 
   defp encode_allow_item(v) when is_struct(v, Exosphere.Bsky.Feed.Threadgate.ListRule),
-    do:
-      Map.put(
-        Exosphere.Bsky.Feed.Threadgate.ListRule.to_map(v),
-        "$type",
-        "app.bsky.feed.threadgate#listRule"
-      )
+    do: Map.put(ListRule.to_map(v), "$type", "app.bsky.feed.threadgate#listRule")
 
   defp encode_allow_item(v) when is_map(v), do: v
 end

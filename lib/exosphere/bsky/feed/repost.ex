@@ -14,16 +14,14 @@ defmodule Exosphere.Bsky.Feed.Repost do
   """
 
   alias Exosphere.Bsky.Runtime
+
+  alias Exosphere.ATProto.Repo.StrongRef
   @type_id "app.bsky.feed.repost"
 
   @enforce_keys [:created_at, :subject]
   defstruct created_at: nil, subject: nil, via: nil, extra: %{}
 
-  @type t :: %__MODULE__{
-          created_at: String.t(),
-          subject: Exosphere.ATProto.Repo.StrongRef.t(),
-          via: Exosphere.ATProto.Repo.StrongRef.t() | nil
-        }
+  @type t :: %__MODULE__{created_at: String.t(), subject: StrongRef.t(), via: StrongRef.t() | nil}
 
   @fields %{created_at: "createdAt", subject: "subject", via: "via"}
 

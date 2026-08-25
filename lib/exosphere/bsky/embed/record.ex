@@ -14,12 +14,14 @@ defmodule Exosphere.Bsky.Embed.Record do
   """
 
   alias Exosphere.Bsky.Runtime
+
+  alias Exosphere.ATProto.Repo.StrongRef
   @type_id "app.bsky.embed.record"
 
   @enforce_keys [:record]
   defstruct record: nil, extra: %{}
 
-  @type t :: %__MODULE__{record: Exosphere.ATProto.Repo.StrongRef.t()}
+  @type t :: %__MODULE__{record: StrongRef.t()}
 
   @fields %{record: "record"}
 

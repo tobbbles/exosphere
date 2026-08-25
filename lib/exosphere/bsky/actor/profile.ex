@@ -21,6 +21,9 @@ defmodule Exosphere.Bsky.Actor.Profile do
   """
 
   alias Exosphere.Bsky.Runtime
+
+  alias Exosphere.ATProto.Label.Defs.SelfLabels
+  alias Exosphere.ATProto.Repo.StrongRef
   @type_id "app.bsky.actor.profile"
   @variants_labels [
     {"com.atproto.label.defs#selfLabels", Exosphere.ATProto.Label.Defs.SelfLabels}
@@ -45,9 +48,9 @@ defmodule Exosphere.Bsky.Actor.Profile do
           created_at: String.t() | nil,
           description: String.t() | nil,
           display_name: String.t() | nil,
-          joined_via_starter_pack: Exosphere.ATProto.Repo.StrongRef.t() | nil,
-          labels: Exosphere.ATProto.Label.Defs.SelfLabels.t() | map() | nil,
-          pinned_post: Exosphere.ATProto.Repo.StrongRef.t() | nil,
+          joined_via_starter_pack: StrongRef.t() | nil,
+          labels: SelfLabels.t() | map() | nil,
+          pinned_post: StrongRef.t() | nil,
           pronouns: String.t() | nil,
           website: String.t() | nil
         }
@@ -174,12 +177,7 @@ defmodule Exosphere.Bsky.Actor.Profile do
   defp encode_joined_via_starter_pack(v), do: encode_ref(v, Exosphere.ATProto.Repo.StrongRef)
 
   defp encode_labels(v) when is_struct(v, Exosphere.ATProto.Label.Defs.SelfLabels),
-    do:
-      Map.put(
-        Exosphere.ATProto.Label.Defs.SelfLabels.to_map(v),
-        "$type",
-        "com.atproto.label.defs#selfLabels"
-      )
+    do: Map.put(SelfLabels.to_map(v), "$type", "com.atproto.label.defs#selfLabels")
 
   defp encode_labels(v) when is_map(v), do: v
 

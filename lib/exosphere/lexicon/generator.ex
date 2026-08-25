@@ -110,8 +110,64 @@ defmodule Exosphere.Lexicon.Generator do
     (specs ++ endpoint_specs)
     |> Enum.sort_by(fn spec -> {spec.module |> Module.split() |> length(), spec.module} end)
     |> Enum.map(fn spec ->
-      Map.merge(spec, %{code: format(render(spec, ctx))})
+      Map.merge(spec, %{code: format(aliasify(render(spec, ctx), spec.module))})
     end)
+  end
+
+  # Credo's nested-modules readability check wants top-of-module aliases
+  # instead of fully-qualified references. Rewrite qualified refs to their
+  # alias and emit the alias block; a last-segment name used by two different
+  # modules stays fully qualified to avoid ambiguity.
+  defp aliasify(code, self_module) do
+    self = Atom.to_string(self_module)
+
+    # Only chains of capitalized segments, so a trailing `.to_map` or `.t()`
+    # is never swallowed into the module name
+    candidates =
+      ~r/Exosphere\.(?:ATProto|Bsky|Community)(?:\.[A-Z][A-Za-z0-9]*)+/
+      |> Regex.scan(code, capture: :first)
+      |> List.flatten()
+      |> Enum.uniq()
+      |> Enum.reject(&(&1 == self or &1 == "Exosphere.Bsky.Runtime"))
+      # Only alias modules used qualified (e.g. inside @variants tuples
+      # without a trailing call stays fully-qualified and unaliased)
+      |> Enum.filter(&String.contains?(code, &1 <> "."))
+
+    by_alias = Enum.group_by(candidates, &(String.split(&1, ".") |> List.last()))
+
+    aliasable = for {_alias, [full]} <- by_alias, do: full
+
+    aliasable =
+      aliasable
+      # Drop parents of referenced children: "…Feed.Post" is a substring
+      # of "…Feed.Post.Entity." and would alias the module to itself
+      |> Enum.reject(fn full ->
+        Enum.any?(candidates, &(&1 != full and String.starts_with?(&1, full <> ".")))
+      end)
+      # Longest first so a parent can never clobber a child's replacement
+      |> Enum.sort_by(&String.length/1, :desc)
+
+    code =
+      Enum.reduce(aliasable, code, fn full, code ->
+        alias_name = full |> String.split(".") |> List.last()
+        String.replace(code, full <> ".", alias_name <> ".")
+      end)
+
+    alias_block = Enum.map_join(Enum.sort(aliasable), "\n", &"alias #{&1}")
+
+    case alias_block do
+      # Pre-format code has no indentation yet; format/1 indents afterwards
+      "" ->
+        code
+
+      block ->
+        String.replace(
+          code,
+          "alias Exosphere.Bsky.Runtime\n",
+          "alias Exosphere.Bsky.Runtime\n\n#{block}\n",
+          global: false
+        )
+    end
   end
 
   # Walk refs transitively from all record/object mains, collecting the set
@@ -206,13 +262,27 @@ defmodule Exosphere.Lexicon.Generator do
   end
 
   defp format(code) do
-    code |> Code.format_string!() |> IO.iodata_to_binary()
+    format_until_stable(normalize_newline(code), 0)
   rescue
     _error ->
       reraise ArgumentError,
               [message: "generator produced unparseable code:\n\n#{code}"],
               __STACKTRACE__
   end
+
+  # mix format --check-formatted requires output that is a fixpoint of
+  # Code.format_string!/1: a single pass can shift comment placement and
+  # change line breaking on the next pass. Iterate to the fixpoint.
+  defp format_until_stable(code, iteration) when iteration >= 10, do: code
+
+  defp format_until_stable(code, iteration) do
+    formatted = code |> Code.format_string!() |> IO.iodata_to_binary() |> normalize_newline()
+
+    if formatted == code, do: formatted, else: format_until_stable(formatted, iteration + 1)
+  end
+
+  # mix format requires exactly one trailing newline at EOF
+  defp normalize_newline(code), do: String.trim_trailing(code, "\n") <> "\n"
 
   # --- Endpoint modules -----------------------------------------------------------
 

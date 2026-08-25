@@ -13,12 +13,14 @@ defmodule Exosphere.Community.Calendar.Rsvp do
   """
 
   alias Exosphere.Bsky.Runtime
+
+  alias Exosphere.ATProto.Repo.StrongRef
   @type_id "community.lexicon.calendar.rsvp"
 
   @enforce_keys [:status, :subject]
   defstruct status: nil, subject: nil, extra: %{}
 
-  @type t :: %__MODULE__{status: String.t(), subject: Exosphere.ATProto.Repo.StrongRef.t()}
+  @type t :: %__MODULE__{status: String.t(), subject: StrongRef.t()}
 
   @fields %{status: "status", subject: "subject"}
 

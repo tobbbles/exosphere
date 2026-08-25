@@ -14,12 +14,14 @@ defmodule Exosphere.Bsky.Embed.Images do
   """
 
   alias Exosphere.Bsky.Runtime
+
+  alias Exosphere.Bsky.Embed.Images.Image
   @type_id "app.bsky.embed.images"
 
   @enforce_keys [:images]
   defstruct images: nil, extra: %{}
 
-  @type t :: %__MODULE__{images: [Exosphere.Bsky.Embed.Images.Image.t()]}
+  @type t :: %__MODULE__{images: [Image.t()]}
 
   @fields %{images: "images"}
 

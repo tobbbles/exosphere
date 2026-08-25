@@ -16,16 +16,14 @@ defmodule Exosphere.Bsky.Embed.Images.Image do
   """
 
   alias Exosphere.Bsky.Runtime
+
+  alias Exosphere.Bsky.Embed.Defs.AspectRatio
   @type_id "app.bsky.embed.images#image"
 
   @enforce_keys [:alt, :image]
   defstruct alt: nil, aspect_ratio: nil, image: nil, extra: %{}
 
-  @type t :: %__MODULE__{
-          alt: String.t(),
-          aspect_ratio: Exosphere.Bsky.Embed.Defs.AspectRatio.t() | nil,
-          image: term()
-        }
+  @type t :: %__MODULE__{alt: String.t(), aspect_ratio: AspectRatio.t() | nil, image: term()}
 
   @fields %{alt: "alt", aspect_ratio: "aspectRatio", image: "image"}
 

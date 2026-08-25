@@ -15,6 +15,11 @@ defmodule Exosphere.Bsky.Richtext.Facet do
   """
 
   alias Exosphere.Bsky.Runtime
+
+  alias Exosphere.Bsky.Richtext.Facet.ByteSlice
+  alias Exosphere.Bsky.Richtext.Facet.Link
+  alias Exosphere.Bsky.Richtext.Facet.Mention
+  alias Exosphere.Bsky.Richtext.Facet.Tag
   @type_id "app.bsky.richtext.facet"
   @variants_features [
     {"app.bsky.richtext.facet#mention", Exosphere.Bsky.Richtext.Facet.Mention},
@@ -26,13 +31,8 @@ defmodule Exosphere.Bsky.Richtext.Facet do
   defstruct features: nil, index: nil, extra: %{}
 
   @type t :: %__MODULE__{
-          features: [
-            Exosphere.Bsky.Richtext.Facet.Mention.t()
-            | Exosphere.Bsky.Richtext.Facet.Link.t()
-            | Exosphere.Bsky.Richtext.Facet.Tag.t()
-            | map()
-          ],
-          index: Exosphere.Bsky.Richtext.Facet.ByteSlice.t()
+          features: [Mention.t() | Link.t() | Tag.t() | map()],
+          index: ByteSlice.t()
         }
 
   @fields %{features: "features", index: "index"}
@@ -105,24 +105,13 @@ defmodule Exosphere.Bsky.Richtext.Facet do
   defp encode_features(values), do: Enum.map(values, &encode_features_item/1)
 
   defp encode_features_item(v) when is_struct(v, Exosphere.Bsky.Richtext.Facet.Mention),
-    do:
-      Map.put(
-        Exosphere.Bsky.Richtext.Facet.Mention.to_map(v),
-        "$type",
-        "app.bsky.richtext.facet#mention"
-      )
+    do: Map.put(Mention.to_map(v), "$type", "app.bsky.richtext.facet#mention")
 
   defp encode_features_item(v) when is_struct(v, Exosphere.Bsky.Richtext.Facet.Link),
-    do:
-      Map.put(
-        Exosphere.Bsky.Richtext.Facet.Link.to_map(v),
-        "$type",
-        "app.bsky.richtext.facet#link"
-      )
+    do: Map.put(Link.to_map(v), "$type", "app.bsky.richtext.facet#link")
 
   defp encode_features_item(v) when is_struct(v, Exosphere.Bsky.Richtext.Facet.Tag),
-    do:
-      Map.put(Exosphere.Bsky.Richtext.Facet.Tag.to_map(v), "$type", "app.bsky.richtext.facet#tag")
+    do: Map.put(Tag.to_map(v), "$type", "app.bsky.richtext.facet#tag")
 
   defp encode_features_item(v) when is_map(v), do: v
 

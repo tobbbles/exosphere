@@ -18,6 +18,9 @@ defmodule Exosphere.Bsky.Embed.Video do
   """
 
   alias Exosphere.Bsky.Runtime
+
+  alias Exosphere.Bsky.Embed.Defs.AspectRatio
+  alias Exosphere.Bsky.Embed.Video.Caption
   @type_id "app.bsky.embed.video"
 
   @enforce_keys [:video]
@@ -25,8 +28,8 @@ defmodule Exosphere.Bsky.Embed.Video do
 
   @type t :: %__MODULE__{
           alt: String.t() | nil,
-          aspect_ratio: Exosphere.Bsky.Embed.Defs.AspectRatio.t() | nil,
-          captions: [Exosphere.Bsky.Embed.Video.Caption.t()] | nil,
+          aspect_ratio: AspectRatio.t() | nil,
+          captions: [Caption.t()] | nil,
           presentation: String.t() | nil,
           video: term()
         }

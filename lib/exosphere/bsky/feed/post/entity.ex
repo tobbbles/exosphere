@@ -16,16 +16,14 @@ defmodule Exosphere.Bsky.Feed.Post.Entity do
   """
 
   alias Exosphere.Bsky.Runtime
+
+  alias Exosphere.Bsky.Feed.Post.TextSlice
   @type_id "app.bsky.feed.post#entity"
 
   @enforce_keys [:index, :type, :value]
   defstruct index: nil, type: nil, value: nil, extra: %{}
 
-  @type t :: %__MODULE__{
-          index: Exosphere.Bsky.Feed.Post.TextSlice.t(),
-          type: String.t(),
-          value: String.t()
-        }
+  @type t :: %__MODULE__{index: TextSlice.t(), type: String.t(), value: String.t()}
 
   @fields %{index: "index", type: "type", value: "value"}
 

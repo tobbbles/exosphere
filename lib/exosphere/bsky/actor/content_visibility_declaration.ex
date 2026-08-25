@@ -38,7 +38,9 @@ defmodule Exosphere.Bsky.Actor.ContentVisibilityDeclaration do
       Runtime.get_boolean(
         attrs,
         :hide_from_algorithmic_recommendations,
-        "hideFromAlgorithmicRecommendations", required: true)
+        "hideFromAlgorithmicRecommendations",
+        required: true
+      )
 
     errors = e1
 

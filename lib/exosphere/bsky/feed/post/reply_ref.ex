@@ -13,15 +13,14 @@ defmodule Exosphere.Bsky.Feed.Post.ReplyRef do
   """
 
   alias Exosphere.Bsky.Runtime
+
+  alias Exosphere.ATProto.Repo.StrongRef
   @type_id "app.bsky.feed.post#replyRef"
 
   @enforce_keys [:parent, :root]
   defstruct parent: nil, root: nil, extra: %{}
 
-  @type t :: %__MODULE__{
-          parent: Exosphere.ATProto.Repo.StrongRef.t(),
-          root: Exosphere.ATProto.Repo.StrongRef.t()
-        }
+  @type t :: %__MODULE__{parent: StrongRef.t(), root: StrongRef.t()}
 
   @fields %{parent: "parent", root: "root"}
 

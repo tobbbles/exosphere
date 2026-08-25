@@ -20,6 +20,9 @@ defmodule Exosphere.Bsky.Feed.Generator do
   """
 
   alias Exosphere.Bsky.Runtime
+
+  alias Exosphere.ATProto.Label.Defs.SelfLabels
+  alias Exosphere.Bsky.Richtext.Facet
   @type_id "app.bsky.feed.generator"
   @variants_labels [
     {"com.atproto.label.defs#selfLabels", Exosphere.ATProto.Label.Defs.SelfLabels}
@@ -43,10 +46,10 @@ defmodule Exosphere.Bsky.Feed.Generator do
           content_mode: String.t() | nil,
           created_at: String.t(),
           description: String.t() | nil,
-          description_facets: [Exosphere.Bsky.Richtext.Facet.t()] | nil,
+          description_facets: [Facet.t()] | nil,
           did: String.t(),
           display_name: String.t(),
-          labels: Exosphere.ATProto.Label.Defs.SelfLabels.t() | map() | nil
+          labels: SelfLabels.t() | map() | nil
         }
 
   @fields %{
@@ -169,12 +172,7 @@ defmodule Exosphere.Bsky.Feed.Generator do
   defp encode_description_facets_item(v), do: encode_ref(v, Exosphere.Bsky.Richtext.Facet)
 
   defp encode_labels(v) when is_struct(v, Exosphere.ATProto.Label.Defs.SelfLabels),
-    do:
-      Map.put(
-        Exosphere.ATProto.Label.Defs.SelfLabels.to_map(v),
-        "$type",
-        "com.atproto.label.defs#selfLabels"
-      )
+    do: Map.put(SelfLabels.to_map(v), "$type", "com.atproto.label.defs#selfLabels")
 
   defp encode_labels(v) when is_map(v), do: v
 end

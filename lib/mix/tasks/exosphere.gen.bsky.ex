@@ -11,6 +11,8 @@ defmodule Mix.Tasks.Exosphere.Gen.Bsky do
 
   use Mix.Task
 
+  alias Mix.Tasks.Exosphere.Gen.Lexicons
+
   @deprecated "Use mix exosphere.gen.lexicons instead"
 
   @impl Mix.Task
@@ -20,6 +22,6 @@ defmodule Mix.Tasks.Exosphere.Gen.Bsky do
         "or mix exosphere.gen.lexicons app.bsky to scope to app.bsky"
     )
 
-    Mix.Tasks.Exosphere.Gen.Lexicons.run(args)
+    Lexicons.run(args)
   end
 end

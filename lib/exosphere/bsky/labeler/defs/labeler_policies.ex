@@ -13,13 +13,15 @@ defmodule Exosphere.Bsky.Labeler.Defs.LabelerPolicies do
   """
 
   alias Exosphere.Bsky.Runtime
+
+  alias Exosphere.ATProto.Label.Defs.LabelValueDefinition
   @type_id "app.bsky.labeler.defs#labelerPolicies"
 
   @enforce_keys [:label_values]
   defstruct label_value_definitions: nil, label_values: nil, extra: %{}
 
   @type t :: %__MODULE__{
-          label_value_definitions: [Exosphere.ATProto.Label.Defs.LabelValueDefinition.t()] | nil,
+          label_value_definitions: [LabelValueDefinition.t()] | nil,
           label_values: [term()]
         }
 

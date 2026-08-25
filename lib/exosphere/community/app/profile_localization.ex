@@ -21,6 +21,9 @@ defmodule Exosphere.Community.App.ProfileLocalization do
   """
 
   alias Exosphere.Bsky.Runtime
+
+  alias Exosphere.Community.App.Defs.Image
+  alias Exosphere.Community.App.Defs.Link
   @type_id "community.lexicon.app.profileLocalization"
 
   @enforce_keys [:created_at, :locale]
@@ -37,8 +40,8 @@ defmodule Exosphere.Community.App.ProfileLocalization do
   @type t :: %__MODULE__{
           created_at: String.t(),
           description: String.t() | nil,
-          images: [Exosphere.Community.App.Defs.Image.t()] | nil,
-          links: [Exosphere.Community.App.Defs.Link.t()] | nil,
+          images: [Image.t()] | nil,
+          links: [Link.t()] | nil,
           locale: String.t(),
           name: String.t() | nil,
           tags: [String.t()] | nil,

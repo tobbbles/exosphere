@@ -24,6 +24,11 @@ defmodule Exosphere.Community.App.Entry do
   """
 
   alias Exosphere.Bsky.Runtime
+
+  alias Exosphere.Community.App.Defs.AccountIndicator
+  alias Exosphere.Community.App.Defs.Image
+  alias Exosphere.Community.App.Defs.LexiconInterop
+  alias Exosphere.Community.App.Defs.Link
   @type_id "community.lexicon.app.entry"
 
   @enforce_keys [:created_at, :links, :name]
@@ -43,13 +48,13 @@ defmodule Exosphere.Community.App.Entry do
             extra: %{}
 
   @type t :: %__MODULE__{
-          account_indicators: [Exosphere.Community.App.Defs.AccountIndicator.t()] | nil,
+          account_indicators: [AccountIndicator.t()] | nil,
           created_at: String.t(),
           description: String.t() | nil,
-          images: [Exosphere.Community.App.Defs.Image.t()] | nil,
+          images: [Image.t()] | nil,
           langs: [String.t()] | nil,
-          lexicons: Exosphere.Community.App.Defs.LexiconInterop.t() | nil,
-          links: [Exosphere.Community.App.Defs.Link.t()],
+          lexicons: LexiconInterop.t() | nil,
+          links: [Link.t()],
           name: String.t(),
           platforms: [term()] | nil,
           profile_did: String.t() | nil,
