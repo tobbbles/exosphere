@@ -30,7 +30,12 @@ defmodule Mix.Tasks.Exosphere.Lexicons.Sync do
     Mix.Task.run("app.start")
 
     atproto_commit = sync_atproto()
-    atproto_com_count = sync_atproto_com("https://raw.githubusercontent.com/bluesky-social/atproto/#{atproto_commit}/lexicons")
+
+    atproto_com_count =
+      sync_atproto_com(
+        "https://raw.githubusercontent.com/bluesky-social/atproto/#{atproto_commit}/lexicons"
+      )
+
     community_count = sync_community()
     synced_at = Date.utc_today()
     write_sources_md(atproto_commit, synced_at, atproto_com_count, community_count)

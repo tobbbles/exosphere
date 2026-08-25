@@ -25,12 +25,16 @@ defmodule Exosphere.Bsky.Runtime do
   (atom key => wire name); `"$type"` is dropped; unknown keys land in `extra`
   keyed by their original string name.
   """
-  @spec atomize(map(), %{atom() => String.t()}) :: {map(), map()}
+  @spec atomize(map() | keyword(), %{atom() => String.t()}) :: {map(), map()}
+  def atomize(attrs, fields) when is_list(attrs), do: atomize(Map.new(attrs), fields)
+
   def atomize(attrs, fields) when is_map(attrs) do
     inverse = Map.new(fields, fn {k, v} -> {v, k} end)
 
     Enum.reduce(attrs, {%{}, %{}}, fn
-      {"$type", _}, acc -> acc
+      {"$type", _}, acc ->
+        acc
+
       {key, value}, {known, extra} ->
         atom = if is_atom(key), do: key, else: Map.get(inverse, key)
 
@@ -48,9 +52,17 @@ defmodule Exosphere.Bsky.Runtime do
   @spec get_string(map(), atom(), String.t(), keyword()) :: {term(), [error()]}
   def get_string(attrs, key, path, opts \\ []) do
     case fetch(attrs, key, path, opts) do
-      {:ok, nil} -> if(opts[:required] == true and opts[:nullable] != true, do: {nil, [{path, "is required"}]}, else: {nil, []})
-      {:ok, value} -> check_string(value, path, opts)
-      {:error, error} -> {nil, [error]}
+      {:ok, nil} ->
+        if(opts[:required] == true and opts[:nullable] != true,
+          do: {nil, [{path, "is required"}]},
+          else: {nil, []}
+        )
+
+      {:ok, value} ->
+        check_string(value, path, opts)
+
+      {:error, error} ->
+        {nil, [error]}
     end
   end
 
@@ -58,10 +70,20 @@ defmodule Exosphere.Bsky.Runtime do
   @spec get_integer(map(), atom(), String.t(), keyword()) :: {term(), [error()]}
   def get_integer(attrs, key, path, opts \\ []) do
     case fetch(attrs, key, path, opts) do
-      {:ok, nil} -> if(opts[:required] == true and opts[:nullable] != true, do: {nil, [{path, "is required"}]}, else: {nil, []})
-      {:ok, value} when is_integer(value) -> check_integer(value, path, opts)
-      {:ok, value} -> {nil, [{path, "expected integer, got #{type_name(value)}"}]}
-      {:error, error} -> {nil, [error]}
+      {:ok, nil} ->
+        if(opts[:required] == true and opts[:nullable] != true,
+          do: {nil, [{path, "is required"}]},
+          else: {nil, []}
+        )
+
+      {:ok, value} when is_integer(value) ->
+        check_integer(value, path, opts)
+
+      {:ok, value} ->
+        {nil, [{path, "expected integer, got #{type_name(value)}"}]}
+
+      {:error, error} ->
+        {nil, [error]}
     end
   end
 
@@ -69,7 +91,12 @@ defmodule Exosphere.Bsky.Runtime do
   @spec get_boolean(map(), atom(), String.t(), keyword()) :: {term(), [error()]}
   def get_boolean(attrs, key, path, opts \\ []) do
     case fetch(attrs, key, path, opts) do
-      {:ok, nil} -> if(opts[:required] == true and opts[:nullable] != true, do: {nil, [{path, "is required"}]}, else: {nil, []})
+      {:ok, nil} ->
+        if(opts[:required] == true and opts[:nullable] != true,
+          do: {nil, [{path, "is required"}]},
+          else: {nil, []}
+        )
+
       {:ok, value} when is_boolean(value) ->
         case Keyword.get(opts, :const) do
           nil -> {value, []}
@@ -91,12 +118,15 @@ defmodule Exosphere.Bsky.Runtime do
   `item_fn` receives `(value, path)` and returns `{:ok, value}` or
   `{:error, message}`.
   """
-  @spec get_array(map(), atom(), String.t(), keyword(), (term(), String.t() -> {:ok, term()} | {:error, String.t()})) ::
+  @spec get_array(map(), atom(), String.t(), keyword(), (term(), String.t() ->
+                                                           {:ok, term()} | {:error, String.t()})) ::
           {term(), [error()]}
   def get_array(attrs, key, path, opts, item_fn) do
     case fetch(attrs, key, path, opts) do
       {:ok, nil} ->
-        if opts[:required] == true and opts[:nullable] != true, do: {nil, [{path, "is required"}]}, else: {nil, []}
+        if opts[:required] == true and opts[:nullable] != true,
+          do: {nil, [{path, "is required"}]},
+          else: {nil, []}
 
       {:ok, value} when is_list(value) ->
         {values, errors} =
@@ -113,10 +143,14 @@ defmodule Exosphere.Bsky.Runtime do
 
         length_errors =
           []
-          |> maybe_error(opts[:min_length] && length(value) < opts[:min_length], path,
+          |> maybe_error(
+            opts[:min_length] && length(value) < opts[:min_length],
+            path,
             "must have at least #{opts[:min_length]} items"
           )
-          |> maybe_error(opts[:max_length] && length(value) > opts[:max_length], path,
+          |> maybe_error(
+            opts[:max_length] && length(value) > opts[:max_length],
+            path,
             "must have at most #{opts[:max_length]} items"
           )
 
@@ -139,11 +173,23 @@ defmodule Exosphere.Bsky.Runtime do
   @spec get_ref(map(), atom(), String.t(), keyword(), module()) :: {term(), [error()]}
   def get_ref(attrs, key, path, opts, mod) do
     case fetch(attrs, key, path, opts) do
-      {:ok, nil} -> if(opts[:required] == true and opts[:nullable] != true, do: {nil, [{path, "is required"}]}, else: {nil, []})
-      {:ok, %^mod{} = value} -> {value, []}
-      {:ok, value} when is_map(value) -> coerce(mod, value, path)
-      {:ok, value} -> {nil, [{path, "expected #{inspect(mod)} or map, got #{type_name(value)}"}]}
-      {:error, error} -> {nil, [error]}
+      {:ok, nil} ->
+        if(opts[:required] == true and opts[:nullable] != true,
+          do: {nil, [{path, "is required"}]},
+          else: {nil, []}
+        )
+
+      {:ok, %^mod{} = value} ->
+        {value, []}
+
+      {:ok, value} when is_map(value) ->
+        coerce(mod, value, path)
+
+      {:ok, value} ->
+        {nil, [{path, "expected #{inspect(mod)} or map, got #{type_name(value)}"}]}
+
+      {:error, error} ->
+        {nil, [error]}
     end
   end
 
@@ -158,7 +204,9 @@ defmodule Exosphere.Bsky.Runtime do
   def get_union(attrs, key, path, opts, variants) do
     case fetch(attrs, key, path, opts) do
       {:ok, nil} ->
-        if opts[:required] == true and opts[:nullable] != true, do: {nil, [{path, "is required"}]}, else: {nil, []}
+        if opts[:required] == true and opts[:nullable] != true,
+          do: {nil, [{path, "is required"}]},
+          else: {nil, []}
 
       {:ok, value} ->
         case union_item(value, path, variants) do
@@ -198,8 +246,12 @@ defmodule Exosphere.Bsky.Runtime do
   end
 
   def union_item(value, _path, _variants, false) when is_map(value), do: {:ok, value}
-  def union_item(value, path, _variants, true) when is_map(value), do: {:error, {path, "missing \"$type\" for closed union"}}
-  def union_item(value, path, _variants, _closed), do: {:error, {path, "expected map, got #{type_name(value)}"}}
+
+  def union_item(value, path, _variants, true) when is_map(value),
+    do: {:error, {path, "missing \"$type\" for closed union"}}
+
+  def union_item(value, path, _variants, _closed),
+    do: {:error, {path, "expected map, got #{type_name(value)}"}}
 
   @doc "Fetch a field of any shape (unknown, blob, cid-link, bytes, unresolved ref)."
   @spec get_any(map(), atom(), String.t(), keyword()) :: {term(), [error()]}
@@ -213,7 +265,8 @@ defmodule Exosphere.Bsky.Runtime do
   # --- Item validators (for array elements) ------------------------------------
 
   @doc "Validate one string item; opts as for `get_string/4` constraints."
-  @spec item_string(term(), String.t(), keyword()) :: {:ok, term()} | {:error, [{String.t(), String.t()}]}
+  @spec item_string(term(), String.t(), keyword()) ::
+          {:ok, term()} | {:error, [{String.t(), String.t()}]}
   def item_string(value, path, opts) do
     case check_string(value, path, opts) do
       {_v, []} -> {:ok, value}
@@ -222,7 +275,8 @@ defmodule Exosphere.Bsky.Runtime do
   end
 
   @doc "Validate one ref item: struct of `mod` or a map coerced through `mod.new/1`."
-  @spec item_ref(term(), String.t(), module()) :: {:ok, term()} | {:error, [{String.t(), String.t()}]}
+  @spec item_ref(term(), String.t(), module()) ::
+          {:ok, term()} | {:error, [{String.t(), String.t()}]}
   def item_ref(%mod{} = value, _path, mod), do: {:ok, value}
 
   def item_ref(value, path, mod) when is_map(value) do
@@ -244,6 +298,32 @@ defmodule Exosphere.Bsky.Runtime do
       {:error, {path, message}} -> {:error, [{path, message}]}
     end
   end
+
+  @doc """
+  Encode validated params (atom- or string-keyed map) into string values
+  suitable for an XRPC query string: booleans and integers become strings,
+  arrays are comma-joined, nil values are dropped.
+  """
+  @spec encode_query_params(map(), %{atom() => String.t()}) :: %{String.t() => String.t()}
+  def encode_query_params(params, fields \\ %{}) when is_map(params) do
+    inverse = Map.new(fields, fn {k, v} -> {k, v} end)
+
+    params
+    |> Enum.reject(fn {_k, v} -> is_nil(v) end)
+    |> Map.new(fn {k, v} ->
+      # Atom keys carry their snake_case names; map back to wire names
+      name = if is_atom(k), do: Map.get(inverse, k, to_string(k)), else: to_string(k)
+      {name, encode_query_value(v)}
+    end)
+  end
+
+  defp encode_query_value(true), do: "true"
+  defp encode_query_value(false), do: "false"
+  defp encode_query_value(value) when is_integer(value), do: Integer.to_string(value)
+  defp encode_query_value(value) when is_binary(value), do: value
+
+  defp encode_query_value(value) when is_list(value),
+    do: Enum.map_join(value, ",", &encode_query_value/1)
 
   # --- Encoding (to_map) helpers -----------------------------------------------
 
@@ -282,16 +362,24 @@ defmodule Exosphere.Bsky.Runtime do
   defp check_string(value, path, opts) when is_binary(value) do
     errors =
       []
-      |> maybe_error(opts[:min_length] && String.length(value) < opts[:min_length], path,
+      |> maybe_error(
+        opts[:min_length] && String.length(value) < opts[:min_length],
+        path,
         "must be at least #{opts[:min_length]} characters"
       )
-      |> maybe_error(opts[:max_length] && utf16_length(value) > opts[:max_length], path,
+      |> maybe_error(
+        opts[:max_length] && utf16_length(value) > opts[:max_length],
+        path,
         "must be at most #{opts[:max_length]} characters"
       )
-      |> maybe_error(opts[:max_graphemes] && String.length(value) > opts[:max_graphemes], path,
+      |> maybe_error(
+        opts[:max_graphemes] && String.length(value) > opts[:max_graphemes],
+        path,
         "must be at most #{opts[:max_graphemes]} graphemes"
       )
-      |> maybe_error(opts[:enum] && value not in opts[:enum], path,
+      |> maybe_error(
+        opts[:enum] && value not in opts[:enum],
+        path,
         "must be one of #{inspect(opts[:enum])}"
       )
       |> maybe_error(
@@ -314,10 +402,16 @@ defmodule Exosphere.Bsky.Runtime do
   defp check_integer(value, path, opts) do
     errors =
       []
-      |> maybe_error(opts[:minimum] && value < opts[:minimum], path,
+      |> maybe_error(
+        opts[:minimum] && value < opts[:minimum],
+        path,
         "must be >= #{opts[:minimum]}"
       )
-      |> maybe_error(opts[:maximum] && value > opts[:maximum], path, "must be <= #{opts[:maximum]}")
+      |> maybe_error(
+        opts[:maximum] && value > opts[:maximum],
+        path,
+        "must be <= #{opts[:maximum]}"
+      )
 
     {value, errors}
   end
