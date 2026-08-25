@@ -35,7 +35,7 @@ defmodule Exosphere.ATProto do
   |------|-----------|-------|
   | `:nsid` | NSID syntax | `NSID` |
   | `:rkey` | record key syntax | `RecordKey` |
-  | `:at_uri` | `at://` URI syntax | `AtUri` |
+  | `:at_uri` | `at://` URI syntax (errors carry the parse reason, e.g. `:invalid_authority` or `:invalid_rkey`) | `AtUri` |
   | `:tid` | TID syntax | `TID` |
   | `:did` | DID syntax | `Identity.DID` |
   | `:handle` | handle syntax | `Identity.Handle` |
@@ -51,15 +51,28 @@ defmodule Exosphere.ATProto do
       iex> Exosphere.ATProto.validate(:tid, "not-a-tid")
       {:error, :invalid_tid}
 
+      iex> Exosphere.ATProto.validate(:at_uri, "https://example.com")
+      {:error, :invalid_scheme}
+
       iex> Exosphere.ATProto.validate(:record, %{"a" => 1.5})
       {:error, {"a", :non_integral_float}}
+
+      iex> Exosphere.ATProto.validate("nsid", "app.bsky.feed.post")
+      {:error, {:unknown_validation_kind, "nsid"}}
   """
-  @spec validate(validation_kind(), term()) :: :ok | {:error, term()}
+  @spec validate(term(), term()) :: :ok | {:error, term()}
   def validate(kind, value)
 
   def validate(:nsid, value), do: boolean_result(NSID.valid?(value), :invalid_nsid)
   def validate(:rkey, value), do: boolean_result(RecordKey.valid?(value), :invalid_rkey)
-  def validate(:at_uri, value), do: boolean_result(AtUri.valid?(value), :invalid_at_uri)
+
+  def validate(:at_uri, value) do
+    case AtUri.parse(value) do
+      {:ok, _uri} -> :ok
+      {:error, reason} -> {:error, reason}
+    end
+  end
+
   def validate(:tid, value), do: boolean_result(TID.valid?(value), :invalid_tid)
   def validate(:did, value), do: boolean_result(DID.valid?(value), :invalid_did)
   def validate(:handle, value), do: boolean_result(Handle.valid?(value), :invalid_handle)
@@ -74,10 +87,8 @@ defmodule Exosphere.ATProto do
 
   def validate(:record, value), do: DataModel.validate_record(value)
 
-  def validate(kind, _value) when is_atom(kind),
-    do: {:error, {:unknown_validation_kind, kind}}
-
-  def validate(_kind, _value), do: {:error, :unknown_validation_kind}
+  # Both atom and non-atom unknown kinds get the tagged form.
+  def validate(kind, _value), do: {:error, {:unknown_validation_kind, kind}}
 
   defp boolean_result(true, _reason), do: :ok
   defp boolean_result(false, reason), do: {:error, reason}

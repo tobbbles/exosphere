@@ -19,7 +19,7 @@ defmodule Exosphere.ATProto.Identity.DID.Web do
   alias Exosphere.ATProto.HTTP
   alias Exosphere.ATProto.Identity.Document
 
-  @type resolve_opts :: [timeout: pos_integer()]
+  @type resolve_opts :: [timeout: pos_integer(), http_client: module()]
 
   @doc """
   Resolve a did:web to its DID Document.
@@ -27,13 +27,16 @@ defmodule Exosphere.ATProto.Identity.DID.Web do
   ## Options
 
   - `:timeout` - HTTP request timeout in milliseconds (default: 10_000)
+  - `:http_client` - HTTP client module implementing `HTTP.Behaviour`
+    (default: `Exosphere.ATProto.HTTP`; useful for testing)
   """
   @spec resolve(String.t(), resolve_opts()) :: {:ok, Document.t()} | {:error, term()}
   def resolve("did:web:" <> domain, opts \\ []) do
     timeout = Keyword.get(opts, :timeout, 10_000)
+    http = Keyword.get(opts, :http_client, HTTP)
 
     with {:ok, url} <- build_url(domain) do
-      case HTTP.get(url, timeout: timeout) do
+      case http.get(url, timeout: timeout) do
         {:ok, %{status: 200, body: body}} when is_map(body) ->
           Document.parse(body)
 

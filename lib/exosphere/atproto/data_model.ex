@@ -17,7 +17,9 @@ defmodule Exosphere.ATProto.DataModel do
     is not representable in the data model).
   - `{"$link": cid}` — exactly one key; the value must be a string containing
     a valid CID.
-  - `{"$bytes": b64}` — exactly one key; the value must be a base64 string.
+  - `{"$bytes": b64}` — exactly one key; the value must be an unpadded
+    base64 string (standard alphabet, no `=` padding), the form atproto
+    specifies for byte strings.
   - A blob is `{"$type": "blob", "ref": {"$link": …}, "mimeType": string,
     "size": non-negative integer}` with exactly those keys.
   - `$type`, where present, must be a non-empty string (blobs require it).
@@ -128,8 +130,23 @@ defmodule Exosphere.ATProto.DataModel do
     end
   end
 
+  # atproto specifies byte strings as unpadded standard-alphabet base64
+  # (Base.decode64/2 with padding: false tolerates padding, hence the
+  # explicit "=" rejection).
   defp validate_bytes(bytes, path) do
-    if is_binary(bytes), do: :ok, else: {:error, {path, :invalid_field_type}}
+    cond do
+      not is_binary(bytes) ->
+        {:error, {path, :invalid_field_type}}
+
+      String.contains?(bytes, "=") ->
+        {:error, {path, :invalid_base64}}
+
+      match?({:ok, _}, Base.decode64(bytes, padding: false)) ->
+        :ok
+
+      true ->
+        {:error, {path, :invalid_base64}}
+    end
   end
 
   defp validate_object(v, path) do

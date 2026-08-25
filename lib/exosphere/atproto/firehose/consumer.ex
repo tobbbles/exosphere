@@ -14,9 +14,12 @@ defmodule Exosphere.ATProto.Firehose.Consumer do
   from the callback. If your callback can fail, wrap the failing work in a
   `Task` (or your own supervised process) and return the original state.
 
-  The consumer reconnects automatically on disconnect or connection error,
-  replaying the original subscription URL (including its starting cursor). The
-  cursor tracked in state is in-memory only. To resume a stream after a
+  The consumer reconnects automatically on disconnect or connection error.
+  A reconnect re-subscribes at the cursor the consumer has tracked in state
+  (the `seq` of the last message dispatched), so it resumes where the stream
+  left off rather than replaying from the original starting cursor. Reconnect
+  attempts are spaced out with linear backoff plus jitter, capped at a few
+  seconds. The tracked cursor is in-memory only — to resume a stream after a
   restart, persist `msg.seq` from your callback and pass it back via the
   `:cursor` option on next start.
   """
@@ -37,12 +40,13 @@ defmodule Exosphere.ATProto.Firehose.Consumer do
         }
 
   @type t :: %__MODULE__{
+          relay_url: String.t(),
           cursor: integer() | nil,
           on_event: (map(), t() -> t()),
           stats: stats()
         }
 
-  defstruct [:cursor, :on_event, :stats]
+  defstruct [:relay_url, :cursor, :on_event, :stats]
 
   @doc """
   Start the firehose consumer.
@@ -72,6 +76,7 @@ defmodule Exosphere.ATProto.Firehose.Consumer do
     uri = build_subscription_url(relay_url, cursor)
 
     state = %__MODULE__{
+      relay_url: relay_url,
       cursor: cursor,
       on_event: on_event,
       stats: %{
@@ -101,9 +106,9 @@ defmodule Exosphere.ATProto.Firehose.Consumer do
     }
   end
 
-  # WebSockex callbacks. Returning {:ok, state} from handle_disconnect makes
-  # WebSockex reconnect to the original URL automatically; WebSockex also
-  # answers protocol-level pings for us.
+  # WebSockex callbacks. handle_disconnect/2 returns {:reconnect, conn, state}
+  # (or {:ok, state} to terminate) — see the WebSockex docs for the contract;
+  # WebSockex also answers protocol-level pings for us.
 
   @impl WebSockex
   def handle_connect(_conn, state) do
@@ -130,12 +135,44 @@ defmodule Exosphere.ATProto.Firehose.Consumer do
   end
 
   @impl WebSockex
-  def handle_disconnect(%{reason: reason}, state) do
-    Logger.warning("[Exosphere.ATProto.Firehose] Disconnected: #{inspect(reason)}, reconnecting")
-    {:ok, state}
+  def handle_disconnect(%{reason: reason, attempt_number: attempt}, state) do
+    Logger.warning(
+      "[Exosphere.ATProto.Firehose] Disconnected: #{inspect(reason)}, reconnecting (attempt ##{attempt})"
+    )
+
+    backoff_sleep(attempt)
+
+    # Re-target the subscription at the tracked cursor so a reconnect resumes
+    # where the stream left off instead of replaying from the original
+    # starting cursor. {:reconnect, state} alone would re-open the original
+    # URL, cursor and all.
+    case WebSockex.Conn.new(build_subscription_url(state.relay_url, state.cursor)) do
+      %WebSockex.Conn{} = conn ->
+        {:reconnect, conn, state}
+
+      {:error, error} ->
+        Logger.error(
+          "[Exosphere.ATProto.Firehose] Cannot rebuild subscription URL for #{state.relay_url}: #{inspect(error)}"
+        )
+
+        {:ok, state}
+    end
   end
 
   # Private
+
+  # Linear backoff with jitter, capped: failed reconnects wait progressively
+  # longer (attempt_number comes from WebSockex's disconnect map) so a relay
+  # outage doesn't turn into a hot reconnect loop, and the jitter keeps fleets
+  # of consumers from reconnecting in lockstep.
+  @backoff_base_ms 250
+  @backoff_cap_ms 4_000
+
+  defp backoff_sleep(attempt) do
+    backoff = min(attempt * @backoff_base_ms, @backoff_cap_ms)
+    jitter = :rand.uniform(div(backoff, 4) + 1)
+    Process.sleep(backoff + jitter)
+  end
 
   defp build_subscription_url(relay, nil),
     do: "#{relay}/xrpc/com.atproto.sync.subscribeRepos"

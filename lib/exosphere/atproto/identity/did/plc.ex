@@ -18,7 +18,11 @@ defmodule Exosphere.ATProto.Identity.DID.PLC do
 
   @plc_directory "https://plc.directory"
 
-  @type resolve_opts :: [timeout: pos_integer(), plc_directory: String.t()]
+  @type resolve_opts :: [
+          timeout: pos_integer(),
+          plc_directory: String.t(),
+          http_client: module()
+        ]
 
   @doc """
   Resolve a did:plc to its DID Document.
@@ -27,16 +31,19 @@ defmodule Exosphere.ATProto.Identity.DID.PLC do
 
   - `:timeout` - HTTP request timeout in milliseconds (default: 10_000)
   - `:plc_directory` - PLC directory URL (default: "https://plc.directory")
+  - `:http_client` - HTTP client module implementing `HTTP.Behaviour`
+    (default: `Exosphere.ATProto.HTTP`; useful for testing)
   """
   @spec resolve(String.t(), resolve_opts()) :: {:ok, Document.t()} | {:error, term()}
   def resolve("did:plc:" <> _ = did, opts \\ []) do
     timeout = Keyword.get(opts, :timeout, 10_000)
     directory = Keyword.get(opts, :plc_directory, @plc_directory)
+    http = Keyword.get(opts, :http_client, HTTP)
     url = "#{directory}/#{did}"
 
     Logger.debug("[DID.PLC] Resolving DID document from: #{url}")
 
-    case HTTP.get(url, timeout: timeout) do
+    case http.get(url, timeout: timeout) do
       {:ok, %{status: 200, body: body}} when is_map(body) ->
         Logger.debug("[DID.PLC] Received DID document for #{did}")
         Document.parse(body)
@@ -86,9 +93,10 @@ defmodule Exosphere.ATProto.Identity.DID.PLC do
   def get_audit_log("did:plc:" <> _ = did, opts \\ []) do
     timeout = Keyword.get(opts, :timeout, 10_000)
     directory = Keyword.get(opts, :plc_directory, @plc_directory)
+    http = Keyword.get(opts, :http_client, HTTP)
     url = "#{directory}/#{did}/log/audit"
 
-    case HTTP.get(url, timeout: timeout) do
+    case http.get(url, timeout: timeout) do
       {:ok, %{status: 200, body: body}} when is_list(body) ->
         {:ok, body}
 
@@ -118,9 +126,10 @@ defmodule Exosphere.ATProto.Identity.DID.PLC do
   def get_data("did:plc:" <> _ = did, opts \\ []) do
     timeout = Keyword.get(opts, :timeout, 10_000)
     directory = Keyword.get(opts, :plc_directory, @plc_directory)
+    http = Keyword.get(opts, :http_client, HTTP)
     url = "#{directory}/#{did}/data"
 
-    case HTTP.get(url, timeout: timeout) do
+    case http.get(url, timeout: timeout) do
       {:ok, %{status: 200, body: body}} when is_map(body) ->
         {:ok, body}
 

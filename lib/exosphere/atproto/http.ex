@@ -113,8 +113,14 @@ defmodule Exosphere.ATProto.HTTP do
           {:ok, response}
       end
     else
-      {:error, _conn, reason} -> {:error, reason}
-      {:error, reason} -> {:error, reason}
+      # Every error path that holds a conn (send/receive failures and receive
+      # timeouts) must close it, or each failed request leaks a socket.
+      {:error, conn, reason} ->
+        Mint.HTTP.close(conn)
+        {:error, reason}
+
+      {:error, reason} ->
+        {:error, reason}
     end
   end
 
@@ -185,12 +191,12 @@ defmodule Exosphere.ATProto.HTTP do
         message -> drain_mailbox([message])
       after
         timeout ->
-          {:error, :timeout}
+          {:error, conn, :timeout}
       end
 
     case messages do
-      {:error, :timeout} ->
-        {:error, :timeout}
+      {:error, conn, :timeout} ->
+        {:error, conn, :timeout}
 
       messages ->
         stream_messages(conn, messages, request_ref, timeout, acc)
@@ -222,8 +228,8 @@ defmodule Exosphere.ATProto.HTTP do
           stream_messages(conn, rest, request_ref, timeout, acc)
         end
 
-      {:error, _conn, reason, _responses} ->
-        {:error, reason}
+      {:error, conn, reason, _responses} ->
+        {:error, conn, reason}
     end
   end
 

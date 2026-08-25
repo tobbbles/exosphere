@@ -179,7 +179,7 @@ defmodule Exosphere.ATProto.Repo do
         Commit.verify_with_document(commit, doc)
 
       true ->
-        with {:ok, doc} <- DID.resolve(did) do
+        with {:ok, doc} <- DID.resolve(did, http_client: Keyword.get(opts, :http, HTTP)) do
           Commit.verify_with_document(commit, doc)
         end
     end
