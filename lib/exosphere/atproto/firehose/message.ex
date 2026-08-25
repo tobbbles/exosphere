@@ -19,6 +19,7 @@ defmodule Exosphere.ATProto.Firehose.Message do
 
   alias Exosphere.ATProto.CAR
   alias Exosphere.ATProto.CID
+  alias Exosphere.ATProto.Repo.Commit
 
   require Logger
 
@@ -195,6 +196,54 @@ defmodule Exosphere.ATProto.Firehose.Message do
 
   defp as_cid(%CID{} = cid), do: cid
   defp as_cid(_), do: nil
+
+  @doc """
+  Verify a `#commit` message's blocks against its signed MST root.
+
+  Decodes the embedded CAR, confirms the CAR's root is the commit the message
+  points at, and checks the commit's record set against its signed `data`
+  root via `Exosphere.ATProto.Repo.Commit.verify_checkout/2`. On success the
+  full `path => CID` record set is returned.
+
+  Firehose commit CARs are *incremental*: they only carry the blocks new in
+  that commit, so unchanged MST subtrees are referenced but not included.
+  This function therefore succeeds only when every referenced node is
+  present — typically an initial snapshot commit (no `since`). For
+  steady-state verification, maintain the record set across commits and
+  rebuild via `MST.build/1` + `Commit.verify_data/2`, or verify a complete
+  snapshot with `Exosphere.ATProto.Repo.verify_checkout/3`.
+
+  This checks structure only; authenticate the signer with
+  `Exosphere.ATProto.Repo.Commit.verify/3` and the repo's DID document.
+
+  Returns `{:ok, records}`, `{:error, :not_a_commit}` for other message
+  types, `{:error, :commit_not_in_blocks}` when the root block is absent,
+  `{:error, :root_mismatch}` when the CAR root disagrees with the message's
+  commit link, or any error from CAR decoding / `verify_checkout/2` (e.g.
+  `{:error, {:missing_block, cid}}` for an incremental CAR).
+  """
+  @spec verify_commit(commit()) :: {:ok, %{String.t() => CID.t()}} | {:error, term()}
+  def verify_commit(%{type: :commit, blocks: blocks, commit: %CID{} = commit_cid})
+      when is_binary(blocks) do
+    with {:ok, %{roots: roots, blocks: block_map}} <- CAR.decode_full(blocks),
+         :ok <- check_root(roots, commit_cid),
+         commit when is_map(commit) <- fetch_commit(block_map, commit_cid) do
+      Commit.verify_checkout(commit, block_map)
+    end
+  end
+
+  def verify_commit(%{type: :commit, commit: nil}), do: {:error, :missing_commit_link}
+  def verify_commit(_), do: {:error, :not_a_commit}
+
+  defp check_root([root], commit_cid) when root == commit_cid, do: :ok
+  defp check_root(_, _), do: {:error, :root_mismatch}
+
+  defp fetch_commit(block_map, commit_cid) do
+    case Map.get(block_map, commit_cid) do
+      commit when is_map(commit) -> commit
+      _ -> {:error, :commit_not_in_blocks}
+    end
+  end
 
   @doc """
   Extract records from a commit's CAR blocks.

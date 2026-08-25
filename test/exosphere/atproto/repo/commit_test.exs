@@ -1,7 +1,7 @@
 defmodule Exosphere.ATProto.Repo.CommitTest do
   use ExUnit.Case, async: true
 
-  alias Exosphere.ATProto.{CBOR, CID, Crypto, MST, TID}
+  alias Exosphere.ATProto.{CAR, CBOR, CID, Crypto, MST, TestRepoCar, TID}
   alias Exosphere.ATProto.Identity.Document
   alias Exosphere.ATProto.Repo.Commit
 
@@ -99,5 +99,49 @@ defmodule Exosphere.ATProto.Repo.CommitTest do
       })
 
     assert :ok = Commit.verify_with_document(commit, doc)
+  end
+
+  describe "verify_checkout/2" do
+    setup do
+      %{fixture: TestRepoCar.build()}
+    end
+
+    test "returns the record set when blocks form the signed tree", %{fixture: f} do
+      {:ok, decoded} = CAR.decode_full(f.car)
+      assert {:ok, records} = Commit.verify_checkout(f.commit, decoded.blocks)
+      assert records == f.records
+    end
+
+    test "accepts encoded node bytes as blocks", %{fixture: f} do
+      # blocks straight from MST.build (bytes), commit from the fixture
+      assert {:ok, records} = Commit.verify_checkout(f.commit, f.node_blocks)
+      assert records == f.records
+    end
+
+    test "rejects a hostile non-canonical tree under the signed root", %{fixture: f} do
+      # A well-formed tree always rebuilds to its own root, so data_mismatch
+      # here means the block store served a tree that is *not* the canonical
+      # MST for its entries. Relabel every entry key and re-store the node
+      # under the signed root CID: the walk succeeds, but the record set
+      # rebuilds to a different root.
+      {:ok, %{blocks: blocks}} = CAR.decode_full(f.car)
+      node = Map.get(blocks, f.root)
+      assert node["e"] != []
+
+      # A plain string "k" encodes as a CBOR text string; the reader accepts
+      # either text or byte strings for key suffixes, so this decodes fine.
+      relabel = fn entry ->
+        entry |> Map.put("p", 0) |> Map.put("k", "com.example.zz/zzz")
+      end
+
+      tampered = Map.put(node, "e", Enum.map(node["e"], relabel))
+      blocks = Map.put(blocks, f.root, CBOR.encode!(tampered))
+
+      assert {:error, :data_mismatch} = Commit.verify_checkout(f.commit, blocks)
+    end
+
+    test "errors when the commit has no data link", %{fixture: f} do
+      assert {:error, :missing_data} = Commit.verify_checkout(%{"did" => "x"}, f.node_blocks)
+    end
   end
 end

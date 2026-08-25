@@ -6,7 +6,7 @@ defmodule Exosphere.ATProto.Repo do
   using OAuth tokens and DPoP proofs.
   """
 
-  alias Exosphere.ATProto.HTTP
+  alias Exosphere.ATProto.{CAR, CID, HTTP, Identity.DID, Repo.Commit}
   require Logger
 
   @doc """
@@ -92,6 +92,97 @@ defmodule Exosphere.ATProto.Repo do
     }
 
     make_authenticated_request(url, body, session)
+  end
+
+  @doc """
+  Fetch a repository from a PDS as a CAR archive and fully verify it.
+
+  Downloads `com.atproto.sync.getRepo`, reads the record set out of the
+  returned MST, checks it against the commit's signed root
+  (`Repo.Commit.verify_checkout/2`), resolves the repo's DID document, and
+  verifies the commit signature (`Repo.Commit.verify/3`).
+
+  This is the trustless read path: rather than trusting the PDS's `getRecord`
+  responses, the whole repository is checked against the key the account
+  advertises in its DID document.
+
+  ## Parameters
+
+  - `pds_url` - Base URL of the PDS (e.g. `"https://bsky.social"`)
+  - `did` - The repository's DID
+  - `opts` - Options:
+    - `:verify_signature` - When `false`, skip DID resolution and signature
+      verification (default: `true`)
+    - `:http` - HTTP client module implementing `HTTP.Behaviour` (default:
+      `HTTP`; useful for testing)
+    - `:did_document` - A pre-resolved `%Identity.Document{}` to verify
+      against, skipping DID resolution (useful for testing)
+
+  ## Returns
+
+  - `{:ok, %{did: did, rev: rev, commit: %CID{}, records: %{path => %CID{}}}}`
+  - `{:error, reason}` — network errors, malformed CAR, MST/root mismatches,
+    or signature failures
+  """
+  @spec verify_checkout(String.t(), DID.did(), keyword()) ::
+          {:ok, %{did: DID.did(), rev: String.t() | nil, commit: CID.t(), records: map()}}
+          | {:error, term()}
+  def verify_checkout(pds_url, did, opts \\ []) do
+    http = Keyword.get(opts, :http, HTTP)
+
+    with {:ok, car} <- fetch_repo_car(http, pds_url, did),
+         {:ok, commit_cid, commit, blocks} <- root_commit(car),
+         {:ok, records} <- Commit.verify_checkout(commit, blocks),
+         :ok <- maybe_verify_signature(commit, did, opts) do
+      {:ok, %{did: did, rev: Map.get(commit, "rev"), commit: commit_cid, records: records}}
+    end
+  end
+
+  defp fetch_repo_car(http, pds_url, did) do
+    url = "#{pds_url}/xrpc/com.atproto.sync.getRepo?" <> URI.encode_query(%{"did" => did})
+
+    case http.get(url) do
+      {:ok, %{status: 200, body: body}} when is_binary(body) ->
+        {:ok, body}
+
+      {:ok, %{status: status}} ->
+        {:error, {:http_error, status}}
+
+      {:error, reason} ->
+        {:error, reason}
+    end
+  end
+
+  # A repository CAR has exactly one root: the top commit block, which is
+  # itself included among the blocks.
+  defp root_commit(car) do
+    with {:ok, %{roots: roots, blocks: blocks}} <- CAR.decode_full(car) do
+      case roots do
+        [%CID{} = commit_cid] ->
+          case Map.get(blocks, commit_cid) do
+            commit when is_map(commit) -> {:ok, commit_cid, commit, blocks}
+            _ -> {:error, {:missing_block, commit_cid}}
+          end
+
+        _ ->
+          {:error, :no_root}
+      end
+    end
+  end
+
+  defp maybe_verify_signature(commit, did, opts) do
+    cond do
+      Keyword.get(opts, :verify_signature, true) == false ->
+        :ok
+
+      doc = Keyword.get(opts, :did_document) ->
+        Commit.verify_with_document(commit, doc)
+
+      true ->
+        with {:ok, doc} <- DID.resolve(did) do
+          Commit.verify_with_document(commit, doc)
+        end
+    end
   end
 
   @doc """

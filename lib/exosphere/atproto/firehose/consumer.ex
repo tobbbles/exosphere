@@ -6,6 +6,9 @@ defmodule Exosphere.ATProto.Firehose.Consumer do
   decodes frames into structured messages, and dispatches those messages via an
   `:on_event` callback.
 
+  See the [Firehose guide](firehose.html) for a full walkthrough —
+  message types, record extraction, verification, cursors, and production tips.
+
   The `:on_event` callback receives `(message, state)` and must return an
   updated state. **It must not raise** — the consumer does not catch exceptions
   from the callback. If your callback can fail, wrap the failing work in a

@@ -41,6 +41,7 @@ defmodule Exosphere.ATProto.MST do
       "bafyreie5737gdxlw5i64vzichcalba3z2v5n6icifvx5xytvske7mr3hpm"
   """
 
+  alias Exosphere.ATProto.CAR
   alias Exosphere.ATProto.CBOR, as: DagCBOR
   alias Exosphere.ATProto.{CID, NSID, RecordKey}
 
@@ -152,41 +153,79 @@ defmodule Exosphere.ATProto.MST do
     end
   end
 
+  @doc """
+  Read the record set from a repository CAR archive.
+
+  Accepts raw CAR bytes (e.g. the body of `com.atproto.sync.getRepo`) or the
+  `%{roots: [...], blocks: ...}` map returned by `CAR.decode_full/1`. A
+  repository CAR is rooted at its top commit block; the tree is read from the
+  commit's `data` (MST root) link.
+
+  The archive must contain every MST node reachable from that root —
+  full-repo CARs do; incremental firehose commit CARs only carry new blocks
+  and will report `{:error, {:missing_block, cid}}` for unchanged subtrees.
+  """
+  @spec from_repo_car(binary() | %{roots: [CID.t()], blocks: %{CID.t() => binary() | map()}}) ::
+          {:ok, %{key() => CID.t()}} | {:error, term()}
+  def from_repo_car(car) when is_binary(car) do
+    with {:ok, %{roots: roots, blocks: blocks}} <- CAR.decode_full(car) do
+      from_repo_car(%{roots: roots, blocks: blocks})
+    end
+  end
+
+  def from_repo_car(%{roots: roots, blocks: blocks}) when is_map(blocks) do
+    with [%CID{} = commit_cid] <- roots,
+         commit when is_map(commit) <-
+           Map.get(blocks, commit_cid) || {:error, {:missing_block, commit_cid}},
+         %CID{} = data <- Map.get(commit, "data") || {:error, :missing_data} do
+      read(data, blocks)
+    else
+      [] -> {:error, :no_root}
+      [_ | _] -> {:error, :multiple_roots}
+      {:error, _} = error -> error
+      _ -> {:error, :invalid_commit}
+    end
+  end
+
   # --- Build internals ---------------------------------------------------------
 
   defp top_layer(triples) do
     triples |> Enum.map(fn {_k, depth, _v} -> depth end) |> Enum.max()
   end
 
-  # Build the node(s) covering `triples` ({key, depth, value}, sorted by key) at
-  # `layer`. If no key sits exactly at this layer, descend (no empty intermediate
-  # nodes are created). Depths are precomputed once by normalize/1.
+  # Build the node covering `triples` ({key, depth, value}, sorted by key) at
+  # `layer`: its entries are the keys with depth == layer, with the gaps between
+  # them (and before the first) as subtrees at `layer - 1`. When no key sits at
+  # this layer the node is an *empty shell* (`e: []`, only a left link) — the
+  # reference tree keeps these shells so that every subtree link descends
+  # exactly one layer. Depths are precomputed once by normalize/1.
   defp build_layer(triples, layer, blocks) do
-    if Enum.any?(triples, fn {_k, depth, _v} -> depth == layer end) do
-      {left, segments} = split_segments(triples, layer)
-      {l_cid, blocks} = subtree(left, layer, blocks)
+    {left, segments} = split_segments(triples, layer)
+    {l_cid, blocks} = subtree(left, layer, blocks)
 
-      {entries, blocks} =
-        Enum.reduce(segments, {[], blocks}, fn {{key, _depth, value}, between}, {acc, blocks} ->
-          {t_cid, blocks} = subtree(between, layer, blocks)
-          {[%{key: key, value: value, tree: t_cid} | acc], blocks}
-        end)
+    {entries, blocks} =
+      Enum.reduce(segments, {[], blocks}, fn {{key, _depth, value}, between}, {acc, blocks} ->
+        {t_cid, blocks} = subtree(between, layer, blocks)
+        {[%{key: key, value: value, tree: t_cid} | acc], blocks}
+      end)
 
-      store(node(l_cid, Enum.reverse(entries)), blocks)
-    else
-      build_layer(triples, layer - 1, blocks)
-    end
+    store(node(l_cid, Enum.reverse(entries)), blocks)
   end
 
   defp subtree([], _layer, blocks), do: {nil, blocks}
   defp subtree(triples, layer, blocks), do: build_layer(triples, layer - 1, blocks)
 
   # Split sorted `triples` around the leaves whose depth == layer:
-  # {triples_before_first_leaf, [{leaf, triples_between_it_and_next_leaf}, ...]}
+  # {triples_before_first_leaf, [{leaf, triples_between_it_and_next_leaf}, ...]}.
+  # When no key sits at this layer, all triples land in `left` and the segments
+  # list is empty (the node becomes a shell).
   defp split_segments(triples, layer) do
     {left, rest} = Enum.split_while(triples, fn {_k, depth, _v} -> depth != layer end)
-    [leaf | tail] = rest
-    {left, segments(leaf, tail, layer, [])}
+
+    case rest do
+      [] -> {left, []}
+      [leaf | tail] -> {left, segments(leaf, tail, layer, [])}
+    end
   end
 
   defp segments(leaf, rest, layer, acc) do
