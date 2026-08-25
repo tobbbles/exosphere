@@ -23,16 +23,32 @@ defmodule Exosphere.Lexicon.Parser do
 
   alias Exosphere.ATProto.NSID
 
-  @type schema_node :: %{
-          kind: node_kind()
-        }
-        | %{optional(atom()) => term()}
+  @type schema_node ::
+          %{
+            kind: node_kind()
+          }
+          | %{optional(atom()) => term()}
 
   @type node_kind ::
-          :string | :token | :integer | :boolean | :bytes | :unknown | :cid_link | :blob
-          | :array | :object | :record | :ref | :union
+          :string
+          | :token
+          | :integer
+          | :boolean
+          | :bytes
+          | :unknown
+          | :cid_link
+          | :blob
+          | :array
+          | :object
+          | :record
+          | :ref
+          | :union
           # XRPC and permission-set defs parse but are not yet generated
-          | :params | :query | :procedure | :permission_set | :subscription
+          | :params
+          | :query
+          | :procedure
+          | :permission_set
+          | :subscription
 
   @type lexicon :: %{
           id: String.t(),
@@ -135,7 +151,7 @@ defmodule Exosphere.Lexicon.Parser do
 
   defp parse_node(%{"type" => "array"} = node) do
     with {:ok, items} <-
-           (if node["items"], do: parse_node(node["items"]), else: {:ok, %{kind: :unknown}}) do
+           if(node["items"], do: parse_node(node["items"]), else: {:ok, %{kind: :unknown}}) do
       {:ok,
        %{
          kind: :array,
@@ -154,7 +170,13 @@ defmodule Exosphere.Lexicon.Parser do
     refs = Map.get(node, "refs", [])
 
     if Enum.all?(refs, &is_binary/1) do
-      {:ok, %{kind: :union, refs: refs, closed: Map.get(node, "closed", false), description: node["description"]}}
+      {:ok,
+       %{
+         kind: :union,
+         refs: refs,
+         closed: Map.get(node, "closed", false),
+         description: node["description"]
+       }}
     else
       {:error, {:invalid_union_refs, refs}}
     end
@@ -200,19 +222,46 @@ defmodule Exosphere.Lexicon.Parser do
   end
 
   defp parse_node(%{"type" => "boolean"} = node),
-    do: {:ok, %{kind: :boolean, const: node["const"], default: node["default"], description: node["description"]}}
+    do:
+      {:ok,
+       %{
+         kind: :boolean,
+         const: node["const"],
+         default: node["default"],
+         description: node["description"]
+       }}
 
   defp parse_node(%{"type" => "bytes"} = node),
-    do: {:ok, %{kind: :bytes, max_length: node["maxLength"], min_length: node["minLength"], description: node["description"]}}
+    do:
+      {:ok,
+       %{
+         kind: :bytes,
+         max_length: node["maxLength"],
+         min_length: node["minLength"],
+         description: node["description"]
+       }}
 
   defp parse_node(%{"type" => "blob"} = node),
-    do: {:ok, %{kind: :blob, accept: node["accept"], max_size: node["maxSize"], description: node["description"]}}
+    do:
+      {:ok,
+       %{
+         kind: :blob,
+         accept: node["accept"],
+         max_size: node["maxSize"],
+         description: node["description"]
+       }}
 
   defp parse_node(%{"type" => "cid-link"} = node),
     do: {:ok, %{kind: :cid_link, description: node["description"]}}
 
   defp parse_node(%{"type" => "unknown"} = node),
     do: {:ok, %{kind: :unknown, description: node["description"]}}
+
+  defp parse_node(%{"type" => "params"} = node) do
+    with {:ok, properties} <- parse_properties(Map.get(node, "properties", %{})) do
+      {:ok, %{kind: :params, properties: properties, required: Map.get(node, "required", [])}}
+    end
+  end
 
   # XRPC defs parse into a light IR (kept for future endpoint generation);
   # the generator currently skips lexicons whose main def is one of these.
@@ -241,6 +290,13 @@ defmodule Exosphere.Lexicon.Parser do
       errors: node["errors"]
     }
   end
+
+  @doc """
+  Parse a single schema node (e.g. an XRPC `parameters` block or a
+  property) into the IR. Public for the endpoint generator.
+  """
+  @spec parse_schema_node(map()) :: {:ok, schema_node()} | {:error, term()}
+  def parse_schema_node(node), do: parse_node(node)
 
   @doc false
   defp check_record_object(%{kind: :object}), do: :ok

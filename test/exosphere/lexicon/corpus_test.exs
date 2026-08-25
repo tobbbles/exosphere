@@ -26,10 +26,11 @@ defmodule Exosphere.Lexicon.CorpusTest do
   setup_all do
     {:ok, lexicons} = Parser.parse_dir("priv/lexicons")
     specs = Generator.generate(lexicons)
-    %{lexicons: lexicons, specs: specs}
+    schema_specs = Enum.reject(specs, &(&1.node.kind == :endpoints))
+    %{lexicons: lexicons, specs: specs, schema_specs: schema_specs}
   end
 
-  test "every generated module is compiled and exports the full API", %{specs: specs} do
+  test "schema modules are compiled and export the full API", %{schema_specs: specs} do
     for %{module: module} <- specs do
       assert Code.ensure_loaded?(module), "#{inspect(module)} is not loaded"
       assert function_exported?(module, :new, 1), "#{inspect(module)} new/1"
@@ -41,12 +42,18 @@ defmodule Exosphere.Lexicon.CorpusTest do
     end
   end
 
-  test "IR-driven round-trip identity for every module", %{lexicons: lexicons, specs: specs} do
+  test "IR-driven round-trip identity for every module", %{
+    lexicons: lexicons,
+    schema_specs: specs
+  } do
     modules = Map.new(specs, &{{&1.nsid, &1.def_name || "main"}, &1.module})
 
     {passed, skipped} =
-      Enum.reduce(specs, {0, []}, fn spec, {passed, skipped} ->
-        node = if spec.def_name, do: spec.lexicon.defs[spec.def_name], else: spec.lexicon.defs["main"]
+      specs
+      |> Enum.reject(&(&1.node.kind == :endpoints))
+      |> Enum.reduce({0, []}, fn spec, {passed, skipped} ->
+        node =
+          if spec.def_name, do: spec.lexicon.defs[spec.def_name], else: spec.lexicon.defs["main"]
 
         case valid_value(node, spec.nsid, lexicons, modules, 0) do
           :skip ->
@@ -78,7 +85,9 @@ defmodule Exosphere.Lexicon.CorpusTest do
 
     node.properties
     |> Enum.filter(fn {name, _} -> MapSet.member?(required, name) end)
-    |> Enum.map(fn {name, prop} -> {name, valid_value(prop, nsid, lexicons, modules, depth + 1)} end)
+    |> Enum.map(fn {name, prop} ->
+      {name, valid_value(prop, nsid, lexicons, modules, depth + 1)}
+    end)
     |> Map.new()
   end
 
@@ -110,7 +119,10 @@ defmodule Exosphere.Lexicon.CorpusTest do
 
     if modules[key] != nil do
       {t_nsid, t_def} = key
-      if depth > 6, do: :skip, else: valid_value(lexicons[t_nsid].defs[t_def], t_nsid, lexicons, modules, depth)
+
+      if depth > 6,
+        do: :skip,
+        else: valid_value(lexicons[t_nsid].defs[t_def], t_nsid, lexicons, modules, depth)
     else
       # Unresolved refs are passthrough; any map works
       %{}

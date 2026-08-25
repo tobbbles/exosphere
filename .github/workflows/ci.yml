@@ -73,6 +73,9 @@ jobs:
       - name: Run tests
         run: mix test
 
+      - name: Generated modules are up to date
+        run: mix exosphere.gen.bsky --check
+
   lint:
     name: Lint (format + credo)
     runs-on: ubuntu-latest

@@ -58,7 +58,8 @@ defmodule Mix.Tasks.Exosphere.Gen.Bsky do
         File.exists?(path) && File.read!(path) != code
       end)
 
-    missing = Enum.filter(specs, fn %{path: rel} -> not File.exists?(Path.join(@output_dir, rel)) end)
+    missing =
+      Enum.filter(specs, fn %{path: rel} -> not File.exists?(Path.join(@output_dir, rel)) end)
 
     # Stale generated files (present on disk, no longer produced)
     produced = MapSet.new(specs, & &1.path)

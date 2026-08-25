@@ -99,13 +99,15 @@ defmodule Exosphere.Lexicon.Generator do
         module_spec(lexicons[nsid], def_name)
       end)
 
-    check_collisions!(specs)
+    endpoint_specs = endpoint_specs(lexicons)
+
+    check_collisions!(specs ++ endpoint_specs)
 
     modules = Map.new(specs, &{{&1.nsid, &1.def_name || "main"}, &1.module})
 
     ctx = %{modules: modules}
 
-    specs
+    (specs ++ endpoint_specs)
     |> Enum.sort_by(fn spec -> {spec.module |> Module.split() |> length(), spec.module} end)
     |> Enum.map(fn spec ->
       Map.merge(spec, %{code: format(render(spec, ctx))})
@@ -212,6 +214,270 @@ defmodule Exosphere.Lexicon.Generator do
               __STACKTRACE__
   end
 
+  # --- Endpoint modules -----------------------------------------------------------
+
+  # One module per app.bsky namespace (e.g. Exosphere.Bsky.Actor) holding a
+  # typed function for each XRPC query/procedure lexicon in that namespace.
+  defp endpoint_specs(lexicons) do
+    lexicons
+    |> Enum.filter(fn {nsid, lexicon} ->
+      main = lexicon.defs["main"]
+      String.starts_with?(nsid, "app.bsky.") and main != nil and main.kind in [:query, :procedure]
+    end)
+    |> Enum.group_by(fn {nsid, _lexicon} -> namespace_of(nsid) end)
+    |> Enum.map(fn {namespace, endpoints} ->
+      module = namespace_module(namespace)
+      check_endpoint_name_clashes!(module, endpoints)
+
+      %{
+        module: module,
+        path: module_path(module),
+        nsid: namespace,
+        def_name: nil,
+        node: %{kind: :endpoints},
+        lexicon: nil,
+        endpoints: Enum.sort(endpoints)
+      }
+    end)
+  end
+
+  defp namespace_of(nsid) do
+    segments = String.split(nsid, ".")
+    Enum.take(segments, length(segments) - 1) |> Enum.join(".")
+  end
+
+  # The namespace module for e.g. "app.bsky.actor" is Exosphere.Bsky.Actor;
+  # the bare "app.bsky" namespace is Exosphere.Bsky itself.
+  defp namespace_module(namespace) do
+    case Enum.find(@namespace_rules, fn {prefix, _base} ->
+           String.starts_with?(namespace, prefix)
+         end) do
+      {prefix, base} ->
+        rest =
+          namespace
+          |> String.trim_leading(prefix)
+          |> String.split(".")
+          |> Enum.map(&Macro.camelize/1)
+          |> Enum.reject(&(&1 == ""))
+
+        Module.concat(base ++ rest)
+
+      nil ->
+        namespace
+        |> String.split(".")
+        |> Enum.map(&Macro.camelize/1)
+        |> then(&Module.concat([Exosphere | &1]))
+    end
+  end
+
+  defp check_endpoint_name_clashes!(module, endpoints) do
+    names = Enum.map(endpoints, fn {nsid, _} -> endpoint_fn_name(nsid) end)
+    dups = names -- Enum.uniq(names)
+
+    unless dups == [] do
+      raise ArgumentError,
+            "endpoint name collisions in #{inspect(module)}: #{inspect(Enum.uniq(dups))}"
+    end
+  end
+
+  defp endpoint_fn_name(nsid), do: nsid |> String.split(".") |> List.last() |> Macro.underscore()
+
+  defp endpoint_moduledoc(spec) do
+    items =
+      Enum.map_join(spec.endpoints, "\n", fn {nsid, lexicon} ->
+        main = lexicon.defs["main"]
+        "- `#{endpoint_fn_name(nsid)}` — #{main.kind}: #{nsid}"
+      end)
+
+    """
+      @moduledoc \"\"\"
+      XRPC client functions for the `#{spec.nsid}` namespace.
+
+      Generated from vendored lexicons — DO NOT EDIT.
+
+      ## Endpoints
+
+    #{indent(items, 2)}
+      \"\"\"
+    """
+  end
+
+  defp render_endpoint(nsid, lexicon, ctx) do
+    main = lexicon.defs["main"]
+    fn_name = endpoint_fn_name(nsid)
+    {_raw, fields, required} = endpoint_params(main)
+    req = %{required: required, nullable: []}
+    output_mod = output_module(main, ctx)
+
+    doc =
+      [main.description, endpoint_params_doc(main.parameters)]
+      |> Enum.reject(&is_nil/1)
+      |> Enum.join("\n\n")
+
+    bindings =
+      fields
+      |> Enum.with_index(1)
+      |> Enum.map(fn {{name, node}, i} ->
+        "      {#{field_var(name)}, e#{i}} = #{getter(name, node, req, ctx)}"
+      end)
+
+    validated_pairs =
+      Enum.map_join(fields, ", ", fn {name, _} -> "#{field_atom(name)}: #{field_var(name)}" end)
+
+    errors_list =
+      case length(fields) do
+        0 -> ""
+        n -> Enum.map_join(1..n, " ++ ", &"e#{&1}")
+      end
+
+    # Endpoints with no params skip validation entirely
+    skip_validation = fields == []
+
+    {args, spec_args, call} =
+      case {main.kind, fields == []} do
+        {:query, false} ->
+          {"client, params \\\\ []", "Client.t(), map() | keyword()",
+           "Client.query(#{inspect(nsid)}, Runtime.encode_query_params(validated, @fields_#{fn_name}))"}
+
+        {:query, true} ->
+          {"client", "Client.t()", "Client.query(#{inspect(nsid)})"}
+
+        {:procedure, true} ->
+          {"client, body \\\\ %{}", "Client.t(), map()",
+           "Client.procedure(#{inspect(nsid)}, body)"}
+
+        {:procedure, false} ->
+          {"client, params \\\\ [], body \\\\ %{}", "Client.t(), map() | keyword(), map()",
+           "Client.procedure(#{inspect(nsid)}, body, Runtime.encode_query_params(validated, @fields_#{fn_name}))"}
+      end
+
+    validate =
+      cond do
+        skip_validation ->
+          ""
+
+        fields == [] ->
+          "    defp validate_#{fn_name}(_params), do: {:ok, %{}}"
+
+        true ->
+          """
+              defp validate_#{fn_name}(params) do
+                {attrs, _extra} = Runtime.atomize(params, @fields_#{fn_name})
+
+          #{Enum.join(bindings, "\n")}
+
+                errors = #{errors_list}
+
+                if errors == [] do
+                  {:ok, %{#{validated_pairs}}}
+                else
+                  {:error, errors}
+                end
+              end
+          """
+      end
+
+    decode_fn =
+      if output_mod do
+        """
+
+            defp decode_#{fn_name}({:ok, %{} = response}), do: #{inspect(output_mod)}.from_map(response)
+            defp decode_#{fn_name}(other), do: other
+        """
+      else
+        ""
+      end
+
+    return_type =
+      if output_mod,
+        do: "{:ok, #{inspect(output_mod)}.t()} | {:error, term()}",
+        else: "{:ok, map()} | {:error, term()}"
+
+    fields_attr =
+      if fields == [],
+        do: "",
+        else: "  @fields_#{fn_name} %{#{fields_map_literal(fields)}}\n\n"
+
+    decode =
+      if output_mod,
+        do: "\n        |> decode_#{fn_name}()",
+        else: ""
+
+    body =
+      if skip_validation do
+        """
+            def #{fn_name}(#{args}) do
+              client
+              |> #{call}#{decode}
+            end
+        """
+      else
+        """
+            def #{fn_name}(#{args}) do
+              with {:ok, validated} <- validate_#{fn_name}(params) do
+                client
+                |> #{call}#{decode}
+              end
+            end
+        """
+      end
+
+    """
+    #{fields_attr}  @doc \"\"\"
+    #{indent(doc, 2)}
+    \"\"\"
+    @spec #{fn_name}(#{spec_args}) :: #{return_type}
+    #{String.trim_leading(body, "    ")}
+
+    #{String.trim_trailing(validate)}#{decode_fn}
+    """
+  end
+
+  defp endpoint_params(main) do
+    case main.parameters && Parser.parse_schema_node(main.parameters) do
+      {:ok, %{kind: :params, properties: properties, required: required}} ->
+        {main.parameters, Enum.sort(properties), required}
+
+      _ ->
+        {nil, [], []}
+    end
+  end
+
+  defp endpoint_params_doc(nil), do: nil
+
+  defp endpoint_params_doc(params) do
+    required = MapSet.new(params["required"] || [])
+
+    items =
+      params["properties"]
+      |> Enum.sort()
+      |> Enum.map_join("\n", fn {name, prop} ->
+        req = if name in required, do: "required", else: "optional"
+
+        "- `#{name}` (#{prop["type"]}, #{req})#{prop["description"] && ": " <> prop["description"]}"
+      end)
+
+    """
+    ## Parameters
+
+    #{items}
+    """
+  end
+
+  # The output schema ref, when it resolves to a generated module. Most list
+  # endpoints return view schemas that are not generated; those responses
+  # come back as raw maps.
+  defp output_module(main, ctx) do
+    case main.output do
+      %{"schema" => %{"type" => "ref", "ref" => ref}} ->
+        key = resolve_ref(ref, "")
+        ctx.modules[key]
+
+      _ ->
+        nil
+    end
+  end
+
   # --- Naming --------------------------------------------------------------------
 
   # app.bsky.feed.post => Exosphere.Bsky.Feed.Post; com.atproto.repo.strongRef
@@ -241,7 +507,9 @@ defmodule Exosphere.Lexicon.Generator do
 
   defp module_spec(lexicon, def_name) do
     node = lexicon.defs[def_name]
-    module = if def_name == "main", do: main_module(lexicon.id), else: def_module(lexicon.id, def_name)
+
+    module =
+      if def_name == "main", do: main_module(lexicon.id), else: def_module(lexicon.id, def_name)
 
     %{
       module: module,
@@ -310,15 +578,34 @@ defmodule Exosphere.Lexicon.Generator do
 
   # --- Rendering -------------------------------------------------------------------
 
+  defp render(%{node: %{kind: :endpoints}} = spec, ctx) do
+    functions =
+      Enum.map_join(spec.endpoints, "\n\n", fn {nsid, lexicon} ->
+        render_endpoint(nsid, lexicon, ctx)
+      end)
+
+    [
+      @header,
+      "defmodule #{inspect(spec.module)} do",
+      endpoint_moduledoc(spec),
+      "  alias Exosphere.ATProto.XRPC.Client",
+      "  alias Exosphere.Bsky.Runtime",
+      functions,
+      "end"
+    ]
+    |> Enum.join("\n\n")
+    |> then(&(&1 <> "\n"))
+  end
+
   defp render(spec, ctx) do
     %{module: module, node: node} = spec
     ctx = Map.put(ctx, :nsid, spec.nsid)
-    ctx = Map.put(ctx, :type_id, spec.def_name && "#{spec.nsid}##{spec.def_name}" || spec.nsid)
+    ctx = Map.put(ctx, :type_id, (spec.def_name && "#{spec.nsid}##{spec.def_name}") || spec.nsid)
     ctx = Map.put(ctx, :is_record, node.kind == :record)
 
     object = if node.kind == :record, do: node.record, else: node
     fields = Enum.sort(object.properties)
-    req = %{required: MapSet.new(object.required), nullable: MapSet.new(object.nullable || [])}
+    req = %{required: object.required, nullable: object.nullable || []}
 
     sections = [
       @header,
@@ -388,7 +675,9 @@ defmodule Exosphere.Lexicon.Generator do
   defp node_description(%{description: description}) when is_binary(description), do: description
   defp node_description(node), do: kind_doc(node)
 
-  defp kind_doc(%{kind: :string, format: format}) when not is_nil(format), do: "string, format `#{format}`"
+  defp kind_doc(%{kind: :string, format: format}) when not is_nil(format),
+    do: "string, format `#{format}`"
+
   defp kind_doc(%{kind: :string}), do: "string"
   defp kind_doc(%{kind: :token}), do: "token"
   defp kind_doc(%{kind: :integer}), do: "integer"
@@ -406,20 +695,28 @@ defmodule Exosphere.Lexicon.Generator do
       fields
       |> Enum.flat_map(fn {name, node} ->
         case node do
-          %{kind: :union} -> [{variants_attr(name), union_variants(node, ctx)}]
-          %{kind: :array, items: %{kind: :union}} -> [{variants_attr(name), union_variants(node.items, ctx)}]
-          _ -> []
+          %{kind: :union} ->
+            [{variants_attr(name), union_variants(node, ctx)}]
+
+          %{kind: :array, items: %{kind: :union}} ->
+            [{variants_attr(name), union_variants(node.items, ctx)}]
+
+          _ ->
+            []
         end
       end)
       |> Enum.map(fn {attr, variants} -> "@#{attr} #{inspect(variants)}" end)
 
-    Enum.join(["alias Exosphere.Bsky.Runtime", "@type_id #{inspect(ctx.type_id)}" | union_attrs], "\n")
+    Enum.join(
+      ["alias Exosphere.Bsky.Runtime", "@type_id #{inspect(ctx.type_id)}" | union_attrs],
+      "\n"
+    )
   end
 
   defp struct_def(fields, %{required: required}) do
     enforce =
       fields
-      |> Enum.filter(fn {name, _} -> MapSet.member?(required, name) end)
+      |> Enum.filter(fn {name, _} -> name in required end)
       |> Enum.map(fn {name, _} -> field_atom(name) end)
 
     defaults = for {name, _} <- fields, do: {field_atom(name), nil}
@@ -430,7 +727,11 @@ defmodule Exosphere.Lexicon.Generator do
   defp type_pairs(fields, %{required: required, nullable: nullable}, ctx) do
     for {name, node} <- fields do
       # Nullable fields accept nil even when required
-      optional = if MapSet.member?(required, name) and not MapSet.member?(nullable, name), do: "", else: " | nil"
+      optional =
+        if name in required and name not in nullable,
+          do: "",
+          else: " | nil"
+
       "#{field_atom(name)}: #{field_type(node, ctx)}#{optional}"
     end
     |> Enum.join(", ")
@@ -491,7 +792,9 @@ defmodule Exosphere.Lexicon.Generator do
           ""
 
         fields ->
-          Enum.map_join(fields, ", ", fn {name, _} -> "#{field_atom(name)}: #{field_var(name)}" end) <> ", "
+          Enum.map_join(fields, ", ", fn {name, _} ->
+            "#{field_atom(name)}: #{field_var(name)}"
+          end) <> ", "
       end
 
     """
@@ -519,6 +822,9 @@ defmodule Exosphere.Lexicon.Generator do
     """
   end
 
+  @typep field_req :: %{required: [String.t()], nullable: [String.t()]}
+
+  @spec getter(String.t(), Parser.schema_node(), field_req(), map()) :: String.t()
   defp getter(name, node, %{required: _, nullable: _} = req, ctx) do
     key = field_atom(name)
     path = inspect(name)
@@ -577,6 +883,8 @@ defmodule Exosphere.Lexicon.Generator do
     node |> string_opts() |> inspect()
   end
 
+  @spec get_opts(Parser.schema_node(), field_req(), String.t()) :: String.t()
+
   defp get_opts(node, %{required: required, nullable: nullable}, name) do
     opts =
       case node.kind do
@@ -589,8 +897,8 @@ defmodule Exosphere.Lexicon.Generator do
       end
 
     opts
-    |> maybe_req(MapSet.member?(required, name))
-    |> maybe_nullable(MapSet.member?(nullable, name))
+    |> maybe_req(name in required)
+    |> maybe_nullable(name in nullable)
     |> render_opts()
   end
 
@@ -629,7 +937,6 @@ defmodule Exosphere.Lexicon.Generator do
   # Closed unions pass an extra positional arg to the Runtime validators
   defp union_closed_arg(%{closed: true}), do: ", true"
   defp union_closed_arg(_), do: ""
-  
 
   defp string_opts(%{kind: :token} = node) do
     []
