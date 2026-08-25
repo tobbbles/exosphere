@@ -77,13 +77,28 @@ record-key primitives plus commit-signature verification.
   blocks), `read/2` walks a tree from a root CID and block store back into a
   `path => CID` map (accepting raw bytes or decoded nodes), and `depth/1` /
   `valid_key?/1` expose the layer algorithm and key validation. Verified
-  byte-for-byte against the atproto interop root-CID vectors.
+  byte-for-byte against the atproto interop root-CID vectors. Hardened after
+  review: `read/2` detects cycles in hostile block data (`{:error, {:cycle, cid}}`)
+  instead of recursing forever; `build/1` rejects duplicate paths with conflicting
+  CIDs (`{:error, {:duplicate_key, key}}`), dedupes identical entries, returns
+  `{:error, {:invalid_entry, term}}` for non-pair input instead of raising, and
+  validates keys with the full `NSID` / `RecordKey` grammars (stricter than the
+  previous charset check). Key depths are computed once per build instead of
+  once per layer comparison.
 - `Exosphere.ATProto.Repo.Commit.verify_data/2` — confirm a commit's `data`
   (MST root) matches a set of records, completing repository verification
   alongside `verify/3`.
 
 ### Changed
 
+- **`fresh` replaced with `websockex` (~> 0.5).** Fresh is unmaintained (last
+  release April 2024) and its mix.exs no longer compiles on Elixir 1.20.
+  `Exosphere.ATProto.Firehose.Consumer` keeps the same public API and
+  callback semantics; WebSockex answers protocol-level pings and reconnects
+  automatically on disconnect (replaying the original subscription URL).
+  Verified live against `wss://bsky.network`. Also fixed a latent compile
+  error in the `#error`-message path (`stats` was unbound) that had been
+  masked by stale build caches.
 - `Exosphere.ATProto.Identity.Document.get_handle/1` now extracts the handle via
   `AtUri` parsing rather than naive string-prefix stripping.
 - `Exosphere.ATProto.Firehose.Message` documents `#handle` and `#tombstone` as
@@ -97,6 +112,9 @@ record-key primitives plus commit-signature verification.
   (`{"hello":"world"}` → `bafyreidykglsfhoixmivffc5uwhcgshx4j465xwqntbmu43nb2dzqwfvae`);
   the previous value was wrong and never exercised by a doctest.
 - Added `elixirc_paths` for `test/support` (interop fixture helpers).
+- Bumped `credo` to 1.7.19 (fixes Elixir 1.20 crashes in its token analysis)
+  and pinned three `size(...)` variables in `CAR` that Elixir 1.20 flags as
+  warnings, restoring a clean `--warnings-as-errors` build.
 - `mix compile --warnings-as-errors`, `mix credo --strict`, `mix dialyzer`, and
   `mix format --check-formatted` all clean.
 

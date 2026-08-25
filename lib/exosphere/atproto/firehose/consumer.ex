@@ -1,6 +1,6 @@
 defmodule Exosphere.ATProto.Firehose.Consumer do
   @moduledoc """
-  Generic WebSocket consumer for the Exosphere.ATProto firehose using Fresh.
+  Generic WebSocket consumer for the Exosphere.ATProto firehose using WebSockex.
 
   This module connects to a relay's `com.atproto.sync.subscribeRepos` endpoint,
   decodes frames into structured messages, and dispatches those messages via an
@@ -11,12 +11,14 @@ defmodule Exosphere.ATProto.Firehose.Consumer do
   from the callback. If your callback can fail, wrap the failing work in a
   `Task` (or your own supervised process) and return the original state.
 
-  The cursor tracked in state is in-memory only. To resume a stream after a
+  The consumer reconnects automatically on disconnect or connection error,
+  replaying the original subscription URL (including its starting cursor). The
+  cursor tracked in state is in-memory only. To resume a stream after a
   restart, persist `msg.seq` from your callback and pass it back via the
   `:cursor` option on next start.
   """
 
-  use Fresh
+  use WebSockex
 
   require Logger
 
@@ -77,14 +79,14 @@ defmodule Exosphere.ATProto.Firehose.Consumer do
       }
     }
 
-    fresh_opts =
+    ws_opts =
       case Keyword.get(opts, :name) do
         nil -> []
         name -> [name: name]
       end
 
     Logger.info("[Exosphere.ATProto.Firehose] Starting connection to #{uri}")
-    Fresh.start_link(uri, __MODULE__, state, fresh_opts)
+    WebSockex.start_link(uri, __MODULE__, state, ws_opts)
   end
 
   def child_spec(opts) do
@@ -96,48 +98,38 @@ defmodule Exosphere.ATProto.Firehose.Consumer do
     }
   end
 
-  # Fresh callbacks
+  # WebSockex callbacks. Returning {:ok, state} from handle_disconnect makes
+  # WebSockex reconnect to the original URL automatically; WebSockex also
+  # answers protocol-level pings for us.
 
-  @impl Fresh
-  def handle_connect(status, headers, state) do
-    Logger.info("[Exosphere.ATProto.Firehose] ✓ Connected to relay (status: #{status})")
-    Logger.debug("[Exosphere.ATProto.Firehose] Response headers: #{inspect(headers)}")
+  @impl WebSockex
+  def handle_connect(_conn, state) do
+    Logger.info("[Exosphere.ATProto.Firehose] ✓ Connected to relay")
     {:ok, state}
   end
 
-  @impl Fresh
-  def handle_in({:binary, data}, state) do
-    {:ok, handle_frame(data, state)}
-  end
+  @impl WebSockex
+  def handle_frame({:binary, data}, state), do: {:ok, process_frame(data, state)}
 
-  @impl Fresh
-  def handle_in({:text, _data}, state), do: {:ok, state}
+  @impl WebSockex
+  def handle_frame({:text, _data}, state), do: {:ok, state}
 
-  @impl Fresh
-  def handle_control({:ping, _}, state), do: {:ok, state}
+  @impl WebSockex
+  def handle_frame({:ping, _data}, state), do: {:ok, state}
 
-  @impl Fresh
-  def handle_control({:pong, _}, state), do: {:ok, state}
+  @impl WebSockex
+  def handle_frame({:pong, _data}, state), do: {:ok, state}
 
-  @impl Fresh
+  @impl WebSockex
   def handle_info(msg, state) do
     Logger.debug("[Exosphere.ATProto.Firehose] Unhandled info: #{inspect(msg)}")
     {:ok, state}
   end
 
-  @impl Fresh
-  def handle_error(error, _state) do
-    Logger.error("[Exosphere.ATProto.Firehose] Error: #{inspect(error)}")
-    :reconnect
-  end
-
-  @impl Fresh
-  def handle_disconnect(code, reason, _state) do
-    Logger.warning(
-      "[Exosphere.ATProto.Firehose] Disconnected: code=#{code}, reason=#{inspect(reason)}"
-    )
-
-    :reconnect
+  @impl WebSockex
+  def handle_disconnect(%{reason: reason}, state) do
+    Logger.warning("[Exosphere.ATProto.Firehose] Disconnected: #{inspect(reason)}, reconnecting")
+    {:ok, state}
   end
 
   # Private
@@ -148,7 +140,7 @@ defmodule Exosphere.ATProto.Firehose.Consumer do
   defp build_subscription_url(relay, cursor),
     do: "#{relay}/xrpc/com.atproto.sync.subscribeRepos?cursor=#{cursor}"
 
-  defp handle_frame(data, state) do
+  defp process_frame(data, state) do
     stats = %{state.stats | frames: state.stats.frames + 1}
     state = %{state | stats: stats}
 
@@ -191,7 +183,7 @@ defmodule Exosphere.ATProto.Firehose.Consumer do
   end
 
   # Invoke the user-supplied callback. We deliberately do not catch — if the
-  # callback raises, the consumer process will crash and Fresh's reconnect
+  # callback raises, the consumer process will crash and WebSockex's reconnect
   # logic will restart it. See @moduledoc.
   defp dispatch(state, message) do
     state.on_event.(message, state)

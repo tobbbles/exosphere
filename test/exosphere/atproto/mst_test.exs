@@ -30,6 +30,8 @@ defmodule Exosphere.ATProto.MSTTest do
       refute MST.valid_key?("/rkey")
       refute MST.valid_key?("collection/")
       refute MST.valid_key?("coll/bad rkey")
+      refute MST.valid_key?("coll/rkey")
+      refute MST.valid_key?("com.example.record/..")
       refute MST.valid_key?(String.duplicate("a", 600) <> "/" <> String.duplicate("b", 600))
       refute MST.valid_key?(nil)
     end
@@ -91,6 +93,24 @@ defmodule Exosphere.ATProto.MSTTest do
       assert {:error, {:invalid_value, "com.example.record/aaa"}} =
                MST.build([{"com.example.record/aaa", "not-a-cid"}])
     end
+
+    test "rejects duplicate keys with conflicting values" do
+      other = CID.decode!("bafyreih7wfei65pxzhauoibu3ls7jgmkju4bspy4t2ha2qdjnzqvoy33ai")
+
+      assert {:error, {:duplicate_key, "com.example.record/aaa"}} =
+               MST.build([{"com.example.record/aaa", value()}, {"com.example.record/aaa", other}])
+    end
+
+    test "dedupes identical duplicate entries" do
+      assert {:ok, root, _} = MST.build(entries(["com.example.record/aaa"]))
+
+      assert {:ok, ^root, _} =
+               MST.build(List.duplicate({"com.example.record/aaa", value()}, 3))
+    end
+
+    test "rejects non-pair elements" do
+      assert {:error, {:invalid_entry, :foo}} = MST.build([:foo])
+    end
   end
 
   describe "read/2" do
@@ -115,6 +135,12 @@ defmodule Exosphere.ATProto.MSTTest do
     test "reports a missing block", %{root: root, blocks: blocks} do
       [some | _] = Map.keys(blocks)
       assert {:error, {:missing_block, %CID{}}} = MST.read(root, Map.delete(blocks, some))
+    end
+
+    test "rejects cyclic block data instead of recursing forever", %{root: root, blocks: blocks} do
+      decoded = Map.new(blocks, fn {cid, bytes} -> {cid, CBOR.decode!(bytes)} end)
+      cyclic = Map.put(decoded, root, Map.put(decoded[root], "l", root))
+      assert {:error, {:cycle, ^root}} = MST.read(root, cyclic)
     end
 
     test "empty tree reads back as an empty map" do

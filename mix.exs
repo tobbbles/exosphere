@@ -37,7 +37,7 @@ defmodule Exosphere.MixProject do
     [
       {:jason, "~> 1.4"},
       {:mint, "~> 1.7"},
-      {:fresh, "~> 0.4"},
+      {:websockex, "~> 0.5"},
       {:cbor, "~> 1.0"},
       {:varint, "~> 1.5"},
       {:jose, "~> 1.11"},

@@ -42,10 +42,9 @@ defmodule Exosphere.ATProto.MST do
   """
 
   alias Exosphere.ATProto.CBOR, as: DagCBOR
-  alias Exosphere.ATProto.CID
+  alias Exosphere.ATProto.{CID, NSID, RecordKey}
 
   @max_key_length 1024
-  @key_chars ~r/^[a-zA-Z0-9_~.\-:]+$/
 
   @type key :: String.t()
   @type blocks :: %{CID.t() => binary()}
@@ -79,15 +78,16 @@ defmodule Exosphere.ATProto.MST do
 
   @doc """
   Validate an MST key (a repository record path `<collection>/<rkey>`).
+
+  The collection must be a valid NSID and the rkey a valid record key, so keys
+  built here are accepted by reference implementations.
   """
   @spec valid_key?(term()) :: boolean()
   def valid_key?(key) when is_binary(key) do
     case String.split(key, "/") do
       [collection, rkey] ->
         byte_size(key) <= @max_key_length and
-          collection != "" and rkey != "" and
-          Regex.match?(@key_chars, collection) and
-          Regex.match?(@key_chars, rkey)
+          NSID.valid?(collection) and RecordKey.valid?(rkey)
 
       _ ->
         false
@@ -104,16 +104,17 @@ defmodule Exosphere.ATProto.MST do
   DAG-CBOR bytes.
 
   Returns `{:error, {:invalid_key, key}}` or `{:error, {:invalid_value, key}}`
-  for malformed input.
+  for malformed input, `{:error, {:duplicate_key, key}}` if the same path appears
+  with different CIDs, and `{:error, {:invalid_entry, term}}` for non-pair elements.
   """
   @spec build(Enumerable.t()) ::
           {:ok, CID.t(), blocks()} | {:error, term()}
   def build(entries) do
-    with {:ok, pairs} <- normalize(entries) do
+    with {:ok, triples} <- normalize(entries) do
       {root, blocks} =
-        case pairs do
+        case triples do
           [] -> store(empty_node(), %{})
-          _ -> build_layer(pairs, top_layer(pairs), %{})
+          _ -> build_layer(triples, top_layer(triples), %{})
         end
 
       {:ok, root, blocks}
@@ -134,55 +135,62 @@ defmodule Exosphere.ATProto.MST do
   `blocks` may map CIDs to encoded DAG-CBOR bytes (e.g. a raw block store) or to
   already-decoded node maps (e.g. the output of `Exosphere.ATProto.CAR.decode/1`).
 
-  Returns `{:error, {:missing_block, cid}}` if a referenced node is absent and
-  `{:error, {:invalid_node, cid}}` if a node cannot be decoded.
+  This walks the tree but does not validate its structure (entry ordering or key
+  layering): use `build/1` on the resulting entries and compare root CIDs (as
+  `Exosphere.ATProto.Repo.Commit.verify_data/2` does) to fully authenticate a tree.
+
+  Returns `{:error, {:missing_block, cid}}` if a referenced node is absent,
+  `{:error, {:invalid_node, cid}}` if a node cannot be decoded, and
+  `{:error, {:cycle, cid}}` if a node links to itself or an ancestor (possible
+  with hostile block data).
   """
   @spec read(CID.t(), %{CID.t() => binary() | map()}) ::
           {:ok, %{key() => CID.t()}} | {:error, term()}
   def read(%CID{} = root, blocks) when is_map(blocks) do
-    with {:ok, entries} <- collect(root, blocks, []) do
+    with {:ok, entries} <- collect(root, blocks, [], %{}) do
       {:ok, Map.new(entries)}
     end
   end
 
   # --- Build internals ---------------------------------------------------------
 
-  defp top_layer(pairs) do
-    pairs |> Enum.map(fn {k, _v} -> depth(k) end) |> Enum.max()
+  defp top_layer(triples) do
+    triples |> Enum.map(fn {_k, depth, _v} -> depth end) |> Enum.max()
   end
 
-  # Build the node(s) covering `pairs` at `layer`. If no key sits exactly at this
-  # layer, descend (no empty intermediate nodes are created).
-  defp build_layer(pairs, layer, blocks) do
-    if Enum.any?(pairs, fn {k, _v} -> depth(k) == layer end) do
-      {left, segments} = split_segments(pairs, layer)
+  # Build the node(s) covering `triples` ({key, depth, value}, sorted by key) at
+  # `layer`. If no key sits exactly at this layer, descend (no empty intermediate
+  # nodes are created). Depths are precomputed once by normalize/1.
+  defp build_layer(triples, layer, blocks) do
+    if Enum.any?(triples, fn {_k, depth, _v} -> depth == layer end) do
+      {left, segments} = split_segments(triples, layer)
       {l_cid, blocks} = subtree(left, layer, blocks)
 
       {entries, blocks} =
-        Enum.reduce(segments, {[], blocks}, fn {{key, value}, between}, {acc, blocks} ->
+        Enum.reduce(segments, {[], blocks}, fn {{key, _depth, value}, between}, {acc, blocks} ->
           {t_cid, blocks} = subtree(between, layer, blocks)
           {[%{key: key, value: value, tree: t_cid} | acc], blocks}
         end)
 
       store(node(l_cid, Enum.reverse(entries)), blocks)
     else
-      build_layer(pairs, layer - 1, blocks)
+      build_layer(triples, layer - 1, blocks)
     end
   end
 
   defp subtree([], _layer, blocks), do: {nil, blocks}
-  defp subtree(pairs, layer, blocks), do: build_layer(pairs, layer - 1, blocks)
+  defp subtree(triples, layer, blocks), do: build_layer(triples, layer - 1, blocks)
 
-  # Split sorted `pairs` around the leaves whose depth == layer:
-  # {pairs_before_first_leaf, [{leaf_pair, pairs_between_it_and_next_leaf}, ...]}
-  defp split_segments(pairs, layer) do
-    {left, rest} = Enum.split_while(pairs, fn {k, _v} -> depth(k) != layer end)
+  # Split sorted `triples` around the leaves whose depth == layer:
+  # {triples_before_first_leaf, [{leaf, triples_between_it_and_next_leaf}, ...]}
+  defp split_segments(triples, layer) do
+    {left, rest} = Enum.split_while(triples, fn {_k, depth, _v} -> depth != layer end)
     [leaf | tail] = rest
     {left, segments(leaf, tail, layer, [])}
   end
 
   defp segments(leaf, rest, layer, acc) do
-    {between, rest} = Enum.split_while(rest, fn {k, _v} -> depth(k) != layer end)
+    {between, rest} = Enum.split_while(rest, fn {_k, depth, _v} -> depth != layer end)
 
     case rest do
       [] -> Enum.reverse([{leaf, between} | acc])
@@ -229,26 +237,37 @@ defmodule Exosphere.ATProto.MST do
 
   # --- Read internals ----------------------------------------------------------
 
-  defp collect(%CID{} = cid, blocks, acc) do
-    with {:ok, node} <- fetch_node(cid, blocks) do
-      left = node_link(node, "l")
+  # `visited` (a map of CIDs to `true`) guards against cycles in hostile block
+  # data: a node linking to itself or an ancestor would otherwise recurse forever.
+  defp collect(%CID{} = cid, blocks, acc, visited) do
+    if Map.has_key?(visited, cid) do
+      {:error, {:cycle, cid}}
+    else
+      visited = Map.put(visited, cid, true)
 
-      with {:ok, acc} <- collect_optional(left, blocks, acc) do
-        walk_entries(Map.get(node, "e", []), blocks, acc, <<>>)
+      with {:ok, node} <- fetch_node(cid, blocks) do
+        left = node_link(node, "l")
+
+        with {:ok, acc} <- collect_optional(left, blocks, acc, visited) do
+          walk_entries(Map.get(node, "e", []), blocks, acc, visited, <<>>)
+        end
       end
     end
   end
 
-  defp collect_optional(nil, _blocks, acc), do: {:ok, acc}
-  defp collect_optional(%CID{} = cid, blocks, acc), do: collect(cid, blocks, acc)
+  defp collect_optional(nil, _blocks, acc, _visited), do: {:ok, acc}
 
-  defp walk_entries([], _blocks, acc, _prev), do: {:ok, acc}
+  defp collect_optional(%CID{} = cid, blocks, acc, visited),
+    do: collect(cid, blocks, acc, visited)
 
-  defp walk_entries([entry | rest], blocks, acc, prev) do
+  defp walk_entries([], _blocks, acc, _visited, _prev), do: {:ok, acc}
+
+  defp walk_entries([entry | rest], blocks, acc, visited, prev) do
     with {:ok, key} <- entry_key(entry, prev),
          %CID{} = value <- entry_value(entry),
-         {:ok, acc} <- collect_optional(node_link(entry, "t"), blocks, [{key, value} | acc]) do
-      walk_entries(rest, blocks, acc, key)
+         {:ok, acc} <-
+           collect_optional(node_link(entry, "t"), blocks, [{key, value} | acc], visited) do
+      walk_entries(rest, blocks, acc, visited, key)
     else
       nil -> {:error, :invalid_entry}
       {:error, _} = error -> error
@@ -304,21 +323,38 @@ defmodule Exosphere.ATProto.MST do
 
   # --- Input normalization -----------------------------------------------------
 
+  # Validate, dedupe, and sort entries into `{key, depth, value}` triples with
+  # each key's depth computed exactly once.
   defp normalize(entries) do
-    Enum.reduce_while(entries, {:ok, []}, fn
+    entries
+    |> Enum.reduce_while({:ok, %{}}, fn
       {key, %CID{} = value}, {:ok, acc} when is_binary(key) ->
-        if valid_key?(key) do
-          {:cont, {:ok, [{key, value} | acc]}}
-        else
-          {:halt, {:error, {:invalid_key, key}}}
+        cond do
+          not valid_key?(key) ->
+            {:halt, {:error, {:invalid_key, key}}}
+
+          Map.has_key?(acc, key) and Map.get(acc, key) != value ->
+            {:halt, {:error, {:duplicate_key, key}}}
+
+          true ->
+            {:cont, {:ok, Map.put(acc, key, value)}}
         end
 
       {key, _value}, {:ok, _acc} ->
         {:halt, {:error, {:invalid_value, key}}}
+
+      other, {:ok, _acc} ->
+        {:halt, {:error, {:invalid_entry, other}}}
     end)
     |> case do
-      {:ok, pairs} -> {:ok, Enum.sort_by(pairs, &elem(&1, 0))}
-      error -> error
+      {:ok, map} ->
+        {:ok,
+         map
+         |> Enum.map(fn {key, value} -> {key, depth(key), value} end)
+         |> Enum.sort_by(&elem(&1, 0))}
+
+      error ->
+        error
     end
   end
 end

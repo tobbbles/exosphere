@@ -75,7 +75,7 @@ defmodule Exosphere.ATProto.CAR do
   defp decode_header(data) do
     case read_varint(data) do
       {:ok, header_len, rest} when header_len > 0 and byte_size(rest) >= header_len ->
-        <<header_bytes::binary-size(header_len), remaining::binary>> = rest
+        <<header_bytes::binary-size(^header_len), remaining::binary>> = rest
 
         case CBOR.decode(header_bytes) do
           {:ok, header, _} ->
@@ -141,7 +141,7 @@ defmodule Exosphere.ATProto.CAR do
   defp decode_block(data) do
     with {:ok, block_len, rest} <- read_varint(data),
          true <- byte_size(rest) >= block_len,
-         <<block::binary-size(block_len), remaining::binary>> <- rest,
+         <<block::binary-size(^block_len), remaining::binary>> <- rest,
          {:ok, cid, block_data} <- split_cid_and_data(block) do
       {:ok, cid, block_data, remaining}
     else
@@ -168,7 +168,7 @@ defmodule Exosphere.ATProto.CAR do
           len_varint_len = byte_size(after_fn) - byte_size(after_len)
           cid_len = 1 + codec_varint_len + fn_varint_len + len_varint_len + hash_len
 
-          <<cid_bytes::binary-size(cid_len), data::binary>> = block
+          <<cid_bytes::binary-size(^cid_len), data::binary>> = block
 
           case CID.from_bytes(cid_bytes) do
             {:ok, cid} -> {:ok, cid, data}
