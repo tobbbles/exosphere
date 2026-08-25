@@ -35,12 +35,17 @@ defmodule Exosphere.ATProto.XRPC.Client do
           base_url: String.t(),
           access_token: String.t() | nil,
           refresh_token: String.t() | nil,
-          timeout: pos_integer(),
-          http: module()
+          timeout: pos_integer() | nil,
+          http: module() | nil
         }
 
   @type query_params :: keyword() | map()
   @type procedure_body :: map()
+
+  # `Error.t()` for XRPC error responses; anything else is a transport failure
+  # (timeout, too_many_redirects, adapter error) passed through from the HTTP
+  # adapter.
+  @type error :: Error.t() | term()
 
   @default_timeout 30_000
 
@@ -97,7 +102,7 @@ defmodule Exosphere.ATProto.XRPC.Client do
           handle: "atproto.com"
         )
   """
-  @spec query(t(), String.t(), query_params()) :: {:ok, term()} | {:error, Error.t() | term()}
+  @spec query(t(), String.t(), query_params()) :: {:ok, HTTP.json_term()} | {:error, error()}
   def query(%__MODULE__{} = client, nsid, params \\ []) do
     url = build_url(client, nsid, params)
     headers = build_headers(client)
@@ -129,7 +134,7 @@ defmodule Exosphere.ATProto.XRPC.Client do
         )
   """
   @spec procedure(t(), String.t(), procedure_body() | keyword(), query_params()) ::
-          {:ok, term()} | {:error, Error.t() | term()}
+          {:ok, HTTP.json_term()} | {:error, error()}
   def procedure(%__MODULE__{} = client, nsid, body \\ %{}, params \\ []) do
     url = build_url(client, nsid, params)
     headers = build_headers(client)
@@ -155,7 +160,7 @@ defmodule Exosphere.ATProto.XRPC.Client do
       {:ok, %{"blob" => blob}} =
         Exosphere.ATProto.XRPC.Client.upload_blob(client, image_bytes, "image/jpeg")
   """
-  @spec upload_blob(t(), binary(), String.t()) :: {:ok, map()} | {:error, term()}
+  @spec upload_blob(t(), binary(), String.t()) :: {:ok, map()} | {:error, error()}
   def upload_blob(%__MODULE__{} = client, data, content_type) when is_binary(data) do
     url = build_url(client, "com.atproto.repo.uploadBlob")
     headers = build_headers(client)
@@ -185,7 +190,7 @@ defmodule Exosphere.ATProto.XRPC.Client do
       {:ok, session} = Exosphere.ATProto.XRPC.Client.create_session(client, "user@example.com", "password")
       client = Exosphere.ATProto.XRPC.Client.with_token(client, session["accessJwt"])
   """
-  @spec create_session(t(), String.t(), String.t()) :: {:ok, map()} | {:error, term()}
+  @spec create_session(t(), String.t(), String.t()) :: {:ok, map()} | {:error, error()}
   def create_session(%__MODULE__{} = client, identifier, password) do
     procedure(client, "com.atproto.server.createSession", %{
       identifier: identifier,
@@ -195,8 +200,10 @@ defmodule Exosphere.ATProto.XRPC.Client do
 
   @doc """
   Refresh a session using the refresh token.
+
+  Returns `{:error, :no_refresh_token}` when the client has no refresh token.
   """
-  @spec refresh_session(t()) :: {:ok, map()} | {:error, term()}
+  @spec refresh_session(t()) :: {:ok, map()} | {:error, error()}
   def refresh_session(%__MODULE__{refresh_token: nil}) do
     {:error, :no_refresh_token}
   end
@@ -228,7 +235,7 @@ defmodule Exosphere.ATProto.XRPC.Client do
         rkey: "3jui7kd2lry2e"
       )
   """
-  @spec get_record(t(), keyword()) :: {:ok, map()} | {:error, term()}
+  @spec get_record(t(), keyword()) :: {:ok, map()} | {:error, error()}
   def get_record(%__MODULE__{} = client, params) do
     query(client, "com.atproto.repo.getRecord", params)
   end
@@ -244,7 +251,7 @@ defmodule Exosphere.ATProto.XRPC.Client do
         limit: 50
       )
   """
-  @spec list_records(t(), keyword()) :: {:ok, map()} | {:error, term()}
+  @spec list_records(t(), keyword()) :: {:ok, map()} | {:error, error()}
   def list_records(%__MODULE__{} = client, params) do
     query(client, "com.atproto.repo.listRecords", params)
   end
@@ -256,7 +263,7 @@ defmodule Exosphere.ATProto.XRPC.Client do
 
       {:ok, info} = Exosphere.ATProto.XRPC.Client.describe_repo(client, "did:plc:...")
   """
-  @spec describe_repo(t(), String.t()) :: {:ok, map()} | {:error, term()}
+  @spec describe_repo(t(), String.t()) :: {:ok, map()} | {:error, error()}
   def describe_repo(%__MODULE__{} = client, repo) do
     query(client, "com.atproto.repo.describeRepo", repo: repo)
   end

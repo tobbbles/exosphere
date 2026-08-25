@@ -25,7 +25,7 @@ Add `exosphere` to your dependencies:
 ```elixir
 def deps do
   [
-    {:exosphere, "~> 0.1.0"}
+    {:exosphere, "~> 0.2"}
   ]
 end
 ```
@@ -121,7 +121,9 @@ CARs only carry new blocks) and how to build on it.
 
 ## Notes
 
-- The consumer will attempt to **reconnect** on disconnects and errors.
+- The consumer **reconnects automatically** on disconnects and errors,
+  re-subscribing at the last cursor it tracked (with capped, jittered
+  backoff between attempts).
 - For more control (or lower-level access), use the `Exosphere.ATProto.*` modules directly.
 
 ## CI / Releases

@@ -1,8 +1,6 @@
 defmodule Exosphere.ATProto.Firehose.MessageTest do
   use ExUnit.Case, async: true
 
-  import Bitwise
-
   alias Exosphere.ATProto.{CAR, CBOR, CID, TestRepoCar}
   alias Exosphere.ATProto.Firehose.Message
 

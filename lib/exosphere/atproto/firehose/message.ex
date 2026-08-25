@@ -77,7 +77,24 @@ defmodule Exosphere.ATProto.Firehose.Message do
           time: String.t()
         }
 
-  @type message :: commit() | sync() | identity() | account() | handle() | map()
+  # Deprecated: superseded by #account. Retained for older relays.
+  @type tombstone :: %{
+          type: :tombstone,
+          seq: integer(),
+          did: String.t(),
+          time: String.t()
+        }
+
+  @type info :: %{
+          type: :info,
+          name: String.t() | nil,
+          message: String.t() | nil
+        }
+
+  # Unknown message headers pass through as raw maps (with `:type` attached),
+  # keeping consumers forward-compatible with new relay event types.
+  @type message ::
+          commit() | sync() | identity() | account() | handle() | tombstone() | info() | map()
 
   @doc """
   Decode a message payload based on its type.

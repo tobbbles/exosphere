@@ -119,9 +119,12 @@ Lower-level pieces, if you want to build your own flow:
 ## Reliability notes
 
 - **Reconnection**: the consumer reconnects automatically on disconnect or
-  error, replaying the original subscription URL (including the starting
-  cursor). In-flight cursor updates aren't pushed into the URL — persist the
-  latest `msg.seq` yourself and restart with it for gap-free resumes.
+  error, re-subscribing at the cursor it has tracked in memory (the `seq` of
+  the last message dispatched), so a reconnect resumes near where the stream
+  left off rather than replaying from the starting cursor. The tracked cursor
+  doesn't survive a process restart — persist the latest `msg.seq` yourself
+  and start with it for gap-free resumes. Failed reconnects back off linearly
+  with jitter, capped at four seconds.
 - **Your callback must not raise.** The consumer doesn't catch exceptions; a
   raise crashes the process and supervision restarts it (losing in-memory
   cursor state). Do slow or fallible work in a `Task` or your own process.

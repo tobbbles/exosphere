@@ -14,30 +14,18 @@ defmodule Exosphere.ATProto.HTTP do
 
   require Logger
 
+  alias Exosphere.ATProto.HTTP.Behaviour
+
+  @behaviour Behaviour
+
   @default_timeout 30_000
   @user_agent "Exosphere/#{Mix.Project.config()[:version]}"
 
-  @type json_term ::
-          nil
-          | boolean()
-          | number()
-          | binary()
-          | [json_term()]
-          | %{optional(binary()) => json_term()}
-
-  @type response :: %{
-          status: pos_integer(),
-          headers: [{String.t(), String.t()}],
-          body: binary() | json_term()
-        }
-
-  @type request_opts :: [
-          timeout: pos_integer(),
-          headers: [{String.t(), String.t()}],
-          json: map(),
-          body: binary(),
-          follow_redirects: boolean()
-        ]
+  # The response/request shapes live on the behaviour (the contract every
+  # adapter and test mock implements); re-exported here for the public API.
+  @type json_term :: Behaviour.json_term()
+  @type response :: Behaviour.response()
+  @type request_opts :: Behaviour.request_opts()
 
   @doc """
   Make an HTTP GET request.
@@ -113,8 +101,14 @@ defmodule Exosphere.ATProto.HTTP do
           {:ok, response}
       end
     else
-      {:error, _conn, reason} -> {:error, reason}
-      {:error, reason} -> {:error, reason}
+      # Every error path that holds a conn (send/receive failures and receive
+      # timeouts) must close it, or each failed request leaks a socket.
+      {:error, conn, reason} ->
+        Mint.HTTP.close(conn)
+        {:error, reason}
+
+      {:error, reason} ->
+        {:error, reason}
     end
   end
 
@@ -185,12 +179,12 @@ defmodule Exosphere.ATProto.HTTP do
         message -> drain_mailbox([message])
       after
         timeout ->
-          {:error, :timeout}
+          {:error, conn, :timeout}
       end
 
     case messages do
-      {:error, :timeout} ->
-        {:error, :timeout}
+      {:error, conn, :timeout} ->
+        {:error, conn, :timeout}
 
       messages ->
         stream_messages(conn, messages, request_ref, timeout, acc)
@@ -222,8 +216,8 @@ defmodule Exosphere.ATProto.HTTP do
           stream_messages(conn, rest, request_ref, timeout, acc)
         end
 
-      {:error, _conn, reason, _responses} ->
-        {:error, reason}
+      {:error, conn, reason, _responses} ->
+        {:error, conn, reason}
     end
   end
 

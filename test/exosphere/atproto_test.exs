@@ -25,7 +25,7 @@ defmodule Exosphere.ATProtoTest do
     test "returns {:error, reason} on invalid input" do
       assert {:error, :invalid_nsid} = ATProto.validate(:nsid, "Not A NSID")
       assert {:error, :invalid_rkey} = ATProto.validate(:rkey, "..")
-      assert {:error, :invalid_at_uri} = ATProto.validate(:at_uri, "https://example.com")
+      assert {:error, :invalid_scheme} = ATProto.validate(:at_uri, "https://example.com")
       assert {:error, :invalid_tid} = ATProto.validate(:tid, "short")
       assert {:error, :invalid_did} = ATProto.validate(:did, "did:web")
       assert {:error, :invalid_handle} = ATProto.validate(:handle, "-bad-")
@@ -35,9 +35,31 @@ defmodule Exosphere.ATProtoTest do
       assert {:error, {"", :top_level_not_object}} = ATProto.validate(:record, "blah")
     end
 
+    test ":at_uri surfaces the specific parse reason" do
+      assert {:error, :invalid_scheme} = ATProto.validate(:at_uri, "https://example.com")
+
+      assert {:error, :invalid_authority} =
+               ATProto.validate(:at_uri, "at://not a did/collection/rkey")
+
+      assert {:error, :invalid_collection} =
+               ATProto.validate(:at_uri, "at://did:plc:abc/Not A Collection")
+
+      assert {:error, :invalid_rkey} =
+               ATProto.validate(:at_uri, "at://did:plc:abc/app.bsky.feed.post/..")
+
+      # More than three path segments has no single reason: the catch-all.
+      assert {:error, :invalid_at_uri} =
+               ATProto.validate(:at_uri, "at://did:plc:abc/app.bsky.feed.post/rkey/extra")
+
+      # Non-string input falls through to AtUri.parse's catch-all reason.
+      assert {:error, :invalid_at_uri} = ATProto.validate(:at_uri, :not_a_uri)
+    end
+
     test "rejects unknown kinds" do
       assert {:error, {:unknown_validation_kind, :nope}} = ATProto.validate(:nope, "x")
-      assert {:error, :unknown_validation_kind} = ATProto.validate("nsid", "x")
+
+      # Non-atom kinds get the same tagged shape.
+      assert {:error, {:unknown_validation_kind, "nsid"}} = ATProto.validate("nsid", "x")
     end
   end
 end

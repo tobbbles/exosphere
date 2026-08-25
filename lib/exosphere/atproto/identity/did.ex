@@ -36,6 +36,8 @@ defmodule Exosphere.ATProto.Identity.DID do
   ## Options
 
   - `:timeout` - HTTP request timeout in milliseconds (default: 10_000)
+  - `:http_client` - HTTP client module implementing `HTTP.Behaviour`
+    (default: `Exosphere.ATProto.HTTP`; useful for testing)
 
   ## Examples
 

@@ -3,6 +3,7 @@ defmodule Exosphere.XRPC.Client do
   Public-facing XRPC client built on top of `Exosphere.ATProto.XRPC.Client`.
   """
 
+  alias Exosphere.ATProto.HTTP
   alias Exosphere.ATProto.XRPC.Client, as: ATClient
 
   @type t :: ATClient.t()
@@ -24,19 +25,21 @@ defmodule Exosphere.XRPC.Client do
   @doc """
   Make an XRPC query (HTTP GET).
   """
-  @spec query(t(), String.t(), keyword() | map()) :: {:ok, term()} | {:error, term()}
+  @spec query(t(), String.t(), keyword() | map()) ::
+          {:ok, HTTP.json_term()} | {:error, ATClient.error()}
   defdelegate query(client, nsid, params \\ []), to: ATClient
 
   @doc """
   Make an XRPC procedure (HTTP POST).
   """
-  @spec procedure(t(), String.t(), map() | keyword()) :: {:ok, term()} | {:error, term()}
+  @spec procedure(t(), String.t(), map() | keyword()) ::
+          {:ok, HTTP.json_term()} | {:error, ATClient.error()}
   defdelegate procedure(client, nsid, body \\ %{}), to: ATClient
 
   @doc """
   Upload a blob to the PDS.
   """
-  @spec upload_blob(t(), binary(), String.t()) :: {:ok, map()} | {:error, term()}
+  @spec upload_blob(t(), binary(), String.t()) :: {:ok, map()} | {:error, ATClient.error()}
   def upload_blob(%ATClient{} = client, data, content_type)
       when is_binary(data) and is_binary(content_type) do
     ATClient.upload_blob(client, data, content_type)

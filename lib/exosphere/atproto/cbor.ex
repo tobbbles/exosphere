@@ -33,8 +33,19 @@ defmodule Exosphere.ATProto.CBOR do
   # CBOR tag for CID links per DAG-CBOR spec
   @cid_tag 42
 
-  @type encode_error :: {:error, term()}
-  @type decode_error :: {:error, :invalid_cbor | :unsupported_type | term()}
+  # `:floats_not_allowed` is thrown for floats (DAG-CBOR forbids them); any
+  # other failure is a rescued exception.
+  @type encode_error :: {:error, :floats_not_allowed | Exception.t()}
+
+  # `:invalid_cbor` comes from this module; the remaining atoms are propagated
+  # from the underlying `:cbor` library.
+  @type decode_error ::
+          {:error,
+           :invalid_cbor
+           | :cbor_function_clause_error
+           | :cbor_match_error
+           | :cbor_decoder_error
+           | :cannot_decode_non_binary_values}
 
   @doc """
   Encode a term to DAG-CBOR binary format.
@@ -221,7 +232,7 @@ defmodule Exosphere.ATProto.CBOR do
       iex> Exosphere.ATProto.CBOR.hash(%{"hello" => "world"})
       {:ok, <<sha256_bytes::binary-32>>}
   """
-  @spec hash(term()) :: {:ok, binary()} | {:error, term()}
+  @spec hash(term()) :: {:ok, binary()} | encode_error()
   def hash(term) do
     case encode(term) do
       {:ok, cbor} -> {:ok, :crypto.hash(:sha256, cbor)}
