@@ -160,6 +160,7 @@ record-key primitives plus commit-signature verification.
 - `mix compile --warnings-as-errors`, `mix credo --strict`, `mix dialyzer`, and
   `mix format --check-formatted` all clean. Test suite at 158 tests, 0 failures
   (1 pre-existing skip).
+- cut releases from main via changelog queue and mix tasks (#8)
 
 ## [0.2.0] - 2026-04-28
 

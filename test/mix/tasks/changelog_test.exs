@@ -80,6 +80,12 @@ defmodule Exosphere.ChangelogTest do
       assert out =~ ~r/### Breaking\n- Removal \(#10\)\n\n### Added/
     end
 
+    test "appends to the last group of the section without escaping it" do
+      {:ok, out} = Changelog.add_entry(@fixture, "Internal", "- Tweak (#11)")
+
+      assert out =~ ~r/- CI tweak \(#7\)\n- Tweak \(#11\)\n\n## \[0\.2\.0\]/
+    end
+
     test "errors when there is no Unreleased section" do
       assert Changelog.add_entry("# Changelog\n", "Added", "- x (#1)") ==
                {:error, :no_unreleased}
@@ -118,6 +124,32 @@ defmodule Exosphere.ChangelogTest do
     test "refuses to cut an empty Unreleased" do
       contents = "# Changelog\n\n## [Unreleased]\n\n## [0.2.0] - 2026-04-28\n"
       assert Changelog.cut(contents, "0.3.0", "2026-08-25") == {:error, :empty}
+    end
+  end
+
+  describe "set_readme_dep/2" do
+    test "rewrites the dep snippet to a major.minor requirement" do
+      readme = """
+      ## Installation
+
+      ```elixir
+      def deps do
+        [
+          {:exosphere, "~> 0.1.0"}
+        ]
+      end
+      ```
+      """
+
+      {:ok, out} = Changelog.set_readme_dep(readme, "0.3.1")
+      assert out =~ ~s({:exosphere, "~> 0.3"})
+
+      {:ok, out} = Changelog.set_readme_dep(readme, "1.2.3")
+      assert out =~ ~s({:exosphere, "~> 1.2"})
+    end
+
+    test "errors when the README has no dep snippet" do
+      assert Changelog.set_readme_dep("# Exosphere\n", "0.3.0") == :error
     end
   end
 
@@ -243,18 +275,22 @@ defmodule Mix.Tasks.ChangelogTest do
     assert File.read!(path) == with_untyped
   end
 
-  test "changelog.cut promotes, bumps, and writes notes", %{tmp_dir: tmp_dir} do
+  test "changelog.cut promotes, bumps, updates README, and writes notes", %{tmp_dir: tmp_dir} do
     changelog_path = Path.join(tmp_dir, "CUT_CHANGELOG.md")
     mixfile_path = Path.join(tmp_dir, "mix.exs")
+    readme_path = Path.join(tmp_dir, "README.md")
     notes_path = Path.join(tmp_dir, "release_notes.md")
     File.write!(changelog_path, @fixture)
     File.write!(mixfile_path, ~s(      version: "9.9.9",))
+    File.write!(readme_path, ~s({:exosphere, "~> 9.9"}))
 
     Mix.Tasks.Changelog.Cut.run([
       "--changelog",
       changelog_path,
       "--mixfile",
       mixfile_path,
+      "--readme",
+      readme_path,
       "--notes-path",
       notes_path
     ])
@@ -263,6 +299,7 @@ defmodule Mix.Tasks.ChangelogTest do
     assert File.read!(mixfile_path) == ~s(      version: "9.10.0",)
     assert File.read!(changelog_path) =~ ~r/## \[9\.10\.0\] - \d{4}-\d{2}-\d{2}/
     assert File.read!(changelog_path) =~ "## [0.2.0] - 2026-04-28"
+    assert File.read!(readme_path) == ~s({:exosphere, "~> 9.10"})
     assert File.read!(notes_path) =~ "- Existing entry (#6)"
   end
 
