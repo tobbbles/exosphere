@@ -74,7 +74,7 @@ jobs:
         run: mix test
 
       - name: Generated modules are up to date
-        run: mix exosphere.gen.bsky --check
+        run: mix exosphere.gen.lexicons --check
 
   lint:
     name: Lint (format + credo)

@@ -1,7 +1,7 @@
 defmodule Exosphere.Lexicon.GeneratorTest do
   @moduledoc """
   Golden-file tests: regeneration must be deterministic and match the
-  committed generated modules byte-for-byte. Run `mix exosphere.gen.bsky`
+  committed generated modules byte-for-byte. Run `mix exosphere.gen.lexicons`
   and commit the result when the generator changes intentionally.
   """
 
