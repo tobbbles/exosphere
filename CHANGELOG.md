@@ -14,6 +14,16 @@ record-key primitives plus commit-signature verification.
 
 ### Fixed (breaking — output / acceptance changes)
 
+- **MST canonical tree shape.** `MST.build/1` now fills empty layers with
+  *shell nodes* (`e: []`, left link only) so every subtree link descends
+  exactly one layer, matching the reference implementation. Previously the
+  builder skipped layers with no keys, producing **different root CIDs** than
+  the reference MST for any record set with a layer gap — meaning commits
+  verified against real repositories failed `data_mismatch`. The four interop
+  golden vectors have no gaps, so this was only caught live against a real
+  41k-record repository, which now rebuilds byte-for-byte to the same root.
+  Roots produced by previous versions for gap-trees are not canonical.
+
 - **DAG-CBOR canonical encoding.** `Exosphere.ATProto.CBOR.encode/1` now sorts
   map keys with RFC 8949 *length-first* ordering (shorter keys first, ties
   broken bytewise) instead of pure lexicographic ordering, and encodes CID
@@ -54,6 +64,28 @@ record-key primitives plus commit-signature verification.
 
 ### Added
 
+- **Repository verification pipeline** — the trustless read path:
+  - `Exosphere.ATProto.Repo.verify_checkout/3` — downloads
+    `com.atproto.sync.getRepo` from a PDS, reads the record set out of the
+    MST, confirms it against the commit's signed root, resolves the DID
+    document, and verifies the commit signature. Returns the full
+    `path => CID` record set with the commit revision. Verified live against
+    a real 41k-record repository (root + signature both check out).
+  - `Exosphere.ATProto.Repo.Commit.verify_checkout/2` — the structural half:
+    blocks ↔ signed MST root, returning the record set. Catches hostile
+    non-canonical trees served under a signed root CID.
+  - `Exosphere.ATProto.Firehose.Message.verify_commit/1` — verifies a
+    `#commit` message's incremental CAR against its MST root (succeeds when
+    all referenced nodes are present, e.g. initial snapshots; reports
+    `{:missing_block, cid}` otherwise).
+  - `Exosphere.ATProto.CAR.decode_full/1` — CAR archive → header roots (as
+    CIDs) + block map; `decode/1` is unchanged and delegates.
+  - `Exosphere.ATProto.MST.from_repo_car/1` — record set straight from a
+    repository CAR (bytes or decoded form).
+- **Firehose hexdocs guide** (`docs/firehose.md`, wired into `mix docs`
+  extras) — a standalone page covering consumer setup, message types, record
+  extraction, verification, cursors/reconnection, and production tips.
+
 - `Exosphere.ATProto.AtUri` — parse/validate/render `at://` URIs (authority,
   collection, rkey, fragment), with the authority validated as a DID or handle.
 - `Exosphere.ATProto.NSID` — NSID syntax validation and parsing.
@@ -91,6 +123,12 @@ record-key primitives plus commit-signature verification.
 
 ### Changed
 
+- `Exosphere.ATProto.HTTP` now follows GET/HEAD redirects (301/302/303/307/308,
+  up to 5 hops; disable with `follow_redirects: false`). A relay answering
+  `getRepo` for a repo it doesn't host with a 302 to the real PDS is normal,
+  and the verification pipeline depends on following it. Response bodies are
+  also received with batched mailbox drains.
+
 - **`fresh` replaced with `websockex` (~> 0.5).** Fresh is unmaintained (last
   release April 2024) and its mix.exs no longer compiles on Elixir 1.20.
   `Exosphere.ATProto.Firehose.Consumer` keeps the same public API and
@@ -115,8 +153,13 @@ record-key primitives plus commit-signature verification.
 - Bumped `credo` to 1.7.19 (fixes Elixir 1.20 crashes in its token analysis)
   and pinned three `size(...)` variables in `CAR` that Elixir 1.20 flags as
   warnings, restoring a clean `--warnings-as-errors` build.
+- New `test/support/repo_car.ex` builder constructs complete signed repository
+  CARs (records → MST → signed commit → CARv1) entirely offline, so the
+  verification pipeline is tested without network access. A shell-node
+  regression test pins the canonical tree shape.
 - `mix compile --warnings-as-errors`, `mix credo --strict`, `mix dialyzer`, and
-  `mix format --check-formatted` all clean.
+  `mix format --check-formatted` all clean. Test suite at 158 tests, 0 failures
+  (1 pre-existing skip).
 
 ## [0.2.0] - 2026-04-28
 

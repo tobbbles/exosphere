@@ -74,6 +74,39 @@ defmodule Exosphere.ATProto.Repo.Commit do
   end
 
   @doc """
+  Verify a commit against a block store containing its MST, returning the
+  repository's record set.
+
+  `blocks` maps CIDs to encoded DAG-CBOR bytes or decoded nodes (e.g. the
+  `blocks` from `CAR.decode_full/1`). The tree is walked from the commit's
+  `data` root, and the resulting records are checked against the signed root
+  via `verify_data/2`, proving the blocks form exactly the tree the commit
+  attests to.
+
+  This is the structural half of repository verification. To also authenticate
+  the signer, follow up with `verify/3` or `verify_with_document/2` (or use
+  `Exosphere.ATProto.Repo.verify_checkout/3`, which does both).
+
+  Returns `{:ok, records}` (`path => CID`), or errors from `MST.read/2` /
+  `verify_data/2` (e.g. `{:error, {:missing_block, cid}}` when the block store
+  is incomplete).
+  """
+  @spec verify_checkout(commit(), %{CID.t() => binary() | map()}) ::
+          {:ok, %{MST.key() => CID.t()}} | {:error, term()}
+  def verify_checkout(commit, blocks) when is_map(commit) and is_map(blocks) do
+    case Map.get(commit, "data") do
+      %CID{} = root ->
+        with {:ok, records} <- MST.read(root, blocks),
+             :ok <- verify_data(commit, records) do
+          {:ok, records}
+        end
+
+      _ ->
+        {:error, :missing_data}
+    end
+  end
+
+  @doc """
   Verify a commit using the signing key advertised in a DID Document.
   """
   @spec verify_with_document(commit(), Document.t()) ::

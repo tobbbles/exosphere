@@ -1,7 +1,8 @@
 defmodule Exosphere.ATProto.MSTTest do
   use ExUnit.Case, async: true
 
-  alias Exosphere.ATProto.{CBOR, CID, MST}
+  alias Exosphere.ATProto.{CAR, CBOR, CID, MST}
+  alias Exosphere.ATProto.TestRepoCar
 
   # The fixed value CID used by the atproto MST interop test vectors.
   @value "bafyreie5cvv4h45feadgeuwhbcutmh6t2ceseocckahdoe6uat64zmz454"
@@ -147,6 +148,83 @@ defmodule Exosphere.ATProto.MSTTest do
       {:ok, root, blocks} = MST.build([])
       assert {:ok, map} = MST.read(root, blocks)
       assert map == %{}
+    end
+  end
+
+  describe "from_repo_car/1" do
+    test "reads a full repository CAR back into the record set" do
+      fixture = TestRepoCar.build()
+
+      assert {:ok, records} = MST.from_repo_car(fixture.car)
+      assert records == fixture.records
+    end
+
+    test "accepts a pre-decoded CAR map" do
+      fixture = TestRepoCar.build()
+      {:ok, car_map} = CAR.decode_full(fixture.car)
+
+      assert {:ok, records} = MST.from_repo_car(car_map)
+      assert records == fixture.records
+    end
+
+    test "reports missing blocks for an incomplete (incremental) CAR" do
+      fixture = TestRepoCar.build()
+      {:ok, car_map} = CAR.decode_full(fixture.car)
+
+      # Drop the MST node blocks, as an incremental firehose CAR would for
+      # unchanged subtrees: the tree walk now hits a missing node.
+      stripped = Map.drop(car_map.blocks, Map.keys(fixture.node_blocks))
+
+      assert {:error, {:missing_block, _cid}} =
+               MST.from_repo_car(%{car_map | blocks: stripped})
+    end
+
+    test "errors without a single root" do
+      assert {:error, :no_root} = MST.from_repo_car(%{roots: [], blocks: %{}})
+
+      fixture = TestRepoCar.build()
+      {:ok, car_map} = CAR.decode_full(fixture.car)
+
+      assert {:error, :multiple_roots} =
+               MST.from_repo_car(%{car_map | roots: car_map.roots ++ car_map.roots})
+    end
+  end
+
+  describe "build/1 canonical tree shape" do
+    # Regression test for the canonical (reference-implementation) shape: when
+    # a key's depth skips layers, the layers in between are filled with *empty
+    # shell* nodes (`e: []`, left link only) so every subtree link descends
+    # exactly one layer. Skipping the shells produced different root CIDs from
+    # the reference MST for any repo with a layer gap (caught live against a
+    # 41k-record repository; the small interop vectors have no gaps).
+    test "fills empty layers with shell nodes" do
+      # depth 0
+      shallow = "com.example.post/key0"
+      # depth 3
+      deep = "com.example.post/key78"
+      assert MST.depth(shallow) == 0
+      assert MST.depth(deep) == 3
+
+      assert {:ok, root, blocks} = MST.build(entries([shallow, deep]))
+
+      # Root node: single entry (the depth-3 key), left subtree holds the rest.
+      root_node = CBOR.decode!(blocks[root])
+      assert [%{"p" => 0, "k" => ^deep, "t" => nil, "v" => %CID{}}] = root_node["e"]
+      %CID{} = shell2 = root_node["l"]
+
+      # Two shells (layers 2 and 1), each empty with only a left link.
+      shell_node = CBOR.decode!(blocks[shell2])
+      assert shell_node["e"] == []
+      %CID{} = shell1 = shell_node["l"]
+
+      shell_node = CBOR.decode!(blocks[shell1])
+      assert shell_node["e"] == []
+      %CID{} = bottom = shell_node["l"]
+
+      # Bottom node (layer 0) carries the depth-0 key.
+      bottom_node = CBOR.decode!(blocks[bottom])
+      assert [%{"p" => 0, "k" => ^shallow, "t" => nil, "v" => %CID{}}] = bottom_node["e"]
+      assert bottom_node["l"] == nil
     end
   end
 end

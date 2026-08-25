@@ -33,7 +33,9 @@ defmodule Exosphere.ATProto.CAR do
   @doc """
   Decode a CAR file into a map of CID → decoded data.
 
-  Returns `{:ok, %{cid => data}}` on success.
+  Returns `{:ok, %{cid => data}}` on success. The header's `roots` are
+  discarded; use `decode_full/1` when you need them (e.g. to locate a
+  repository's root commit for verification).
   """
   @spec decode(binary()) :: {:ok, block_map()} | {:error, term()}
   def decode(<<>>) do
@@ -41,8 +43,28 @@ defmodule Exosphere.ATProto.CAR do
   end
 
   def decode(data) when is_binary(data) do
-    with {:ok, _header, rest} <- decode_header(data) do
-      decode_blocks(rest)
+    with {:ok, %{blocks: blocks}} <- decode_full(data), do: {:ok, blocks}
+  end
+
+  def decode(_), do: {:error, :invalid_input}
+
+  @doc """
+  Decode a CAR file into its header roots and block map.
+
+  Returns `{:ok, %{roots: [%CID{}, ...], blocks: %{cid => data}}}`. The roots
+  come from the CAR header (CID links decoded via `CBOR.transform_links/1`);
+  for atproto repository archives the single root is the CID of the top commit
+  block, which is itself present in `blocks`.
+  """
+  @spec decode_full(binary()) ::
+          {:ok, %{roots: [CID.t()], blocks: block_map()}} | {:error, term()}
+  def decode_full(<<>>), do: {:error, :empty_car}
+
+  def decode_full(data) when is_binary(data) do
+    with {:ok, header, rest} <- decode_header(data),
+         {:ok, roots} <- extract_roots(header),
+         {:ok, blocks} <- decode_blocks(rest) do
+      {:ok, %{roots: roots, blocks: blocks}}
     end
   rescue
     e ->
@@ -50,7 +72,7 @@ defmodule Exosphere.ATProto.CAR do
       {:error, {:decode_failed, e}}
   end
 
-  def decode(_), do: {:error, :invalid_input}
+  def decode_full(_), do: {:error, :invalid_input}
 
   @doc """
   Get a block by CID from the parsed blocks map.
@@ -70,6 +92,24 @@ defmodule Exosphere.ATProto.CAR do
   end
 
   def get_block(_, _), do: nil
+
+  # The header's `roots` are CID links; decode them to %CID{} structs and
+  # reject anything malformed (a link that won't parse becomes nil).
+  defp extract_roots(header) do
+    case Map.get(header, "roots", []) do
+      roots when is_list(roots) ->
+        cids = Enum.map(roots, &DagCBOR.transform_links/1)
+
+        if Enum.all?(cids, &is_struct(&1, CID)) do
+          {:ok, cids}
+        else
+          {:error, :invalid_roots}
+        end
+
+      _ ->
+        {:error, :invalid_roots}
+    end
+  end
 
   # Decode CAR header
   defp decode_header(data) do

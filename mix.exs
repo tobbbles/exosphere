@@ -57,14 +57,14 @@ defmodule Exosphere.MixProject do
     [
       main: "readme",
       logo: "docs/static/logo.png",
-      extras: ["README.md"]
+      extras: ["README.md", "docs/firehose.md"]
     ]
   end
 
   defp package do
     [
       name: "exosphere",
-      files: ["lib", "mix.exs", "README.md", "LICENSE", "CHANGELOG.md"],
+      files: ["lib", "mix.exs", "README.md", "LICENSE", "CHANGELOG.md", "docs"],
       maintainers: ["Toby Archer"],
       licenses: ["MIT"],
       links: %{"GitHub" => "https://github.com/tobbbles/exosphere"}

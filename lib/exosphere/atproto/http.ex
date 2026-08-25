@@ -35,7 +35,8 @@ defmodule Exosphere.ATProto.HTTP do
           timeout: pos_integer(),
           headers: [{String.t(), String.t()}],
           json: map(),
-          body: binary()
+          body: binary(),
+          follow_redirects: boolean()
         ]
 
   @doc """
@@ -68,9 +69,20 @@ defmodule Exosphere.ATProto.HTTP do
 
   @doc """
   Make a generic HTTP request.
+
+  GET/HEAD redirects (301/302/303/307/308) are followed automatically, up to
+  5 hops. This matters for atproto endpoints: a relay may redirect
+  `com.atproto.sync.getRepo` to the PDS that actually hosts the account.
+  Redirect handling can be disabled with `follow_redirects: false`.
   """
   @spec request(atom(), String.t(), request_opts()) :: {:ok, response()} | {:error, term()}
   def request(method, url, opts \\ []) do
+    do_request(method, url, opts, 0)
+  end
+
+  @max_redirects 5
+
+  defp do_request(method, url, opts, redirects) do
     uri = URI.parse(url)
     timeout = Keyword.get(opts, :timeout, @default_timeout)
 
@@ -85,12 +97,50 @@ defmodule Exosphere.ATProto.HTTP do
          {:ok, conn, request_ref} <- send_request(conn, method, path, headers, body),
          {:ok, response} <- receive_response(conn, request_ref, timeout) do
       Mint.HTTP.close(conn)
-      {:ok, response}
+
+      case redirect_location(response) do
+        nil ->
+          {:ok, response}
+
+        location when method in [:get, :head] ->
+          cond do
+            not Keyword.get(opts, :follow_redirects, true) -> {:ok, response}
+            redirects >= @max_redirects -> {:error, :too_many_redirects}
+            true -> do_request(method, absolute_uri(uri, location), opts, redirects + 1)
+          end
+
+        _ ->
+          {:ok, response}
+      end
     else
       {:error, _conn, reason} -> {:error, reason}
       {:error, reason} -> {:error, reason}
     end
   end
+
+  defp redirect_location(%{status: status, headers: headers})
+       when status in [301, 302, 303, 307, 308] do
+    Enum.find_value(headers, fn
+      {"location", value} ->
+        value
+
+      {key, value} when is_binary(key) ->
+        if String.downcase(key) == "location", do: value
+
+      _ ->
+        nil
+    end)
+  end
+
+  defp redirect_location(_), do: nil
+
+  # Resolve a (possibly relative) Location header against the request URI.
+  defp absolute_uri(base, "/" <> _ = location) do
+    base_scheme = base.scheme || "https"
+    "#{base_scheme}://#{base.host}:#{base.port || default_port(base.scheme)}#{location}"
+  end
+
+  defp absolute_uri(_base, location), do: location
 
   # Connect to host
   defp connect(scheme, host, port, timeout) do
@@ -119,33 +169,61 @@ defmodule Exosphere.ATProto.HTTP do
     Mint.HTTP.request(conn, to_string(method) |> String.upcase(), path, headers, body)
   end
 
-  # Receive and accumulate response
+  # Receive and accumulate response. Messages are drained in batches: a plain
+  # `receive`-per-message loop rescans the whole mailbox for every message,
+  # which is quadratic and crawls on multi-megabyte responses (tens of
+  # thousands of socket messages).
   defp receive_response(conn, request_ref, timeout) do
     receive_response_loop(conn, request_ref, timeout, %{status: nil, headers: [], body: []})
   end
 
   defp receive_response_loop(conn, request_ref, timeout, acc) do
-    receive do
-      message ->
-        case Mint.HTTP.stream(conn, message) do
-          :unknown ->
-            receive_response_loop(conn, request_ref, timeout, acc)
+    # Block for the first message (bounded by the timeout), then greedily
+    # drain everything already in the mailbox.
+    messages =
+      receive do
+        message -> drain_mailbox([message])
+      after
+        timeout ->
+          {:error, :timeout}
+      end
 
-          {:ok, conn, responses} ->
-            acc = process_responses(responses, request_ref, acc)
-
-            if response_complete?(responses, request_ref) do
-              {:ok, finalize_response(acc)}
-            else
-              receive_response_loop(conn, request_ref, timeout, acc)
-            end
-
-          {:error, _conn, reason, _responses} ->
-            {:error, reason}
-        end
-    after
-      timeout ->
+    case messages do
+      {:error, :timeout} ->
         {:error, :timeout}
+
+      messages ->
+        stream_messages(conn, messages, request_ref, timeout, acc)
+    end
+  end
+
+  defp drain_mailbox(acc) do
+    receive do
+      message -> drain_mailbox([message | acc])
+    after
+      0 -> Enum.reverse(acc)
+    end
+  end
+
+  defp stream_messages(conn, [], request_ref, timeout, acc),
+    do: receive_response_loop(conn, request_ref, timeout, acc)
+
+  defp stream_messages(conn, [message | rest], request_ref, timeout, acc) do
+    case Mint.HTTP.stream(conn, message) do
+      :unknown ->
+        stream_messages(conn, rest, request_ref, timeout, acc)
+
+      {:ok, conn, responses} ->
+        acc = process_responses(responses, request_ref, acc)
+
+        if response_complete?(responses, request_ref) do
+          {:ok, finalize_response(acc)}
+        else
+          stream_messages(conn, rest, request_ref, timeout, acc)
+        end
+
+      {:error, _conn, reason, _responses} ->
+        {:error, reason}
     end
   end
 
