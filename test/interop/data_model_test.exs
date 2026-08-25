@@ -10,7 +10,7 @@ defmodule Exosphere.Interop.DataModelTest do
   use ExUnit.Case, async: true
 
   alias Exosphere.ATProto.CBOR, as: DagCBOR
-  alias Exosphere.ATProto.CID
+  alias Exosphere.ATProto.{CID, DataModel}
   alias Exosphere.Test.Interop
 
   @fixtures Interop.json("data-model/data-model-fixtures.json")
@@ -52,10 +52,32 @@ defmodule Exosphere.Interop.DataModelTest do
 
   defp to_term(other), do: other
 
-  # The data-model valid/invalid tables exercise a full record/data-model
-  # *validator* (e.g. "$type" rules, blob structure, "link with bogus CID"),
-  # which Exosphere does not yet implement — CBOR.encode/1 alone does not
-  # enforce these structural rules. Tracked as a gap.
-  @tag :skip
-  test "TODO: data-model valid/invalid require a record/data-model validator"
+  describe "record/data-model validation" do
+    test "accepts every valid fixture" do
+      wrongly_rejected =
+        "data-model/data-model-valid.json"
+        |> Interop.json()
+        |> Enum.filter(fn e -> DataModel.validate_record(e["json"]) != :ok end)
+
+      assert wrongly_rejected == [],
+             "valid data-model values rejected:
+" <> format(wrongly_rejected)
+    end
+
+    test "rejects every invalid fixture" do
+      wrongly_accepted =
+        "data-model/data-model-invalid.json"
+        |> Interop.json()
+        |> Enum.filter(fn e -> DataModel.validate_record(e["json"]) == :ok end)
+
+      assert wrongly_accepted == [],
+             "invalid data-model values accepted:
+" <> format(wrongly_accepted)
+    end
+  end
+
+  defp format(entries) do
+    Enum.map_join(entries, "
+", &("  - " <> inspect(Map.get(&1, "note"))))
+  end
 end

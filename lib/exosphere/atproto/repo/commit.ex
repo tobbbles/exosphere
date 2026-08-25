@@ -118,7 +118,8 @@ defmodule Exosphere.ATProto.Repo.Commit do
   end
 
   # The `sig` field, normalized to raw bytes. CBOR byte strings decode to raw
-  # binaries via CBOR.transform_links/1, but tolerate a wrapping :bytes tag too.
+  # binaries via Exosphere.ATProto.CBOR.transform_links/1, but tolerate a
+  # wrapping :bytes tag too.
   defp extract_sig(commit) do
     case Map.get(commit, "sig") do
       sig when is_binary(sig) -> {:ok, sig}
