@@ -27,7 +27,7 @@ jobs:
       MIX_ENV: test
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           ref: main
           # A PAT (contents read/write) so the push is allowed under branch
@@ -40,9 +40,6 @@ jobs:
           elixir-version: "1.19"
           otp-version: "27"
           version-type: loose
-          hex-cache: true
-          rebar-cache: true
-          mix-cache: true
 
       - name: Install deps
         run: mix deps.get

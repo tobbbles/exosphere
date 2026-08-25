@@ -19,7 +19,7 @@ jobs:
       HEX_API_KEY: ${{ secrets.HEX_API_KEY }}
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           fetch-depth: 0
 
@@ -28,9 +28,6 @@ jobs:
           elixir-version: "1.19"
           otp-version: "27"
           version-type: loose
-          hex-cache: true
-          rebar-cache: true
-          mix-cache: true
 
       - name: Install deps
         run: mix deps.get
