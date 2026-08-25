@@ -80,6 +80,51 @@ defmodule Exosphere.ATProto.Crypto do
   end
 
   @doc """
+  Decompress a compressed public key (33 bytes, `0x02`/`0x03` prefix) into
+  the uncompressed 65-byte form (`0x04` prefix). Uncompressed input passes
+  through unchanged.
+
+  ## Examples
+
+      iex> {:ok, <<0x04, _::binary-64>>} = Exosphere.ATProto.Crypto.decompress(keypair.public_key, :p256)
+  """
+  @spec decompress(binary(), curve()) :: {:ok, binary()} | {:error, :invalid_public_key}
+  def decompress(<<prefix, _::binary-32>> = key, :secp256k1) when prefix in [0x02, 0x03] do
+    case ExSecp256k1.public_key_decompress(key) do
+      {:ok, decompressed} -> {:ok, decompressed}
+      _ -> {:error, :invalid_public_key}
+    end
+  end
+
+  def decompress(<<prefix, _::binary-32>> = key, :p256) when prefix in [0x02, 0x03],
+    do: {:ok, decompress_p256_public_key(key)}
+
+  def decompress(<<0x04, _::binary-64>> = key, _curve), do: {:ok, key}
+  def decompress(_, _curve), do: {:error, :invalid_public_key}
+
+  @doc """
+  Compress an uncompressed public key (65 bytes, `0x04` prefix) into the
+  33-byte compressed form. Compressed input passes through unchanged.
+
+  ## Examples
+
+      iex> {:ok, <<prefix, _::binary-32>>} = Exosphere.ATProto.Crypto.compress_public_key(key, :p256)
+      iex> prefix in [2, 3]
+      true
+  """
+  @spec compress_public_key(binary(), curve()) :: {:ok, binary()} | {:error, :invalid_public_key}
+  def compress_public_key(<<0x04, _x::binary-32, _y::binary-32>> = key, :secp256k1),
+    do: {:ok, compress_secp256k1_public_key(key)}
+
+  def compress_public_key(<<0x04, _x::binary-32, _y::binary-32>> = key, :p256),
+    do: {:ok, compress_p256_public_key(key)}
+
+  def compress_public_key(<<prefix, _::binary-32>> = key, _curve) when prefix in [0x02, 0x03],
+    do: {:ok, key}
+
+  def compress_public_key(_, _curve), do: {:error, :invalid_public_key}
+
+  @doc """
   Sign data using ECDSA-SHA256.
 
   Returns the signature in "low-S" canonical form as required by Exosphere.ATProto.

@@ -22,7 +22,11 @@ defmodule Exosphere.ATProto.Identity.Handle do
 
   require Logger
 
-  @type resolve_opts :: [timeout: pos_integer(), methods: [:dns | :https]]
+  @type resolve_opts :: [
+          timeout: pos_integer(),
+          methods: [:dns | :https],
+          http_client: module()
+        ]
 
   @doc """
   Resolve a handle to its DID.
@@ -32,7 +36,9 @@ defmodule Exosphere.ATProto.Identity.Handle do
   ## Options
 
   - `:timeout` - Request timeout in milliseconds (default: 10_000)
-  - `:methods` - Resolution methods to try (default: [:dns, :https])
+  - `:methods` - Resolution methods to try (default: `[:dns, :https]`)
+  - `:http_client` - HTTP client module implementing `HTTP.Behaviour`
+    (default: `Exosphere.ATProto.HTTP`; useful for testing)
   """
   @spec resolve(String.t(), resolve_opts()) :: {:ok, String.t()} | {:error, term()}
   def resolve(handle, opts \\ []) when is_binary(handle) do
@@ -112,9 +118,10 @@ defmodule Exosphere.ATProto.Identity.Handle do
   @spec resolve_https(String.t(), resolve_opts()) :: {:ok, String.t()} | {:error, term()}
   def resolve_https(handle, opts \\ []) do
     timeout = Keyword.get(opts, :timeout, 10_000)
+    http = Keyword.get(opts, :http_client, HTTP)
     url = "https://#{handle}/.well-known/atproto-did"
 
-    case HTTP.get(url, timeout: timeout) do
+    case http.get(url, timeout: timeout) do
       {:ok, %{status: 200, body: body}} ->
         # Body could be binary (plain text) or string (JSON decoded)
         did =

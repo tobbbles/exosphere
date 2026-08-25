@@ -14,7 +14,7 @@ Exosphere is a collection of AT Protocol clients and utilities.
 ## What’s inside
 
 - `Exosphere.ATProto.*`: lower-level, spec-aligned implementation building blocks (see [atproto.com](https://atproto.com/))
-- `Exosphere.*`: public-facing API modules built on top of `Exosphere.ATProto.*` (XRPC client, firehose consumer, etc.)
+- `Exosphere.*`: public-facing API modules built on top of `Exosphere.ATProto.*` (XRPC client, OAuth session, firehose consumer, etc.)
 
 ## Getting started
 
@@ -43,6 +43,43 @@ client = Exosphere.XRPC.Client.new("https://bsky.social")
     handle: "atproto.com"
   )
 ```
+
+## OAuth (DPoP-bound sessions)
+
+`Exosphere.ATProto.OAuth.*` implements the full [ATProto OAuth
+profile](https://atproto.com/specs/oauth): identity-to-server discovery,
+client metadata documents, PAR, PKCE, `private_key_jwt`, DPoP-bound tokens
+with nonce handling, token exchange, and rotating refresh tokens.
+`Exosphere.OAuth.Session` wraps the result in a GenServer that keeps the
+session fresh and signs XRPC calls.
+
+```elixir
+alias Exosphere.ATProto.OAuth.{Client, ClientMetadata, Discovery, Flow, JWK}
+
+client = Client.new!(
+  metadata: ClientMetadata.new!(
+    client_id: "https://app.example.com/oauth-client-metadata.json",
+    client_name: "My App",
+    redirect_uris: ["https://app.example.com/oauth/callback"],
+    scope: ["atproto", "transition:generic"],
+    jwk: JWK.to_public(client_key)
+  ),
+  key: client_key,
+  redirect_uri: "https://app.example.com/oauth/callback"
+)
+
+{:ok, resolved} = Discovery.resolve("alice.example.com")
+{:ok, {authorize_url, ctx}} = Flow.authorize_url(client, resolved)
+# ... browser round-trip; store ctx server-side ...
+{:ok, session} = Flow.callback(ctx, callback_params)
+
+{:ok, pid} = Exosphere.OAuth.Session.start_link(session: session)
+{:ok, profile} = Exosphere.OAuth.Session.query(pid, "app.bsky.actor.getProfile", actor: session.sub)
+```
+
+See the [OAuth guide](oauth.html) for the complete walk-through, including
+local-development loopback clients and the in-process mock PDS for e2e
+testing.
 
 ## Firehose (subscribeRepos)
 

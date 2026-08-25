@@ -7,6 +7,7 @@ defmodule Exosphere.ATProto.Repo do
   """
 
   alias Exosphere.ATProto.{CAR, CID, HTTP, Identity.DID, Repo.Commit}
+  alias Exosphere.ATProto.OAuth.{Request, Session}
   require Logger
 
   @doc """
@@ -16,7 +17,8 @@ defmodule Exosphere.ATProto.Repo do
 
   ## Parameters
 
-  - `session` - OAuth session with access_token and dpop_private_key
+  - `session` - an `%Exosphere.ATProto.OAuth.Session{}` (or a map with
+    `access_token` and a base64-encoded JSON JWK under `dpop_private_key`)
   - `pds_url` - URL of the user's PDS
   - `did` - The user's DID
   - `collection` - The collection NSID (e.g., "app.bsky.actor.profile")
@@ -210,56 +212,15 @@ defmodule Exosphere.ATProto.Repo do
     end
   end
 
-  # Make an authenticated request with DPoP proof
-  defp make_authenticated_request(url, body, session, nonce \\ nil, retry_count \\ 0)
-
-  defp make_authenticated_request(_url, _body, _session, _nonce, retry_count)
-       when retry_count > 2 do
-    Logger.error("[Exosphere.ATProto.Repo] Request failed after max retries")
-    {:error, :max_retries}
-  end
-
-  defp make_authenticated_request(url, body, session, nonce, retry_count) do
-    with {:ok, dpop_key} <- decode_dpop_key(session.dpop_private_key) do
-      method_str = "POST"
-      dpop_proof = create_dpop_proof(dpop_key, method_str, url, nonce, session.access_token)
-
-      headers = [
-        {"authorization", "DPoP #{session.access_token}"},
-        {"dpop", dpop_proof}
-      ]
-
-      result =
-        HTTP.post(url, headers: headers, json: body)
-
-      case result do
+  # Make an authenticated request with DPoP proof. Nonce challenges
+  # (400 use_dpop_nonce / 401 with DPoP-Nonce) are handled — and retried —
+  # by the shared OAuth request executor.
+  defp make_authenticated_request(url, body, session) do
+    with {:ok, dpop_key} <- session_dpop_key(session) do
+      case Request.authorized(HTTP, :post, url, [json: body], dpop_key, session.access_token) do
         {:ok, %{status: 200, body: response}} ->
           Logger.debug("[Exosphere.ATProto.Repo] Request successful")
           {:ok, response}
-
-        {:ok, %{status: 400, body: %{"error" => "use_dpop_nonce"}, headers: resp_headers}} ->
-          # Server requires nonce - extract and retry
-          new_nonce = get_dpop_nonce_header(resp_headers)
-
-          if new_nonce do
-            Logger.debug("[Exosphere.ATProto.Repo] DPoP nonce required, retrying")
-            make_authenticated_request(url, body, session, new_nonce, retry_count + 1)
-          else
-            Logger.error("[Exosphere.ATProto.Repo] Nonce required but not provided")
-            {:error, :nonce_required}
-          end
-
-        {:ok, %{status: 401, headers: resp_headers} = response} ->
-          # Might need a nonce
-          new_nonce = get_dpop_nonce_header(resp_headers)
-
-          if new_nonce && retry_count == 0 do
-            Logger.debug("[Exosphere.ATProto.Repo] Got nonce from 401, retrying")
-            make_authenticated_request(url, body, session, new_nonce, retry_count + 1)
-          else
-            Logger.error("[Exosphere.ATProto.Repo] Unauthorized: #{inspect(response.body)}")
-            {:error, {:unauthorized, response.body}}
-          end
 
         {:ok, %{status: status, body: response_body}} ->
           Logger.error(
@@ -275,76 +236,23 @@ defmodule Exosphere.ATProto.Repo do
     end
   end
 
-  # Add $type field to record
-  defp add_type(record, collection) do
-    Map.put(record, "$type", collection)
-  end
+  # Sessions come in two shapes: an %Exosphere.ATProto.OAuth.Session{} from
+  # the OAuth flow, or the historical map with a base64-encoded JSON JWK.
+  defp session_dpop_key(%Session{dpop_key: key}) when is_map(key), do: {:ok, key}
 
-  # Decode DPoP key from base64-encoded JSON
-  defp decode_dpop_key(encoded) do
+  defp session_dpop_key(%{dpop_private_key: encoded}) when is_binary(encoded) do
     with {:ok, json} <- Base.decode64(encoded),
-         {:ok, map} <- Jason.decode(json) do
-      {:ok, JOSE.JWK.from_map(map)}
+         {:ok, map} when is_map(map) <- Jason.decode(json) do
+      {:ok, map}
     else
       _ -> {:error, :invalid_dpop_key}
     end
   end
 
-  # Create DPoP proof with optional access token hash
-  defp create_dpop_proof(dpop_key, method, url, nonce, access_token) do
-    uri = URI.parse(url)
+  defp session_dpop_key(_), do: {:error, :invalid_dpop_key}
 
-    htu =
-      "#{uri.scheme}://#{uri.host}#{case uri.port do
-        80 -> ""
-        443 -> ""
-        port -> ":#{port}"
-      end}#{uri.path}"
-
-    # Base claims
-    claims = %{
-      "jti" => generate_jti(),
-      "htm" => method,
-      "htu" => htu,
-      "iat" => System.system_time(:second)
-    }
-
-    # Add nonce if provided
-    claims = if nonce, do: Map.put(claims, "nonce", nonce), else: claims
-
-    # Add access token hash if provided (for resource server requests)
-    claims =
-      if access_token do
-        ath = :crypto.hash(:sha256, access_token) |> Base.url_encode64(padding: false)
-        Map.put(claims, "ath", ath)
-      else
-        claims
-      end
-
-    # Get the public key for the header
-    {_, public_map} = JOSE.JWK.to_public(dpop_key) |> JOSE.JWK.to_map()
-
-    header = %{
-      "typ" => "dpop+jwt",
-      "alg" => "ES256",
-      "jwk" => public_map
-    }
-
-    {_, jwt} = JOSE.JWT.sign(dpop_key, header, claims) |> JOSE.JWS.compact()
-    jwt
-  end
-
-  defp generate_jti do
-    :crypto.strong_rand_bytes(16)
-    |> Base.url_encode64(padding: false)
-  end
-
-  # Extract DPoP-Nonce header from response
-  defp get_dpop_nonce_header(headers) do
-    Enum.find_value(headers, fn
-      {"dpop-nonce", value} -> value
-      {key, value} when is_binary(key) -> if String.downcase(key) == "dpop-nonce", do: value
-      _ -> nil
-    end)
+  # Add $type field to record
+  defp add_type(record, collection) do
+    Map.put(record, "$type", collection)
   end
 end

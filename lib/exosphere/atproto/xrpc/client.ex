@@ -26,17 +26,19 @@ defmodule Exosphere.ATProto.XRPC.Client do
   """
 
   alias Exosphere.ATProto.HTTP
+  alias Exosphere.ATProto.OAuth.Request
   alias Exosphere.ATProto.XRPC.Error
 
   @enforce_keys [:base_url]
-  defstruct [:base_url, :access_token, :refresh_token, :timeout, :http]
+  defstruct [:base_url, :access_token, :refresh_token, :timeout, :http, :dpop]
 
   @type t :: %__MODULE__{
           base_url: String.t(),
           access_token: String.t() | nil,
           refresh_token: String.t() | nil,
           timeout: pos_integer() | nil,
-          http: module() | nil
+          http: module() | nil,
+          dpop: map() | nil
         }
 
   @type query_params :: keyword() | map()
@@ -54,8 +56,12 @@ defmodule Exosphere.ATProto.XRPC.Client do
 
   ## Options
 
-  - `:access_token` - JWT access token for authentication
-  - `:refresh_token` - JWT refresh token
+  - `:access_token` - access token for authentication
+  - `:refresh_token` - refresh token
+  - `:dpop` - private DPoP JWK (from `Exosphere.ATProto.OAuth.Session`).
+    When set together with `:access_token`, requests are DPoP-signed
+    (`Authorization: DPoP ...` plus a per-request proof header, with
+    automatic nonce retry) instead of plain Bearer
   - `:timeout` - Request timeout in milliseconds (default: 30_000)
 
   ## Examples
@@ -78,7 +84,8 @@ defmodule Exosphere.ATProto.XRPC.Client do
       access_token: Keyword.get(opts, :access_token),
       refresh_token: Keyword.get(opts, :refresh_token),
       timeout: Keyword.get(opts, :timeout, @default_timeout),
-      http: Keyword.get(opts, :http, HTTP)
+      http: Keyword.get(opts, :http, HTTP),
+      dpop: Keyword.get(opts, :dpop)
     }
   end
 
@@ -104,19 +111,9 @@ defmodule Exosphere.ATProto.XRPC.Client do
   """
   @spec query(t(), String.t(), query_params()) :: {:ok, HTTP.json_term()} | {:error, error()}
   def query(%__MODULE__{} = client, nsid, params \\ []) do
-    url = build_url(client, nsid, params)
-    headers = build_headers(client)
-
-    case client.http.get(url, headers: headers, timeout: client.timeout) do
-      {:ok, %{status: 200, body: body}} ->
-        {:ok, body}
-
-      {:ok, %{status: status, body: body}} ->
-        {:error, Error.from_response(status, body)}
-
-      {:error, reason} ->
-        {:error, reason}
-    end
+    client
+    |> execute(:get, build_url(client, nsid, params), [])
+    |> map_response()
   end
 
   @doc """
@@ -137,19 +134,11 @@ defmodule Exosphere.ATProto.XRPC.Client do
           {:ok, HTTP.json_term()} | {:error, error()}
   def procedure(%__MODULE__{} = client, nsid, body \\ %{}, params \\ []) do
     url = build_url(client, nsid, params)
-    headers = build_headers(client)
     json_body = if is_list(body), do: Map.new(body), else: body
 
-    case client.http.post(url, headers: headers, json: json_body, timeout: client.timeout) do
-      {:ok, %{status: 200, body: body}} ->
-        {:ok, body}
-
-      {:ok, %{status: status, body: body}} ->
-        {:error, Error.from_response(status, body)}
-
-      {:error, reason} ->
-        {:error, reason}
-    end
+    client
+    |> execute(:post, url, json: json_body)
+    |> map_response()
   end
 
   @doc """
@@ -163,23 +152,10 @@ defmodule Exosphere.ATProto.XRPC.Client do
   @spec upload_blob(t(), binary(), String.t()) :: {:ok, map()} | {:error, error()}
   def upload_blob(%__MODULE__{} = client, data, content_type) when is_binary(data) do
     url = build_url(client, "com.atproto.repo.uploadBlob")
-    headers = build_headers(client)
 
-    case client.http.post(url,
-           headers: headers,
-           body: data,
-           content_type: content_type,
-           timeout: client.timeout
-         ) do
-      {:ok, %{status: 200, body: body}} ->
-        {:ok, body}
-
-      {:ok, %{status: status, body: body}} ->
-        {:error, Error.from_response(status, body)}
-
-      {:error, reason} ->
-        {:error, reason}
-    end
+    client
+    |> execute(:post, url, body: data, content_type: content_type)
+    |> map_response()
   end
 
   @doc """
@@ -267,6 +243,36 @@ defmodule Exosphere.ATProto.XRPC.Client do
   def describe_repo(%__MODULE__{} = client, repo) do
     query(client, "com.atproto.repo.describeRepo", repo: repo)
   end
+
+  # Execute a request. DPoP sessions (key + access token) go through the
+  # shared OAuth executor, which signs per-request proofs and retries nonce
+  # challenges; everything else stays a plain request with Bearer auth.
+  # The plain path keeps calling get/post (not request/3) so downstream HTTP
+  # fakes written against the original contract keep working.
+  defp execute(%__MODULE__{dpop: nil} = client, method, url, opts) do
+    request_opts = [headers: build_headers(client), timeout: client.timeout] ++ opts
+
+    case method do
+      :get -> client.http.get(url, request_opts)
+      :post -> client.http.post(url, request_opts)
+    end
+  end
+
+  defp execute(%__MODULE__{dpop: key, access_token: token} = client, method, url, opts)
+       when is_map(key) and is_binary(token) do
+    Request.authorized(client.http, method, url, [timeout: client.timeout] ++ opts, key, token)
+  end
+
+  defp execute(%__MODULE__{} = client, method, url, opts) do
+    client.http.request(method, url, [timeout: client.timeout] ++ opts)
+  end
+
+  defp map_response({:ok, %{status: 200, body: body}}), do: {:ok, body}
+
+  defp map_response({:ok, %{status: status, body: body}}),
+    do: {:error, Error.from_response(status, body)}
+
+  defp map_response({:error, reason}), do: {:error, reason}
 
   # Build the full URL for an XRPC endpoint
   defp build_url(%__MODULE__{base_url: base}, nsid, params \\ []) do

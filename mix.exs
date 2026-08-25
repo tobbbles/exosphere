@@ -33,6 +33,7 @@ defmodule Exosphere.MixProject do
   # Run "mix help compile.app" to learn about applications.
   def application do
     [
+      mod: {Exosphere.Application, []},
       extra_applications: [:logger]
     ]
   end
@@ -57,7 +58,7 @@ defmodule Exosphere.MixProject do
     [
       main: "readme",
       logo: "docs/static/logo.png",
-      extras: ["README.md", "docs/firehose.md"]
+      extras: ["README.md", "docs/firehose.md", "docs/oauth.md"]
     ]
   end
 
