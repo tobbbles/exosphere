@@ -1,0 +1,100 @@
+name: Cut release
+
+on:
+  workflow_dispatch:
+    inputs:
+      bump:
+        description: "Bump level (auto-detected from the changelog when 'auto')"
+        type: choice
+        options: ["auto", "major", "minor", "patch"]
+        default: "auto"
+
+concurrency:
+  # Shared with "Changelog": changelog appends and release cuts must never
+  # race each other on CHANGELOG.md.
+  group: release-pipeline
+  cancel-in-progress: false
+
+permissions:
+  contents: write
+
+jobs:
+  cut:
+    name: Cut release from main
+    runs-on: ubuntu-latest
+
+    env:
+      MIX_ENV: test
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: main
+          fetch-depth: 0
+          # A PAT (contents read/write): its pushes land under branch protection
+          # bypass, and tag/release events it creates do trigger the Release
+          # workflow (GITHUB_TOKEN events do not).
+          token: ${{ secrets.RELEASE_TOKEN }}
+
+      - uses: erlef/setup-beam@v1
+        with:
+          elixir-version: "1.19"
+          otp-version: "27"
+          version-type: loose
+          hex-cache: true
+          rebar-cache: true
+          mix-cache: true
+
+      - name: Install deps
+        run: mix deps.get
+
+      - name: Promote [Unreleased] and bump version
+        env:
+          BUMP: ${{ inputs.bump }}
+        run: |
+          set -euo pipefail
+          args=()
+          if [ "$BUMP" != "auto" ]; then
+            args+=(--bump "$BUMP")
+          fi
+          mix changelog.cut "${args[@]}" --notes-path release_notes.md
+
+      - name: Read new version
+        id: version
+        run: |
+          set -euo pipefail
+          version="$(grep -m1 -oE 'version: "[0-9]+\.[0-9]+\.[0-9]+"' mix.exs | grep -oE '[0-9]+\.[0-9]+\.[0-9]+')"
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+
+      - name: Commit and push (retry on race)
+        run: |
+          set -euo pipefail
+          version="${{ steps.version.outputs.version }}"
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add CHANGELOG.md mix.exs
+          git commit -m "chore: release v${version} [skip ci]"
+          pushed=0
+          for _ in 1 2 3; do
+            if git push origin main; then pushed=1; break; fi
+            echo "Push rejected; rebasing on latest main and retrying."
+            git fetch origin main
+            git rebase origin/main
+          done
+          if [ "$pushed" -ne 1 ]; then
+            echo "Could not push release v${version} after 3 attempts." >&2
+            exit 1
+          fi
+
+      - name: Create GitHub Release (tags the pushed commit)
+        env:
+          GH_TOKEN: ${{ secrets.RELEASE_TOKEN }}
+        run: |
+          set -euo pipefail
+          version="${{ steps.version.outputs.version }}"
+          # Tag via the release so it always points at the commit just pushed
+          # to main, never at a workflow-local orphan.
+          gh release create "v${version}" \
+            --target "$(git rev-parse HEAD)" \
+            --title "v${version}" \
+            --notes-file release_notes.md

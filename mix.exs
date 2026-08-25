@@ -22,7 +22,10 @@ defmodule Exosphere.MixProject do
     ]
   end
 
-  defp elixirc_paths(:test), do: ["lib", "test/support"]
+  # The tasks/ directory holds repo-maintenance Mix tasks (changelog.add,
+  # changelog.cut); compiling them only in :test keeps them out of the Hex
+  # package and the published docs.
+  defp elixirc_paths(:test), do: ["lib", "tasks", "test/support"]
   defp elixirc_paths(_), do: ["lib"]
 
   # Run "mix help compile.app" to learn about applications.
@@ -59,7 +62,7 @@ defmodule Exosphere.MixProject do
   defp package do
     [
       name: "exosphere",
-      files: ["lib", "mix.exs", "README.md", "LICENSE"],
+      files: ["lib", "mix.exs", "README.md", "LICENSE", "CHANGELOG.md"],
       maintainers: ["Toby Archer"],
       licenses: ["MIT"],
       links: %{"GitHub" => "https://github.com/tobbbles/exosphere"}

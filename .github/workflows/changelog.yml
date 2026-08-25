@@ -1,0 +1,79 @@
+name: Changelog
+
+on:
+  pull_request:
+    types: [closed]
+
+concurrency:
+  # Shared with "Cut release": changelog appends and release cuts must never
+  # race each other on CHANGELOG.md.
+  group: release-pipeline
+  cancel-in-progress: false
+
+permissions:
+  contents: write
+
+jobs:
+  add-entry:
+    name: Add merged PR to [Unreleased]
+    if: >-
+      ${{
+        github.event.pull_request.merged == true &&
+        github.event.pull_request.base.ref == 'main'
+      }}
+    runs-on: ubuntu-latest
+
+    env:
+      MIX_ENV: test
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: main
+          # A PAT (contents read/write) so the push is allowed under branch
+          # protection and, more importantly, so a human (the PAT owner) can be
+          # granted the bypass that covers these bot commits.
+          token: ${{ secrets.RELEASE_TOKEN }}
+
+      - uses: erlef/setup-beam@v1
+        with:
+          elixir-version: "1.19"
+          otp-version: "27"
+          version-type: loose
+          hex-cache: true
+          rebar-cache: true
+          mix-cache: true
+
+      - name: Install deps
+        run: mix deps.get
+
+      - name: Add changelog entry
+        env:
+          PR_TITLE: ${{ github.event.pull_request.title }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+        run: mix changelog.add --title "$PR_TITLE" --pr "$PR_NUMBER"
+
+      - name: Commit and push (retry on race)
+        env:
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+        run: |
+          set -euo pipefail
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add CHANGELOG.md
+          if git diff --cached --quiet; then
+            echo "No changelog change for #$PR_NUMBER; nothing to push."
+            exit 0
+          fi
+          git commit -m "chore(changelog): add #$PR_NUMBER [skip ci]"
+          pushed=0
+          for _ in 1 2 3; do
+            if git push origin main; then pushed=1; break; fi
+            echo "Push rejected; rebasing on latest main and retrying."
+            git fetch origin main
+            git rebase origin/main
+          done
+          if [ "$pushed" -ne 1 ]; then
+            echo "Could not push changelog entry for #$PR_NUMBER after 3 attempts." >&2
+            exit 1
+          fi
