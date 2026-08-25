@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.3.0] - 2026-08-25
+
 Spec-conformance pass against the [AT Protocol specifications](https://atproto.com/specs).
 Fixes several DAG-CBOR / cryptography correctness bugs (some of which change
 wire output or reject previously-accepted input) and adds the AT-URI, NSID, and
