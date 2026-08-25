@@ -31,6 +31,10 @@ defmodule Mix.Tasks.Exosphere.Gen.Lexicons do
   from authorities without a namespace rule generate under their full NSID
   segments (e.g. `com.example.post` → `Exosphere.Com.Example.Post`).
 
+  By default the vendored `priv/lexicons` of this project is the source;
+  `--dir <path>` points generation at another lexicon directory (e.g. a
+  host app's own `priv/lexicons`).
+
   Generation is deterministic: the same vendored lexicons always produce
   the same files, so output can be reviewed with `git diff`. Refs the
   corpus can not resolve (fields that degrade to `term()`) are reported
@@ -56,18 +60,21 @@ defmodule Mix.Tasks.Exosphere.Gen.Lexicons do
   @impl Mix.Task
   def run(args) do
     {opts, positional, invalid} =
-      OptionParser.parse(args, strict: [check: :boolean, from: :string, pds: :string])
+      OptionParser.parse(args,
+        strict: [check: :boolean, from: :string, pds: :string, dir: :string]
+      )
 
     unless invalid == [] do
       Mix.raise("invalid arguments: #{inspect(invalid)}")
     end
 
     source = validate_source!(positional)
-    maybe_vendor_from!(opts)
+    lexicon_dir = Keyword.get(opts, :dir, @lexicon_dir)
+    maybe_vendor_from!(opts, lexicon_dir)
 
     Mix.Task.run("app.start")
 
-    case Parser.parse_dir(@lexicon_dir) do
+    case Parser.parse_dir(lexicon_dir) do
       {:ok, lexicons} ->
         warn_unresolved_refs(lexicons, opts)
 
@@ -110,7 +117,7 @@ defmodule Mix.Tasks.Exosphere.Gen.Lexicons do
 
   # --from: fetch a repo's published lexicons and vendor them, so the
   # generation below (and future runs) include them.
-  defp maybe_vendor_from!(opts) do
+  defp maybe_vendor_from!(opts, lexicon_dir) do
     case Keyword.get(opts, :from) do
       nil ->
         :ok
@@ -123,9 +130,9 @@ defmodule Mix.Tasks.Exosphere.Gen.Lexicons do
         pds_url = pds_url!(did, opts)
 
         case Resolver.list(pds_url, did) do
-          {:ok, schemas, %{invalid: invalid}} ->
+          {:ok, %{schemas: schemas, invalid: invalid}} ->
             Enum.each(invalid, &Mix.shell().error("skipped invalid lexicon record: #{&1}"))
-            paths = Enum.map(schemas, &vendor!/1)
+            paths = Enum.map(schemas, &vendor!(&1, lexicon_dir))
             Mix.shell().info("Vendored #{length(paths)} lexicons from #{did}")
 
           {:error, reason} ->
@@ -152,10 +159,10 @@ defmodule Mix.Tasks.Exosphere.Gen.Lexicons do
     end
   end
 
-  # Write the raw document as priv/lexicons/<authority>/<name>.json,
-  # matching the vendored corpus layout.
-  defp vendor!(schema) do
-    path = Path.join(@lexicon_dir, "#{lexicon_path(schema.id)}.json")
+  # Write the raw document as <dir>/<authority>/<name>.json, matching
+  # the vendored corpus layout.
+  defp vendor!(schema, lexicon_dir) do
+    path = Path.join(lexicon_dir, "#{lexicon_path(schema.id)}.json")
     File.mkdir_p!(Path.dirname(path))
     File.write!(path, Jason.encode!(json_of(schema), pretty: true) <> "\n")
     path

@@ -65,11 +65,12 @@ defmodule Exosphere.Lexicon.Resolver do
   List every lexicon published by a repository, paginating through
   `com.atproto.repo.listRecords`.
 
-  Records that fail `Lexicon.Schema` validation are skipped; their NSIDs
-  are reported in the result as `:invalid`.
+  Returns `{:ok, %{schemas: [Schema.t()], invalid: [nsid]}}` — records
+  that fail `Lexicon.Schema` validation are skipped, with their NSIDs
+  reported under `:invalid`.
   """
   @spec list(String.t(), DID.did(), [fetch_opt()]) ::
-          {:ok, [Schema.t()], %{invalid: [String.t()]}} | {:error, term()}
+          {:ok, %{schemas: [Schema.t()], invalid: [String.t()]}} | {:error, term()}
   def list(pds_url, did, opts \\ []) do
     with {:ok, values} <- list_all(pds_url, did, opts) do
       {schemas, invalid} =
@@ -84,7 +85,7 @@ defmodule Exosphere.Lexicon.Resolver do
           end
         end)
 
-      {:ok, Enum.reverse(schemas), %{invalid: Enum.reverse(invalid)}}
+      {:ok, %{schemas: Enum.reverse(schemas), invalid: Enum.reverse(invalid)}}
     end
   end
 

@@ -110,16 +110,48 @@ defmodule Mix.Tasks.Exosphere.Lint.Lexicons do
   end
 
   # Lexicon style guide: descriptions should accompany every definition
-  # and its properties. Advisory only.
+  # and its properties, and string formats must be names the spec (and
+  # this library) actually checks. Advisory only.
   defp style_warnings(%{"defs" => defs}) when is_map(defs) do
     Enum.flat_map(defs, fn {name, def} ->
       []
       |> warn_missing(description_of(def), "defs.#{name}", "definition has no description")
       |> Kernel.++(property_warnings(name, def))
+      |> Kernel.++(format_warnings(name, def))
     end)
   end
 
   defp style_warnings(_), do: []
+
+  # The string formats the lexicon spec defines — and Exosphere validates
+  @spec_formats ~w(datetime uri at-uri nsid did cid handle language tid record-key at-identifier)
+
+  # Walk a def's raw JSON for string nodes carrying a "format", warning
+  # on names outside the spec set (typos included: a format the library
+  # does not recognize is never checked).
+  defp format_warnings(def_name, def), do: node_format_warnings(def, "defs.#{def_name}")
+
+  defp node_format_warnings(%{"type" => "string", "format" => format}, path)
+       when is_binary(format) do
+    if format in @spec_formats,
+      do: [],
+      else: [{path, "unknown string format #{inspect(format)}; it will never be checked"}]
+  end
+
+  defp node_format_warnings(%{"type" => "object", "properties" => props}, path)
+       when is_map(props) do
+    Enum.flat_map(props, fn {name, prop} ->
+      node_format_warnings(prop, "#{path}.#{name}")
+    end)
+  end
+
+  defp node_format_warnings(%{"type" => "record", "record" => record}, path) when is_map(record),
+    do: node_format_warnings(record, "#{path}.record")
+
+  defp node_format_warnings(%{"type" => "array", "items" => items}, path) when is_map(items),
+    do: node_format_warnings(items, "#{path}.items")
+
+  defp node_format_warnings(_, _path), do: []
 
   defp property_warnings(def_name, %{"record" => %{"properties" => props}}) when is_map(props) do
     Enum.map(props, fn {prop, spec} ->

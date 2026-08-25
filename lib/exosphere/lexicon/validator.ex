@@ -19,6 +19,14 @@ defmodule Exosphere.Lexicon.Validator do
     `minGraphemes` count grapheme clusters.
   - Required fields may hold `null` only when listed in `nullable`.
 
+  Cross-lexicon refs (e.g. a `com.atproto.repo.strongRef` subject field)
+  resolve through `Lexicon.Registry` (or the `:registry` opt). **A ref
+  whose target lexicon is not registered is skipped silently in the
+  permissive mode** — the field passes unchecked. Use `strict: true` to
+  make unresolved refs an error, and load the referenced lexicons
+  (`Registry.load_vendored/0` covers the vendored corpus) before
+  validating anything that refs into it.
+
   Values are the JSON wire representation (CID links as
   `%{"$link" => cid}`, bytes as `%{"$bytes" => b64}`, blobs as
   `%{"$type" => "blob", ...}`) and are additionally checked against the
@@ -33,13 +41,13 @@ defmodule Exosphere.Lexicon.Validator do
         Exosphere.Lexicon.Validator.validate(%{"text" => 123}, lexicon)
   """
 
-  alias Exosphere.ATProto.{AtUri, CID, DataModel, NSID}
+  alias Exosphere.ATProto.{AtUri, CID, DataModel, NSID, RecordKey, TID}
   alias Exosphere.Lexicon.{Parser, Registry}
 
   @type error :: {path :: String.t(), message :: String.t()}
   @type opt :: {:strict, boolean()} | {:registry, module() | map()}
 
-  @string_formats ~w(datetime uri at-uri nsid did cid handle)
+  @string_formats ~w(datetime uri at-uri nsid did cid handle language tid record-key at-identifier)
 
   @doc """
   Validate `value` against a definition of a parsed lexicon.
@@ -245,32 +253,46 @@ defmodule Exosphere.Lexicon.Validator do
 
   defp check(value, %{kind: :ref} = node, path, ctx) do
     case resolve_ref(node.ref, ctx) do
-      {:ok, target, ctx} -> check(value, target, path, ctx)
-      :error -> []
+      {:ok, target, ctx} ->
+        check(value, target, path, ctx)
+
+      :error ->
+        # Without the target lexicon the field cannot be checked; only
+        # strict mode surfaces the omission.
+        if ctx.strict,
+          do: [err(path, "", "unresolved ref #{node.ref} (lexicon not registered)")],
+          else: []
     end
   end
 
   defp check(value, %{kind: :union} = node, path, ctx) do
     case value do
       %{"$type" => type} when is_binary(type) ->
-        variants =
-          node.refs
-          |> Enum.flat_map(fn ref ->
+        {variants, unresolved} =
+          Enum.reduce(node.refs, {[], []}, fn ref, {ok, bad} ->
             case resolve_ref(ref, ctx) do
-              {:ok, _, _} -> [ref_type_id(ref, ctx.lexicon.id)]
-              :error -> []
+              {:ok, _, _} -> {[ref_type_id(ref, ctx.lexicon.id) | ok], bad}
+              :error -> {ok, [ref | bad]}
             end
           end)
+
+        variants = Enum.reverse(variants)
 
         cond do
           type in variants ->
             check(value, resolve_variant(type, node, ctx), path, ctx)
 
           node.closed ->
-            [err(path, "$type", "closed union: unknown variant #{type}")]
+            [
+              err(path, "$type", "closed union: unknown variant #{type}")
+              | unresolved_error(unresolved, ctx)
+            ]
 
           ctx.strict ->
-            [err(path, "$type", "unknown union variant #{type}")]
+            [
+              err(path, "$type", "unknown union variant #{type}")
+              | unresolved_error(unresolved, ctx)
+            ]
 
           true ->
             []
@@ -285,6 +307,15 @@ defmodule Exosphere.Lexicon.Validator do
 
   # XRPC def nodes (params/query/...) never validate record values
   defp check(_value, _node, path, _ctx), do: [err(path, "", "unsupported schema node")]
+
+  defp unresolved_error(_unresolved, %{strict: false}), do: []
+
+  defp unresolved_error([], %{strict: true}), do: []
+
+  defp unresolved_error(unresolved, %{strict: true}),
+    do: [
+      err("", "$type", "unresolved union refs #{inspect(unresolved)} (lexicons not registered)")
+    ]
 
   # --- Helpers ---------------------------------------------------------------------
 
@@ -480,6 +511,18 @@ defmodule Exosphere.Lexicon.Validator do
 
   defp format_valid?("handle", v),
     do: Regex.match?(~r/^[a-zA-Z0-9.-]+(\.[a-zA-Z]{2,})+$/, v)
+
+  # BCP-47 language tag: e.g. "en", "pt-BR", "zh-Hant-TW" (the bsky
+  # corpus uses well-formed tags; a light structural check suffices)
+  defp format_valid?("language", v),
+    do: Regex.match?(~r/^[a-zA-Z]{2,3}(-[a-zA-Z0-9]{1,8})*$/, v)
+
+  defp format_valid?("tid", v), do: TID.valid?(v)
+  defp format_valid?("record-key", v), do: RecordKey.valid?(v)
+
+  # A DID or a handle
+  defp format_valid?("at-identifier", v),
+    do: format_valid?("did", v) or format_valid?("handle", v)
 
   defp err(path, key, message), do: {join(path, key), message}
 

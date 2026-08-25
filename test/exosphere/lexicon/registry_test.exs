@@ -40,6 +40,36 @@ defmodule Exosphere.Lexicon.RegistryTest do
     refute Registry.registered?("com.example.post")
   end
 
+  # Feedback §1: a %Schema{} struct matches the parsed-lexicon map clause
+  # and used to poison the registry — every later validation failed.
+  test "register/1 unwraps %Schema{} structs" do
+    assert {:ok, schema} = Exosphere.Lexicon.Schema.new(@json)
+    assert :ok = Registry.register(schema)
+
+    assert :ok =
+             Registry.validate("com.example.post", %{
+               "$type" => "com.example.post",
+               "text" => "hi"
+             })
+  end
+
+  # Feedback §3: parse_dir/1 returns %{nsid => lexicon}; register_all
+  # used to raise FunctionClauseError on it.
+  test "register_all/1 accepts a Parser.parse_dir/1 result map" do
+    dir = Application.app_dir(:exosphere, "priv/lexicons/app/bsky/actor")
+    {:ok, lexicons} = Parser.parse_dir(dir)
+    assert :ok = Registry.register_all(lexicons)
+    assert Registry.registered?("app.bsky.actor.profile")
+  end
+
+  test "load_dir/1 registers a directory of lexicon JSON" do
+    assert {:ok, nsids} =
+             Registry.load_dir(Application.app_dir(:exosphere, "priv/lexicons/community"))
+
+    assert "community.lexicon.interaction.like" in nsids
+    assert Registry.registered?("community.lexicon.interaction.like")
+  end
+
   test "validate/3 type-checks against registered lexicons" do
     Registry.register(@json)
 

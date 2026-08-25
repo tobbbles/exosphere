@@ -197,7 +197,7 @@ Lexicons published by any repository can be fetched back and registered:
   Exosphere.Lexicon.Resolver.fetch(pds_url, did, "com.example.post", register: true)
 
 # Or every lexicon a repo publishes
-{:ok, schemas, _} = Exosphere.Lexicon.Resolver.list(pds_url, did)
+{:ok, %{schemas: schemas}} = Exosphere.Lexicon.Resolver.list(pds_url, did)
 
 # Or via NSID authority (DNS TXT _lexicon.<domain> → DID → PDS)
 {:ok, schema} = Exosphere.Lexicon.Resolver.resolve("com.example.post")

@@ -100,4 +100,25 @@ defmodule Exosphere.Lexicon.SchemaTest do
   test "from_record/1 rejects other record types" do
     assert {:error, [{"$type", _}]} = Schema.from_record(%{"$type" => "app.bsky.feed.post"})
   end
+
+  # Feedback §5: record key format is validated against the spec values
+  test "new/1 rejects invalid record key formats" do
+    broken = put_in(@valid, ["defs", "main", "key"], "banana")
+
+    assert {:error, errors} = Schema.new(broken)
+    assert Enum.any?(errors, fn {"defs.main.key", msg} -> msg =~ "invalid key format" end)
+
+    # spec key types all pass
+    for key <- ["tid", "nsid", "any", "literal:self"] do
+      assert {:ok, _} = Schema.new(put_in(@valid, ["defs", "main", "key"], key))
+    end
+  end
+
+  # Feedback ergonomics: non-string/atom top-level keys used to raise
+  test "new/1 returns an error tuple for malformed keys" do
+    assert {:error, [{"", "expected a map with string or atom keys"}]} =
+             Schema.new(%{1 => "x"})
+
+    assert {:error, [{"", "expected a map"}]} = Schema.new("nope")
+  end
 end

@@ -262,4 +262,117 @@ defmodule Exosphere.Lexicon.ValidatorTest do
 
     assert {:error, [{"$type", _}]} = Validator.validate_record(value, lexicon)
   end
+
+  # Feedback §2: an unresolved cross-lexicon ref used to pass silently,
+  # even with strict: true — the green light came from a check that
+  # was not running.
+  test "strict: true errors on unresolved refs", %{lexicon: lexicon} do
+    # com.example.other is not registered anywhere in this test
+    value = %{
+      "text" => "hi",
+      "createdAt" => "2026-08-25T12:00:00.000Z",
+      "choice" => %{"$type" => "com.someone.else#thing"}
+    }
+
+    # Permissive: unresolved variant of an open union passes
+    assert :ok = Validator.validate(value, lexicon)
+
+    # A ref *field* with an unregistered target passes permissively...
+    ref_field = %{
+      "text" => "hi",
+      "createdAt" => "2026-08-25T12:00:00.000Z",
+      "subject" => %{"uri" => "at://did:plc:abc/app.bsky.feed.post/3j"}
+    }
+
+    registry_lexicon =
+      lexicon!(
+        put_in(@lexicon, ["defs", "subjectRef"], %{
+          "type" => "ref",
+          "ref" => "com.atproto.repo.strongRef"
+        })
+      )
+
+    assert :ok = Validator.validate(ref_field, registry_lexicon)
+
+    # ...but errors under strict
+    assert {:error, errors} =
+             Validator.validate(ref_field, registry_lexicon, "main", strict: true)
+
+    assert Enum.any?(errors, fn {"subject", msg} ->
+             msg =~ "unresolved ref com.atproto.repo.strongRef"
+           end)
+
+    # and resolves once the target is registered
+    assert {:ok, strong_ref} =
+             Parser.parse(%{
+               "lexicon" => 1,
+               "id" => "com.atproto.repo.strongRef",
+               "defs" => %{
+                 "main" => %{
+                   "type" => "object",
+                   "required" => ["cid"],
+                   "properties" => %{"cid" => %{"type" => "string"}}
+                 }
+               }
+             })
+
+    assert {:error, errors} =
+             Validator.validate(ref_field, registry_lexicon, "main",
+               registry: %{"com.atproto.repo.strongRef" => strong_ref},
+               strict: true
+             )
+
+    assert {"subject.cid", "missing required field"} in errors
+  end
+
+  test "spec string formats: language, tid, record-key, at-identifier" do
+    lexicon =
+      lexicon!(%{
+        "lexicon" => 1,
+        "id" => "com.example.formats",
+        "defs" => %{
+          "main" => %{
+            "type" => "object",
+            "properties" => %{
+              "lang" => %{"type" => "string", "format" => "language"},
+              "tid" => %{"type" => "string", "format" => "tid"},
+              "rkey" => %{"type" => "string", "format" => "record-key"},
+              "ident" => %{"type" => "string", "format" => "at-identifier"}
+            }
+          }
+        }
+      })
+
+    good = %{
+      "lang" => "pt-BR",
+      "tid" => "3jzfcijpj2z2a",
+      "rkey" => "3jzfcijpj2z2a",
+      "ident" => "did:plc:abc123"
+    }
+
+    assert :ok = Validator.validate(good, lexicon)
+
+    bad = %{good | "lang" => "not a language", "tid" => "!!"}
+    assert {:error, errors} = Validator.validate(bad, lexicon)
+    assert Enum.any?(errors, fn {_path, msg} -> msg =~ "invalid language" end)
+    assert Enum.any?(errors, fn {_path, msg} -> msg =~ "invalid tid" end)
+  end
+
+  test "unknown string formats are not checked" do
+    # The validator stays permissive on format names it does not know
+    # (mix exosphere.lint.lexicons warns about them instead)
+    lexicon =
+      lexicon!(%{
+        "lexicon" => 1,
+        "id" => "com.example.formats",
+        "defs" => %{
+          "main" => %{
+            "type" => "object",
+            "properties" => %{"a" => %{"type" => "string", "format" => "datetim"}}
+          }
+        }
+      })
+
+    assert :ok = Validator.validate(%{"a" => "anything"}, lexicon)
+  end
 end

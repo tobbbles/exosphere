@@ -67,24 +67,28 @@ defmodule Exosphere.Lexicon.Schema do
   """
 
   def new(attrs) when is_map(attrs) do
-    doc = atomize_top(attrs)
+    case atomize_top(attrs) do
+      :error ->
+        {:error, [{"", "expected a map with string or atom keys"}]}
 
-    case {Parser.parse(doc), validate_document(doc)} do
-      {{:ok, parsed}, []} ->
-        {:ok,
-         %__MODULE__{
-           lexicon: parsed_lexicon_version(doc),
-           id: parsed.id,
-           description: parsed.description,
-           defs: doc["defs"],
-           parsed: parsed
-         }}
+      doc ->
+        case {Parser.parse(doc), validate_document(doc)} do
+          {{:ok, parsed}, []} ->
+            {:ok,
+             %__MODULE__{
+               lexicon: parsed_lexicon_version(doc),
+               id: parsed.id,
+               description: parsed.description,
+               defs: doc["defs"],
+               parsed: parsed
+             }}
 
-      {{:ok, _parsed}, errors} ->
-        {:error, errors}
+          {{:ok, _parsed}, errors} ->
+            {:error, errors}
 
-      {{:error, reason}, errors} ->
-        {:error, [{"", "invalid lexicon: #{inspect(reason)}"} | errors]}
+          {{:error, reason}, errors} ->
+            {:error, [{"", "invalid lexicon: #{inspect(reason)}"} | errors]}
+        end
     end
   end
 
@@ -165,9 +169,19 @@ defmodule Exosphere.Lexicon.Schema do
     case def do
       %{"type" => "record"} ->
         key_errors =
-          if valid_key?(def["key"]),
-            do: [],
-            else: [{"defs.#{name}.key", "record definitions require a key"}]
+          cond do
+            valid_key?(def["key"]) ->
+              []
+
+            def["key"] in [nil, ""] ->
+              [{"defs.#{name}.key", "record definitions require a key"}]
+
+            true ->
+              [
+                {"defs.#{name}.key",
+                 "invalid key format #{inspect(def["key"])}; expected tid, nsid, any, or literal:<value>"}
+              ]
+          end
 
         record_errors =
           if is_map(def["record"]),
@@ -181,7 +195,12 @@ defmodule Exosphere.Lexicon.Schema do
     end
   end
 
-  defp valid_key?(key), do: is_binary(key) and key != ""
+  # Spec key formats: "tid", "nsid", "any", or "literal:<value>"
+  @valid_key_types ["tid", "nsid", "any"]
+
+  defp valid_key?(key) when key in @valid_key_types, do: true
+  defp valid_key?("literal:" <> value) when value != "", do: true
+  defp valid_key?(_), do: false
 
   defp validate_ref_targets(defs, doc) do
     id = doc["id"]
@@ -249,10 +268,16 @@ defmodule Exosphere.Lexicon.Schema do
   defp maybe_put(map, _key, nil), do: map
   defp maybe_put(map, key, value), do: Map.put(map, key, value)
 
+  # Keys must be atoms or binaries; anything else (e.g. integers) is a
+  # malformed document, not a crash.
   defp atomize_top(attrs) do
-    Map.new(attrs, fn
-      {k, v} when is_atom(k) -> {Atom.to_string(k), v}
-      {k, v} when is_binary(k) -> {k, v}
-    end)
+    if Enum.all?(Map.keys(attrs), fn k -> is_atom(k) or is_binary(k) end) do
+      Map.new(attrs, fn
+        {k, v} when is_atom(k) -> {Atom.to_string(k), v}
+        {k, v} when is_binary(k) -> {k, v}
+      end)
+    else
+      :error
+    end
   end
 end

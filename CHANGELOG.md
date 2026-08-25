@@ -69,6 +69,33 @@ record-key primitives plus commit-signature verification.
 
 ### Added
 
+- **Lexicon integration feedback fixes** (from the first host-app integration):
+  - `Registry.register/1` unwraps `%Lexicon.Schema{}` structs instead of
+    storing them where parsed IR belongs (registering a schema used to
+    poison the registry — every later validation failed).
+  - `strict: true` validation now errors on refs (and union refs) whose
+    target lexicon is not registered; the permissive mode still skips
+    them, and the `Validator` moduledoc says so.
+  - `Registry.load_dir/1` registers a directory of lexicon JSON (host
+    apps no longer hand-roll parse-and-register); `load_vendored/0` is
+    defined in terms of it. `register_all/1` accepts the
+    `%{nsid => lexicon}` map `Parser.parse_dir/1` returns.
+  - Implemented the remaining spec string formats — `language`, `tid`,
+    `record-key`, `at-identifier` — and `mix exosphere.lint.lexicons`
+    warns on string formats outside the spec set (typos included).
+  - Record `key` validated against the spec values (`tid`, `nsid`,
+    `any`, `literal:<value>`) instead of "any non-empty string".
+  - `Schema.new/1` returns an error tuple for malformed top-level keys
+    instead of raising.
+  - `Lexicon.publish(session, schema)` / `delete(session, nsid)` read
+    the PDS URL and DID from the session (`session.pds`/`session.sub`);
+    the explicit-argument arities remain.
+  - `Lexicon.validate_with/2,4` type-checks against a schema (or its
+    parsed IR) without registering it.
+  - `Resolver.list/3` returns `{:ok, %{schemas: ..., invalid: ...}}` so
+    it composes with `with`.
+  - `mix exosphere.gen.lexicons --dir <path>` generates from a host
+    app's own lexicon directory.
 - **Lexicon registration, type-checking, and publishing** — first-class
   lexicon support beyond compile-time codegen:
   - `Exosphere.Lexicon` — entry point: `register/1`, `validate/3`,

@@ -45,7 +45,7 @@ defmodule Exosphere.Lexicon do
   """
 
   alias Exosphere.ATProto.Repo
-  alias Exosphere.Lexicon.{Registry, Schema}
+  alias Exosphere.Lexicon.{Parser, Registry, Schema, Validator}
 
   @doc """
   Register a lexicon (parsed, or a raw JSON document) in the runtime
@@ -61,18 +61,48 @@ defmodule Exosphere.Lexicon do
 
   `type` is an NSID or NSID with fragment; `value` is the wire-format
   map. Options are forwarded to `Validator.validate/4` (notably
-  `strict: true` to reject unknown fields and open-union variants).
+  `strict: true` to reject unknown fields, open-union variants, and
+  refs whose target lexicon is not registered).
   See `Registry.validate/3`.
   """
   defdelegate validate(type, value, opts \\ []), to: Registry
 
   @doc """
+  Type-check a value against a schema without registering it.
+
+  Takes a `%Lexicon.Schema{}` (or its parsed IR) — for checking a
+  fetched document without touching global registry state. Options are
+  forwarded to `Validator.validate/4`.
+  """
+  @spec validate_with(Schema.t() | Parser.lexicon(), term(), String.t(), [Validator.opt()]) ::
+          :ok | {:error, [{path :: String.t(), message :: String.t()}]}
+  def validate_with(schema_or_parsed, value, def_name \\ "main", opts \\ [])
+
+  def validate_with(%Schema{parsed: parsed}, value, def_name, opts),
+    do: Validator.validate(value, parsed, def_name, opts)
+
+  def validate_with(%{id: _} = parsed, value, def_name, opts),
+    do: Validator.validate(value, parsed, def_name, opts)
+
+  @doc """
   Publish a lexicon to a PDS as a `com.atproto.lexicon.schema` record.
+
+  `publish(session, schema)` takes the PDS URL and DID from the session
+  (`session.pds` / `session.sub`); `publish(session, pds_url, did,
+  schema)` overrides them explicitly.
 
   The record key is the lexicon's NSID, so the record lands at
   `at://<did>/com.atproto.lexicon.schema/<nsid>` and re-publishing an
   updated document updates it in place.
   """
+  @spec publish(map(), Schema.t() | map()) ::
+          {:ok, %{uri: String.t(), cid: String.t()}} | {:error, term()}
+  def publish(session, schema_or_doc) do
+    pds_url = Map.get(session, :pds) || raise ArgumentError, "session has no :pds"
+    did = Map.get(session, :sub) || raise ArgumentError, "session has no :sub"
+    publish(session, pds_url, did, schema_or_doc)
+  end
+
   @spec publish(map(), String.t(), String.t(), Schema.t() | map()) ::
           {:ok, %{uri: String.t(), cid: String.t()}} | {:error, term()}
   def publish(session, pds_url, did, schema_or_doc) do
@@ -88,7 +118,19 @@ defmodule Exosphere.Lexicon do
     end
   end
 
-  @doc "Delete a published lexicon record by NSID."
+  @doc """
+  Delete a published lexicon record by NSID.
+
+  Like `publish/2`, `delete(session, nsid)` reads the PDS URL and DID
+  from the session.
+  """
+  @spec delete(map(), String.t()) :: {:ok, map()} | {:error, term()}
+  def delete(session, nsid) do
+    pds_url = Map.get(session, :pds) || raise ArgumentError, "session has no :pds"
+    did = Map.get(session, :sub) || raise ArgumentError, "session has no :sub"
+    delete(session, pds_url, did, nsid)
+  end
+
   @spec delete(map(), String.t(), String.t(), String.t()) :: {:ok, map()} | {:error, term()}
   def delete(session, pds_url, did, nsid) do
     Repo.delete_record(session, pds_url, did, Schema.collection(), nsid)

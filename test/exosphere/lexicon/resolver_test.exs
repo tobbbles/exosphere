@@ -84,7 +84,7 @@ defmodule Exosphere.Lexicon.ResolverTest do
   end
 
   test "list/3 returns every published lexicon" do
-    assert {:ok, [schema], %{invalid: []}} =
+    assert {:ok, %{schemas: [schema], invalid: []}} =
              Resolver.list("https://pds.example.com", "did:plc:abc", @opts)
 
     assert schema.id == "com.example.post"
