@@ -18,7 +18,10 @@ defmodule Exosphere.Bsky.Feed.Post.ReplyRef do
   @enforce_keys [:parent, :root]
   defstruct parent: nil, root: nil, extra: %{}
 
-  @type t :: %__MODULE__{parent: term(), root: term()}
+  @type t :: %__MODULE__{
+          parent: Exosphere.ATProto.Repo.StrongRef.t(),
+          root: Exosphere.ATProto.Repo.StrongRef.t()
+        }
 
   @fields %{parent: "parent", root: "root"}
 
@@ -35,8 +38,17 @@ defmodule Exosphere.Bsky.Feed.Post.ReplyRef do
   def new(attrs) when is_map(attrs) do
     {attrs, extra} = Runtime.atomize(attrs, @fields)
 
-    {f_parent, e1} = Runtime.get_any(attrs, :parent, "parent", required: true)
-    {f_root, e2} = Runtime.get_any(attrs, :root, "root", required: true)
+    {f_parent, e1} =
+      Runtime.get_ref(
+        attrs,
+        :parent,
+        "parent",
+        [required: true],
+        Exosphere.ATProto.Repo.StrongRef
+      )
+
+    {f_root, e2} =
+      Runtime.get_ref(attrs, :root, "root", [required: true], Exosphere.ATProto.Repo.StrongRef)
 
     errors = e1 ++ e2
 
@@ -62,8 +74,8 @@ defmodule Exosphere.Bsky.Feed.Post.ReplyRef do
   @spec to_map(t()) :: map()
   def to_map(%__MODULE__{} = struct) do
     %{}
-    |> Runtime.put_field("parent", struct.parent)
-    |> Runtime.put_field("root", struct.root)
+    |> Runtime.put_field("parent", struct.parent, &encode_parent/1)
+    |> Runtime.put_field("root", struct.root, &encode_root/1)
     |> Map.merge(struct.extra)
   end
 
@@ -71,4 +83,12 @@ defmodule Exosphere.Bsky.Feed.Post.ReplyRef do
   @spec from_map(map()) :: {:ok, t()} | {:error, [{path :: String.t(), message :: String.t()}]}
   def from_map(map) when is_map(map), do: new(map)
   def from_map(_), do: {:error, [{"", "expected a map"}]}
+
+  defp encode_ref(v, module) when is_struct(v, module), do: module.to_map(v)
+
+  defp encode_ref(v, _module) when is_map(v), do: v
+
+  defp encode_parent(v), do: encode_ref(v, Exosphere.ATProto.Repo.StrongRef)
+
+  defp encode_root(v), do: encode_ref(v, Exosphere.ATProto.Repo.StrongRef)
 end

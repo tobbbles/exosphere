@@ -29,8 +29,10 @@ defmodule Exosphere.Lexicon.Parser do
         | %{optional(atom()) => term()}
 
   @type node_kind ::
-          :string | :integer | :boolean | :bytes | :unknown | :cid_link | :blob
+          :string | :token | :integer | :boolean | :bytes | :unknown | :cid_link | :blob
           | :array | :object | :record | :ref | :union
+          # XRPC and permission-set defs parse but are not yet generated
+          | :params | :query | :procedure | :permission_set | :subscription
 
   @type lexicon :: %{
           id: String.t(),
@@ -93,6 +95,8 @@ defmodule Exosphere.Lexicon.Parser do
 
   defp check_id(_), do: {:error, :missing_id}
 
+  # Lexicons without a "main" def (e.g. app.bsky.actor.defs) are pure ref
+  # targets; they parse fine and the generator skips them.
   defp parse_defs(%{"defs" => defs}) when is_map(defs) and defs != %{} do
     defs
     |> Enum.sort()
@@ -102,15 +106,6 @@ defmodule Exosphere.Lexicon.Parser do
         {:error, _} = err -> {:halt, err}
       end
     end)
-    |> case do
-      {:ok, parsed} ->
-        if Map.has_key?(parsed, "main"),
-          do: {:ok, parsed},
-          else: {:error, :missing_main_def}
-
-      err ->
-        err
-    end
   end
 
   defp parse_defs(%{"defs" => _}), do: {:error, :empty_defs}
@@ -132,6 +127,7 @@ defmodule Exosphere.Lexicon.Parser do
          kind: :object,
          properties: properties,
          required: Map.get(node, "required", []),
+         nullable: Map.get(node, "nullable", []),
          description: node["description"]
        }}
     end
@@ -162,6 +158,17 @@ defmodule Exosphere.Lexicon.Parser do
     else
       {:error, {:invalid_union_refs, refs}}
     end
+  end
+
+  defp parse_node(%{"type" => "token"} = node) do
+    {:ok,
+     %{
+       kind: :token,
+       min_length: node["minLength"],
+       max_length: node["maxLength"],
+       max_graphemes: node["maxGraphemes"],
+       description: node["description"]
+     }}
   end
 
   defp parse_node(%{"type" => "string"} = node) do
@@ -207,8 +214,33 @@ defmodule Exosphere.Lexicon.Parser do
   defp parse_node(%{"type" => "unknown"} = node),
     do: {:ok, %{kind: :unknown, description: node["description"]}}
 
+  # XRPC defs parse into a light IR (kept for future endpoint generation);
+  # the generator currently skips lexicons whose main def is one of these.
+  defp parse_node(%{"type" => "query"} = node),
+    do: {:ok, xrpc_node(:query, node)}
+
+  defp parse_node(%{"type" => "procedure"} = node),
+    do: {:ok, xrpc_node(:procedure, node)}
+
+  defp parse_node(%{"type" => "subscription"} = node),
+    do: {:ok, xrpc_node(:subscription, node)}
+
+  defp parse_node(%{"type" => "permission-set"} = node),
+    do: {:ok, %{kind: :permission_set, description: node["description"], raw: node}}
+
   defp parse_node(%{"type" => type}), do: {:error, {:unsupported_schema_type, type}}
   defp parse_node(_), do: {:error, :missing_schema_type}
+
+  defp xrpc_node(kind, node) do
+    %{
+      kind: kind,
+      description: node["description"],
+      parameters: node["parameters"],
+      input: node["input"],
+      output: node["output"],
+      errors: node["errors"]
+    }
+  end
 
   @doc false
   defp check_record_object(%{kind: :object}), do: :ok

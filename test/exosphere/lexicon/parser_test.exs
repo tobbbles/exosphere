@@ -9,14 +9,20 @@ defmodule Exosphere.Lexicon.ParserTest do
     test "parses all vendored lexicons" do
       assert {:ok, lexicons} = Parser.parse_dir(@lexicon_dir)
 
-      assert Map.keys(lexicons) == [
-               "app.bsky.embed.external",
-               "app.bsky.embed.images",
-               "app.bsky.embed.record",
-               "app.bsky.feed.post",
-               "app.bsky.richtext.facet",
-               "community.lexicon.interaction.like"
-             ]
+      for nsid <-
+            ~w(app.bsky.feed.post app.bsky.richtext.facet app.bsky.embed.images
+              com.atproto.repo.strongRef com.atproto.label.defs
+              community.lexicon.interaction.like) do
+        assert Map.has_key?(lexicons, nsid), "missing #{nsid}"
+      end
+    end
+
+    test "parses XRPC lexicons without error" do
+      {:ok, lexicons} = Parser.parse_dir(@lexicon_dir)
+      get_profile = lexicons["app.bsky.actor.getProfile"]
+
+      assert get_profile.defs["main"].kind == :query
+      assert get_profile.defs["main"].parameters != nil
     end
 
     test "parses record schema with nested defs" do
@@ -78,13 +84,15 @@ defmodule Exosphere.Lexicon.ParserTest do
                Parser.parse(%{"lexicon" => 1, "id" => "not an nsid", "defs" => %{}})
     end
 
-    test "rejects missing main def" do
-      assert {:error, :missing_main_def} =
+    test "main-less defs lexicons parse (pure ref targets)" do
+      assert {:ok, lexicon} =
                Parser.parse(%{
                  "lexicon" => 1,
-                 "id" => "com.example.foo",
-                 "defs" => %{"other" => %{"type" => "object"}}
+                 "id" => "com.example.defs",
+                 "defs" => %{"thing" => %{"type" => "object", "properties" => %{}}}
                })
+
+      assert lexicon.defs["thing"].kind == :object
     end
 
     test "rejects unknown schema types" do

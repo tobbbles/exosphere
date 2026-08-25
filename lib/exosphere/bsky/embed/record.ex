@@ -19,7 +19,7 @@ defmodule Exosphere.Bsky.Embed.Record do
   @enforce_keys [:record]
   defstruct record: nil, extra: %{}
 
-  @type t :: %__MODULE__{record: term()}
+  @type t :: %__MODULE__{record: Exosphere.ATProto.Repo.StrongRef.t()}
 
   @fields %{record: "record"}
 
@@ -36,7 +36,14 @@ defmodule Exosphere.Bsky.Embed.Record do
   def new(attrs) when is_map(attrs) do
     {attrs, extra} = Runtime.atomize(attrs, @fields)
 
-    {f_record, e1} = Runtime.get_any(attrs, :record, "record", required: true)
+    {f_record, e1} =
+      Runtime.get_ref(
+        attrs,
+        :record,
+        "record",
+        [required: true],
+        Exosphere.ATProto.Repo.StrongRef
+      )
 
     errors = e1
 
@@ -62,7 +69,7 @@ defmodule Exosphere.Bsky.Embed.Record do
   @spec to_map(t()) :: map()
   def to_map(%__MODULE__{} = struct) do
     %{}
-    |> Runtime.put_field("record", struct.record)
+    |> Runtime.put_field("record", struct.record, &encode_record/1)
     |> Map.merge(struct.extra)
   end
 
@@ -70,4 +77,10 @@ defmodule Exosphere.Bsky.Embed.Record do
   @spec from_map(map()) :: {:ok, t()} | {:error, [{path :: String.t(), message :: String.t()}]}
   def from_map(map) when is_map(map), do: new(map)
   def from_map(_), do: {:error, [{"", "expected a map"}]}
+
+  defp encode_ref(v, module) when is_struct(v, module), do: module.to_map(v)
+
+  defp encode_ref(v, _module) when is_map(v), do: v
+
+  defp encode_record(v), do: encode_ref(v, Exosphere.ATProto.Repo.StrongRef)
 end

@@ -22,7 +22,7 @@ defmodule Exosphere.Bsky.Embed.External.External do
   defstruct associated_refs: nil, description: nil, thumb: nil, title: nil, uri: nil, extra: %{}
 
   @type t :: %__MODULE__{
-          associated_refs: [term()] | nil,
+          associated_refs: [Exosphere.ATProto.Repo.StrongRef.t()] | nil,
           description: String.t(),
           thumb: term() | nil,
           title: String.t(),
@@ -51,7 +51,9 @@ defmodule Exosphere.Bsky.Embed.External.External do
     {attrs, extra} = Runtime.atomize(attrs, @fields)
 
     {f_associated_refs, e1} =
-      Runtime.get_array(attrs, :associated_refs, "associatedRefs", [], fn v, _path -> {:ok, v} end)
+      Runtime.get_array(attrs, :associated_refs, "associatedRefs", [], fn v, path ->
+        Runtime.item_ref(v, path, Exosphere.ATProto.Repo.StrongRef)
+      end)
 
     {f_description, e2} = Runtime.get_string(attrs, :description, "description", required: true)
     {f_thumb, e3} = Runtime.get_any(attrs, :thumb, "thumb", [])
@@ -90,7 +92,7 @@ defmodule Exosphere.Bsky.Embed.External.External do
   @spec to_map(t()) :: map()
   def to_map(%__MODULE__{} = struct) do
     %{}
-    |> Runtime.put_field("associatedRefs", struct.associated_refs)
+    |> Runtime.put_field("associatedRefs", struct.associated_refs, &encode_associated_refs/1)
     |> Runtime.put_field("description", struct.description)
     |> Runtime.put_field("thumb", struct.thumb)
     |> Runtime.put_field("title", struct.title)
@@ -102,4 +104,12 @@ defmodule Exosphere.Bsky.Embed.External.External do
   @spec from_map(map()) :: {:ok, t()} | {:error, [{path :: String.t(), message :: String.t()}]}
   def from_map(map) when is_map(map), do: new(map)
   def from_map(_), do: {:error, [{"", "expected a map"}]}
+
+  defp encode_ref(v, module) when is_struct(v, module), do: module.to_map(v)
+
+  defp encode_ref(v, _module) when is_map(v), do: v
+
+  defp encode_associated_refs(values), do: Enum.map(values, &encode_associated_refs_item/1)
+
+  defp encode_associated_refs_item(v), do: encode_ref(v, Exosphere.ATProto.Repo.StrongRef)
 end

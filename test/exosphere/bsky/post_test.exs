@@ -2,6 +2,7 @@ defmodule Exosphere.Bsky.PostTest do
   use ExUnit.Case, async: true
 
   alias Exosphere.ATProto.{CBOR, CID, MST, TID}
+  alias Exosphere.ATProto.Repo.StrongRef
   alias Exosphere.Bsky.Embed.Images
   alias Exosphere.Bsky.Feed.Post
   alias Exosphere.Bsky.Richtext.Facet
@@ -43,6 +44,7 @@ defmodule Exosphere.Bsky.PostTest do
     test "builds a post from wire-format attrs" do
       assert {:ok, %Post{} = post} = Post.new(post_attrs())
       assert post.text == "Hello @alice.bsky.social from the exosphere!"
+      assert %StrongRef{cid: "bafyreihdwdcefgh4dqkjv67uzcmw7ojee6xedzdetojuzjevtenxquvyku"} = post.reply.parent
       assert post.created_at == @created_at
       assert post.langs == ["en"]
       assert [%Facet{} = facet] = post.facets
@@ -101,9 +103,9 @@ defmodule Exosphere.Bsky.PostTest do
       assert {:ok, %Post{embed: %Images{} = embed} = post} = Post.new(attrs)
       assert [%Images.Image{alt: "a photo"}] = embed.images
 
-      # Unknown embed variants pass through as maps (open-world)
-      attrs = Map.put(post_attrs(), "embed", %{"$type" => "app.bsky.embed.video", "video" => %{}})
-      assert {:ok, %Post{embed: %{"$type" => "app.bsky.embed.video"}}} = Post.new(attrs)
+      # Unvendored embed variants pass through as maps (open-world)
+      attrs = Map.put(post_attrs(), "embed", %{"$type" => "com.example.embed", "x" => 1})
+      assert {:ok, %Post{embed: %{"$type" => "com.example.embed"}}} = Post.new(attrs)
     end
   end
 
@@ -122,8 +124,8 @@ defmodule Exosphere.Bsky.PostTest do
                %{"$type" => "app.bsky.richtext.facet#mention", "did" => "did:plc:abc123def456"}
              ]
 
-      # Unresolved refs (strongRef) pass through untouched
-      assert map["reply"]["root"]["$type"] == "com.atproto.repo.strongRef"
+      # strongRef is generated: encodes as uri/cid (plain refs carry no $type)
+      assert %{"uri" => "at://did:plc:root/app.bsky.feed.post/3jzfcijpj2z2a", "cid" => "bafyreihdwdcefgh4dqkjv67uzcmw7ojee6xedzdetojuzjevtenxquvyku"} = map["reply"]["root"]
     end
 
     test "re-emits unknown fields" do

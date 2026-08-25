@@ -23,10 +23,15 @@ defmodule Exosphere.Bsky.Feed.Post do
   @type_id "app.bsky.feed.post"
   @variants_embed [
     {"app.bsky.embed.images", Exosphere.Bsky.Embed.Images},
+    {"app.bsky.embed.video", Exosphere.Bsky.Embed.Video},
+    {"app.bsky.embed.gallery", Exosphere.Bsky.Embed.Gallery},
     {"app.bsky.embed.external", Exosphere.Bsky.Embed.External},
-    {"app.bsky.embed.record", Exosphere.Bsky.Embed.Record}
+    {"app.bsky.embed.record", Exosphere.Bsky.Embed.Record},
+    {"app.bsky.embed.recordWithMedia", Exosphere.Bsky.Embed.RecordWithMedia}
   ]
-  @variants_labels []
+  @variants_labels [
+    {"com.atproto.label.defs#selfLabels", Exosphere.ATProto.Label.Defs.SelfLabels}
+  ]
 
   @enforce_keys [:created_at, :text]
   defstruct created_at: nil,
@@ -44,13 +49,16 @@ defmodule Exosphere.Bsky.Feed.Post do
           created_at: String.t(),
           embed:
             Exosphere.Bsky.Embed.Images.t()
+            | Exosphere.Bsky.Embed.Video.t()
+            | Exosphere.Bsky.Embed.Gallery.t()
             | Exosphere.Bsky.Embed.External.t()
             | Exosphere.Bsky.Embed.Record.t()
+            | Exosphere.Bsky.Embed.RecordWithMedia.t()
             | map()
             | nil,
           entities: [Exosphere.Bsky.Feed.Post.Entity.t()] | nil,
           facets: [Exosphere.Bsky.Richtext.Facet.t()] | nil,
-          labels: map() | nil,
+          labels: Exosphere.ATProto.Label.Defs.SelfLabels.t() | map() | nil,
           langs: [String.t()] | nil,
           reply: Exosphere.Bsky.Feed.Post.ReplyRef.t() | nil,
           tags: [String.t()] | nil,
@@ -179,11 +187,25 @@ defmodule Exosphere.Bsky.Feed.Post do
   defp encode_embed(v) when is_struct(v, Exosphere.Bsky.Embed.Images),
     do: Map.put(Exosphere.Bsky.Embed.Images.to_map(v), "$type", "app.bsky.embed.images")
 
+  defp encode_embed(v) when is_struct(v, Exosphere.Bsky.Embed.Video),
+    do: Map.put(Exosphere.Bsky.Embed.Video.to_map(v), "$type", "app.bsky.embed.video")
+
+  defp encode_embed(v) when is_struct(v, Exosphere.Bsky.Embed.Gallery),
+    do: Map.put(Exosphere.Bsky.Embed.Gallery.to_map(v), "$type", "app.bsky.embed.gallery")
+
   defp encode_embed(v) when is_struct(v, Exosphere.Bsky.Embed.External),
     do: Map.put(Exosphere.Bsky.Embed.External.to_map(v), "$type", "app.bsky.embed.external")
 
   defp encode_embed(v) when is_struct(v, Exosphere.Bsky.Embed.Record),
     do: Map.put(Exosphere.Bsky.Embed.Record.to_map(v), "$type", "app.bsky.embed.record")
+
+  defp encode_embed(v) when is_struct(v, Exosphere.Bsky.Embed.RecordWithMedia),
+    do:
+      Map.put(
+        Exosphere.Bsky.Embed.RecordWithMedia.to_map(v),
+        "$type",
+        "app.bsky.embed.recordWithMedia"
+      )
 
   defp encode_embed(v) when is_map(v), do: v
 
@@ -194,6 +216,14 @@ defmodule Exosphere.Bsky.Feed.Post do
   defp encode_facets(values), do: Enum.map(values, &encode_facets_item/1)
 
   defp encode_facets_item(v), do: encode_ref(v, Exosphere.Bsky.Richtext.Facet)
+
+  defp encode_labels(v) when is_struct(v, Exosphere.ATProto.Label.Defs.SelfLabels),
+    do:
+      Map.put(
+        Exosphere.ATProto.Label.Defs.SelfLabels.to_map(v),
+        "$type",
+        "com.atproto.label.defs#selfLabels"
+      )
 
   defp encode_labels(v) when is_map(v), do: v
 
