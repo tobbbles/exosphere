@@ -22,7 +22,7 @@ defmodule Exosphere.ATProto.Repo.Commit do
   # Aliased under a distinct name so `%CBOR.Tag{}` still refers to the `:cbor`
   # library struct.
   alias Exosphere.ATProto.CBOR, as: DagCBOR
-  alias Exosphere.ATProto.Crypto
+  alias Exosphere.ATProto.{CID, Crypto, MST}
   alias Exosphere.ATProto.Identity.Document
 
   @type commit :: %{optional(String.t()) => term()}
@@ -43,6 +43,33 @@ defmodule Exosphere.ATProto.Repo.Commit do
     with {:ok, sig} <- extract_sig(commit),
          {:ok, bytes} <- DagCBOR.encode(unsigned(commit)) do
       Crypto.verify(bytes, sig, public_key, curve)
+    end
+  end
+
+  @doc """
+  Verify that a commit's `data` field (the MST root) matches a set of records.
+
+  `records` is a `path => CID` map (or enumerable of `{path, %CID{}}`) of every
+  record in the repository. The records are assembled into an MST and the
+  resulting root CID is compared to the commit's `data` link, confirming the
+  commit actually attests to exactly those records.
+
+  Combine with `verify/3` to fully authenticate a repository: `verify/3` proves
+  the commit is signed by the account, and `verify_data/2` proves the records
+  match the signed root.
+
+  Returns `:ok`, `{:error, :data_mismatch}`, `{:error, :missing_data}`, or any
+  error from MST construction.
+  """
+  @spec verify_data(commit(), Enumerable.t()) ::
+          :ok | {:error, :data_mismatch | :missing_data | term()}
+  def verify_data(commit, records) do
+    with {:ok, root} <- MST.root_cid(records) do
+      case Map.get(commit, "data") do
+        ^root -> :ok
+        %CID{} -> {:error, :data_mismatch}
+        _ -> {:error, :missing_data}
+      end
     end
   end
 
