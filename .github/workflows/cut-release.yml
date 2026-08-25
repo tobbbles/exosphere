@@ -70,8 +70,21 @@ jobs:
         run: |
           set -euo pipefail
           mkdir -p ~/.ssh
-          printf '%s\n' "$EXOSPHERE_DEPLOY_KEY" > ~/.ssh/id_ed25519
+          # Secrets pasted as a single line keep literal \n sequences; convert
+          # them back to newlines and strip CR / stray quotes so libcrypto
+          # can actually parse the key (OpenSSH or PKCS#8/PEM).
+          printf '%s' "$EXOSPHERE_DEPLOY_KEY" \
+            | sed -e 's/^"//' -e 's/"$//' -e 's/\\n/\n/g' \
+            | tr -d '\r' > ~/.ssh/id_ed25519
+          # Key parsers reject files without a final newline.
+          if [ -n "$(tail -c 1 ~/.ssh/id_ed25519)" ]; then
+            echo >> ~/.ssh/id_ed25519
+          fi
           chmod 600 ~/.ssh/id_ed25519
+          if ! ssh-keygen -y -f ~/.ssh/id_ed25519 >/dev/null 2>&1; then
+            echo "::error::EXOSPHERE_DEPLOY_KEY is not a parsable private key (OpenSSH or PKCS#8/PEM, no passphrase). Re-paste the key into the secret with newlines preserved, or as a single line with literal \n sequences."
+            exit 1
+          fi
           ssh-keyscan -t ed25519 github.com >> ~/.ssh/known_hosts 2>/dev/null
           # Pushes authenticate as the deploy key (ruleset bypass); reads and
           # other git operations keep using the GITHUB_TOKEN https remote.

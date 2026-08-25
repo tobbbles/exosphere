@@ -148,6 +148,9 @@ record-key primitives plus commit-signature verification.
   for backwards compatibility. Commit operations gained a `prev` field and the
   commit map gained `prev_data`.
 
+### Fixed
+- run the release pipeline on GITHUB_TOKEN with a deploy key for pushes (#15)
+
 ### Internal
 
 - Corrected the canonical CID example in `CID`/`CBOR` moduledocs
