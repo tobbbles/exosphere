@@ -69,7 +69,7 @@ jobs:
           version="${{ steps.version.outputs.version }}"
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
-          git add CHANGELOG.md mix.exs
+          git add CHANGELOG.md mix.exs README.md
           git commit -m "chore: release v${version} [skip ci]"
           pushed=0
           for _ in 1 2 3; do
