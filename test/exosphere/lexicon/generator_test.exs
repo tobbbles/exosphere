@@ -68,4 +68,53 @@ defmodule Exosphere.Lexicon.GeneratorTest do
     assert "atproto/repo/strong_ref.ex" in paths
     assert "atproto/label/defs/self_labels.ex" in paths
   end
+
+  # Host-app generation: --dir seeds only the host lexicons, but refs
+  # resolve against the corpus passed alongside, and modules land under
+  # the host's namespace.
+  @host_lexicon %{
+    "lexicon" => 1,
+    "id" => "pub.oysters.comment",
+    "defs" => %{
+      "main" => %{
+        "type" => "record",
+        "key" => "tid",
+        "record" => %{
+          "type" => "object",
+          "required" => ["subject"],
+          "properties" => %{
+            "subject" => %{"type" => "ref", "ref" => "com.atproto.repo.strongRef"}
+          }
+        }
+      }
+    }
+  }
+
+  test "seeds + base generate host modules with corpus-resolved refs" do
+    {:ok, corpus} = Parser.parse_dir("priv/lexicons")
+    {:ok, ours} = Parser.parse(@host_lexicon)
+    lexicons = Map.put(corpus, "pub.oysters.comment", ours)
+
+    specs =
+      Generator.generate(lexicons, base: Oysters, seeds: ["pub.oysters.comment"])
+
+    modules = Enum.map(specs, & &1.module)
+
+    # The host record generates under the host namespace, and the corpus
+    # strongRef it references generates typed alongside instead of
+    # degrading subject to term()
+    assert Oysters.Pub.Oysters.Comment in modules
+    assert Oysters.ATProto.Repo.StrongRef in modules
+    refute Exosphere.Bsky.Feed.Post in modules
+
+    comment = Enum.find(specs, &(&1.module == Oysters.Pub.Oysters.Comment))
+    assert comment.path == "pub/oysters/comment.ex"
+    assert comment.code =~ "subject: StrongRef.t()"
+  end
+
+  test "default base and seeds are unchanged (no opts)" do
+    {:ok, lexicons} = Parser.parse_dir("priv/lexicons")
+
+    assert Enum.any?(Generator.generate(lexicons), &(&1.module == Exosphere.Bsky.Feed.Post))
+  end
 end
