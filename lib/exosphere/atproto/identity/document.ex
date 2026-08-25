@@ -144,8 +144,8 @@ defmodule Exosphere.ATProto.Identity.Document do
 
   defp parse_multibase_key(_, _), do: {:error, :unsupported_multibase}
 
-  defp parse_multicodec_key(<<0xE7, key::binary-33>>, _type) do
-    # secp256k1 compressed
+  defp parse_multicodec_key(<<0xE7, 0x01, key::binary-33>>, _type) do
+    # secp256k1 compressed (multicodec varint 0xe7 0x01)
     {:ok, key, :secp256k1}
   end
 
@@ -166,9 +166,9 @@ defmodule Exosphere.ATProto.Identity.Document do
   end
 
   defp parse_multicodec_key(key, "Multikey") when byte_size(key) >= 33 do
-    # Try to detect from key prefix
+    # Try to detect from key prefix (multicodec varints)
     case key do
-      <<0xE7, rest::binary-33>> -> {:ok, rest, :secp256k1}
+      <<0xE7, 0x01, rest::binary-33>> -> {:ok, rest, :secp256k1}
       <<0x80, 0x24, rest::binary-33>> -> {:ok, rest, :p256}
       _ -> {:error, :unknown_key_type}
     end

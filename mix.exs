@@ -6,6 +6,7 @@ defmodule Exosphere.MixProject do
       app: :exosphere,
       version: "0.2.0",
       elixir: "~> 1.19",
+      elixirc_paths: elixirc_paths(Mix.env()),
       start_permanent: Mix.env() == :prod,
       deps: deps(),
       name: "Exosphere",
@@ -20,6 +21,9 @@ defmodule Exosphere.MixProject do
       ]
     ]
   end
+
+  defp elixirc_paths(:test), do: ["lib", "test/support"]
+  defp elixirc_paths(_), do: ["lib"]
 
   # Run "mix help compile.app" to learn about applications.
   def application do
