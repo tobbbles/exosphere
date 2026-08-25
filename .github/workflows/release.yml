@@ -1,10 +1,14 @@
 name: Release
 
-# Triggered by the GitHub Release that "Cut release" creates; the tag always
-# points at the release commit on main.
+# Reusable publish job, invoked by "Cut release" in the same workflow run —
+# a GITHUB_TOKEN-created release would not trigger an `on: release` workflow.
 on:
-  release:
-    types: [published]
+  workflow_call:
+    inputs:
+      ref:
+        description: The git ref to publish (the release commit on main)
+        required: true
+        type: string
 
 permissions:
   contents: read
@@ -21,6 +25,7 @@ jobs:
     steps:
       - uses: actions/checkout@v7
         with:
+          ref: ${{ inputs.ref }}
           fetch-depth: 0
 
       - uses: erlef/setup-beam@v1

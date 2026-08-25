@@ -30,10 +30,6 @@ jobs:
       - uses: actions/checkout@v7
         with:
           ref: main
-          # A PAT (contents read/write) so the push is allowed under branch
-          # protection and, more importantly, so a human (the PAT owner) can be
-          # granted the bypass that covers these bot commits.
-          token: ${{ secrets.RELEASE_TOKEN }}
 
       - uses: erlef/setup-beam@v1
         with:
@@ -49,6 +45,19 @@ jobs:
           PR_TITLE: ${{ github.event.pull_request.title }}
           PR_NUMBER: ${{ github.event.pull_request.number }}
         run: mix changelog.add --title "$PR_TITLE" --pr "$PR_NUMBER"
+
+      - name: Configure deploy key
+        env:
+          EXOSPHERE_DEPLOY_KEY: ${{ secrets.EXOSPHERE_DEPLOY_KEY }}
+        run: |
+          set -euo pipefail
+          mkdir -p ~/.ssh
+          printf '%s\n' "$EXOSPHERE_DEPLOY_KEY" > ~/.ssh/id_ed25519
+          chmod 600 ~/.ssh/id_ed25519
+          ssh-keyscan -t ed25519 github.com >> ~/.ssh/known_hosts 2>/dev/null
+          # Pushes authenticate as the deploy key (ruleset bypass); reads and
+          # other git operations keep using the GITHUB_TOKEN https remote.
+          git remote set-url --push origin "git@github.com:${GITHUB_REPOSITORY}.git"
 
       - name: Commit and push (retry on race)
         env:

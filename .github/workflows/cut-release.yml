@@ -23,6 +23,11 @@ jobs:
     name: Cut release from main
     runs-on: ubuntu-latest
 
+    outputs:
+      sha:
+        description: The release commit that was pushed to main
+        value: ${{ steps.release.outputs.sha }}
+
     env:
       MIX_ENV: test
 
@@ -31,10 +36,6 @@ jobs:
         with:
           ref: main
           fetch-depth: 0
-          # A PAT (contents read/write): its pushes land under branch protection
-          # bypass, and tag/release events it creates do trigger the Release
-          # workflow (GITHUB_TOKEN events do not).
-          token: ${{ secrets.RELEASE_TOKEN }}
 
       - uses: erlef/setup-beam@v1
         with:
@@ -63,6 +64,19 @@ jobs:
           version="$(grep -m1 -oE 'version: "[0-9]+\.[0-9]+\.[0-9]+"' mix.exs | grep -oE '[0-9]+\.[0-9]+\.[0-9]+')"
           echo "version=$version" >> "$GITHUB_OUTPUT"
 
+      - name: Configure deploy key
+        env:
+          EXOSPHERE_DEPLOY_KEY: ${{ secrets.EXOSPHERE_DEPLOY_KEY }}
+        run: |
+          set -euo pipefail
+          mkdir -p ~/.ssh
+          printf '%s\n' "$EXOSPHERE_DEPLOY_KEY" > ~/.ssh/id_ed25519
+          chmod 600 ~/.ssh/id_ed25519
+          ssh-keyscan -t ed25519 github.com >> ~/.ssh/known_hosts 2>/dev/null
+          # Pushes authenticate as the deploy key (ruleset bypass); reads and
+          # other git operations keep using the GITHUB_TOKEN https remote.
+          git remote set-url --push origin "git@github.com:${GITHUB_REPOSITORY}.git"
+
       - name: Commit and push (retry on race)
         run: |
           set -euo pipefail
@@ -84,8 +98,9 @@ jobs:
           fi
 
       - name: Create GitHub Release (tags the pushed commit)
+        id: release
         env:
-          GH_TOKEN: ${{ secrets.RELEASE_TOKEN }}
+          GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
           version="${{ steps.version.outputs.version }}"
@@ -95,3 +110,17 @@ jobs:
             --target "$(git rev-parse HEAD)" \
             --title "v${version}" \
             --notes-file release_notes.md
+          echo "sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+
+  # Runs in this same workflow because a GITHUB_TOKEN-created release does
+  # not trigger `on: release` workflows. Publishes the pushed release
+  # commit, not this run's dispatch-time HEAD.
+  publish:
+    name: Publish to Hex.pm
+    needs: cut
+    uses: ./.github/workflows/release.yml
+    permissions:
+      contents: read
+    secrets: inherit
+    with:
+      ref: ${{ needs.cut.outputs.sha }}

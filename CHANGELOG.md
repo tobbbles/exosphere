@@ -120,6 +120,10 @@ record-key primitives plus commit-signature verification.
 - `Exosphere.ATProto.Repo.Commit.verify_data/2` — confirm a commit's `data`
   (MST root) matches a set of records, completing repository verification
   alongside `verify/3`.
+- repository verification pipeline + MST canonical shape fix + firehose guide (#9)
+- data-model validation, README verification quickstart, CI matrix 1.20 (#11)
+- bump the README install snippet when cutting a release (#12)
+- lexicon-driven code generation for bsky + community types (#13)
 
 ### Changed
 
