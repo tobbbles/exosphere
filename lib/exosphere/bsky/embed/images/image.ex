@@ -21,7 +21,11 @@ defmodule Exosphere.Bsky.Embed.Images.Image do
   @enforce_keys [:alt, :image]
   defstruct alt: nil, aspect_ratio: nil, image: nil, extra: %{}
 
-  @type t :: %__MODULE__{alt: String.t(), aspect_ratio: term() | nil, image: term()}
+  @type t :: %__MODULE__{
+          alt: String.t(),
+          aspect_ratio: Exosphere.Bsky.Embed.Defs.AspectRatio.t() | nil,
+          image: term()
+        }
 
   @fields %{alt: "alt", aspect_ratio: "aspectRatio", image: "image"}
 
@@ -39,7 +43,16 @@ defmodule Exosphere.Bsky.Embed.Images.Image do
     {attrs, extra} = Runtime.atomize(attrs, @fields)
 
     {f_alt, e1} = Runtime.get_string(attrs, :alt, "alt", required: true)
-    {f_aspect_ratio, e2} = Runtime.get_any(attrs, :aspect_ratio, "aspectRatio", [])
+
+    {f_aspect_ratio, e2} =
+      Runtime.get_ref(
+        attrs,
+        :aspect_ratio,
+        "aspectRatio",
+        [],
+        Exosphere.Bsky.Embed.Defs.AspectRatio
+      )
+
     {f_image, e3} = Runtime.get_any(attrs, :image, "image", required: true)
 
     errors = e1 ++ e2 ++ e3
@@ -67,7 +80,7 @@ defmodule Exosphere.Bsky.Embed.Images.Image do
   def to_map(%__MODULE__{} = struct) do
     %{}
     |> Runtime.put_field("alt", struct.alt)
-    |> Runtime.put_field("aspectRatio", struct.aspect_ratio)
+    |> Runtime.put_field("aspectRatio", struct.aspect_ratio, &encode_aspect_ratio/1)
     |> Runtime.put_field("image", struct.image)
     |> Map.merge(struct.extra)
   end
@@ -76,4 +89,10 @@ defmodule Exosphere.Bsky.Embed.Images.Image do
   @spec from_map(map()) :: {:ok, t()} | {:error, [{path :: String.t(), message :: String.t()}]}
   def from_map(map) when is_map(map), do: new(map)
   def from_map(_), do: {:error, [{"", "expected a map"}]}
+
+  defp encode_ref(v, module) when is_struct(v, module), do: module.to_map(v)
+
+  defp encode_ref(v, _module) when is_map(v), do: v
+
+  defp encode_aspect_ratio(v), do: encode_ref(v, Exosphere.Bsky.Embed.Defs.AspectRatio)
 end

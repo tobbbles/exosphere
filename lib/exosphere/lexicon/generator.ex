@@ -38,13 +38,52 @@ defmodule Exosphere.Lexicon.Generator do
           lexicon: Parser.lexicon()
         }
 
+  # NSID prefixes collapsed into a single module namespace segment.
+  # Hand-written core modules living under these prefixes are reserved and
+  # guarded against below.
+  @namespace_rules [
+    {"app.bsky.", [Exosphere, Bsky]},
+    {"com.atproto.", [Exosphere, "ATProto"]},
+    {"community.lexicon.", [Exosphere, Community]}
+  ]
+
+  # Hand-written modules that generated code must never overwrite.
+  @reserved_modules [
+    Exosphere,
+    Exosphere.ATProto,
+    Exosphere.ATProto.Bsky,
+    Exosphere.ATProto.CAR,
+    Exosphere.ATProto.CBOR,
+    Exosphere.ATProto.CID,
+    Exosphere.ATProto.Crypto,
+    Exosphere.ATProto.HTTP,
+    Exosphere.ATProto.NSID,
+    Exosphere.ATProto.Repo,
+    Exosphere.ATProto.TID,
+    Exosphere.ATProto.AtUri,
+    Exosphere.ATProto.Identity.DID,
+    Exosphere.ATProto.Identity.Handle,
+    Exosphere.ATProto.MST,
+    Exosphere.Bsky.Runtime,
+    Exosphere.Lexicon.Parser,
+    Exosphere.Lexicon.Generator
+  ]
+
   @doc """
   Generate all modules for `lexicons` (as from `Parser.parse_dir/1`).
 
-  Every vendored lexicon is generated except `com.atproto.*` (the hand-written
-  core). `app.bsky.*` maps to `Exosphere.Bsky.*`; any other authority maps
-  by its NSID segments (e.g. `community.lexicon.interaction.like` →
-  `Exosphere.Community.Lexicon.Interaction.Like`).
+  Namespace rules: `app.bsky.*` maps to `Exosphere.Bsky.*`,
+  `com.atproto.*` to `Exosphere.ATProto.*`, `community.lexicon.*` to
+  `Exosphere.Community.*`; any other authority maps by its full NSID
+  segments.
+
+  Generation starts from every lexicon whose `main` def is a record or
+  object (XRPC query/procedure/subscription and permission-set defs are
+  parsed but not yet generated), then walks refs transitively across
+  lexicons — including into main-less `defs.json` lexicons — generating a
+  nested module for each reachable object/record def. Refs to non-object
+  defs (e.g. string enum defs) and to unvendored lexicons degrade to
+  pass-through `term()` values.
 
   Returns specs (module, path relative to `lib/exosphere`, formatted code),
   ordered parents-first.
@@ -53,16 +92,14 @@ defmodule Exosphere.Lexicon.Generator do
           %{module: module(), path: String.t(), code: String.t()}
         ]
   def generate(lexicons) do
-    specs =
-      lexicons
-      |> Enum.reject(fn {nsid, _} -> String.starts_with?(nsid, "com.atproto.") end)
-      |> Enum.sort()
-      |> Enum.flat_map(fn {_nsid, lexicon} ->
-        main = lexicon.defs["main"]
+    targets = reachable_targets(lexicons)
 
-        [{"main", main} | reachable_defs(lexicon, main)]
-        |> Enum.map(&module_spec(lexicon, &1))
+    specs =
+      Enum.map(targets, fn {nsid, def_name} ->
+        module_spec(lexicons[nsid], def_name)
       end)
+
+    check_collisions!(specs)
 
     modules = Map.new(specs, &{{&1.nsid, &1.def_name || "main"}, &1.module})
 
@@ -71,7 +108,84 @@ defmodule Exosphere.Lexicon.Generator do
     specs
     |> Enum.sort_by(fn spec -> {spec.module |> Module.split() |> length(), spec.module} end)
     |> Enum.map(fn spec ->
-      %{module: spec.module, path: spec.path, code: format(render(spec, ctx))}
+      Map.merge(spec, %{code: format(render(spec, ctx))})
+    end)
+  end
+
+  # Walk refs transitively from all record/object mains, collecting the set
+  # of {nsid, def_name} targets that need generated modules.
+  defp reachable_targets(lexicons) do
+    seeds =
+      lexicons
+      |> Enum.filter(fn {_nsid, lexicon} ->
+        main = lexicon.defs["main"]
+        main && main.kind in [:record, :object]
+      end)
+      |> Enum.map(fn {nsid, _lexicon} -> {nsid, "main"} end)
+      |> MapSet.new()
+
+    walk(MapSet.to_list(seeds), MapSet.new(seeds), lexicons)
+    |> MapSet.to_list()
+    |> Enum.sort()
+  end
+
+  defp walk([], visited, _lexicons), do: visited
+
+  defp walk([{nsid, def_name} | rest], visited, lexicons) do
+    node = lexicons[nsid].defs[def_name]
+
+    refs =
+      node
+      |> node_refs()
+      |> Enum.map(&resolve_ref(&1, nsid))
+      |> Enum.reject(&is_nil/1)
+      |> Enum.filter(fn {t_nsid, t_def} ->
+        # Only object/record defs become modules; other def kinds and
+        # unvendored lexicons stay passthrough.
+        case lexicons[t_nsid] do
+          nil ->
+            false
+
+          t_lexicon ->
+            target = t_lexicon.defs[t_def]
+            target != nil and target.kind in [:record, :object]
+        end
+      end)
+      |> Enum.reject(&MapSet.member?(visited, &1))
+
+    walk(refs ++ rest, Enum.reduce(refs, visited, &MapSet.put(&2, &1)), lexicons)
+  end
+
+  # All ref strings reachable inside a schema node.
+  defp node_refs(%{kind: :ref, ref: ref}), do: [ref]
+
+  defp node_refs(%{kind: :union, refs: refs}), do: refs
+
+  defp node_refs(%{kind: :array, items: items}), do: node_refs(items)
+
+  defp node_refs(%{kind: :object, properties: props}),
+    do: Enum.flat_map(props, fn {_name, prop} -> node_refs(prop) end)
+
+  defp node_refs(%{kind: :record, record: record}), do: node_refs(record)
+
+  defp node_refs(_), do: []
+
+  defp check_collisions!(specs) do
+    specs
+    |> Enum.map(& &1.module)
+    |> then(fn modules ->
+      dups = modules -- Enum.uniq(modules)
+
+      unless dups == [] do
+        raise ArgumentError, "duplicate generated modules: #{inspect(Enum.uniq(dups))}"
+      end
+
+      reserved = Enum.filter(modules, &(&1 in @reserved_modules))
+
+      unless reserved == [] do
+        raise ArgumentError,
+              "generated modules collide with hand-written core: #{inspect(reserved)}"
+      end
     end)
   end
 
@@ -98,67 +212,36 @@ defmodule Exosphere.Lexicon.Generator do
               __STACKTRACE__
   end
 
-  # --- Reachability -------------------------------------------------------------
-
-  # Collect internal defs of `lexicon` reachable from `node`, depth-first,
-  # not revisiting (guards against ref cycles).
-  defp reachable_defs(lexicon, node), do: reachable_defs(lexicon, node, [])
-
-  defp reachable_defs(lexicon, node, seen) do
-    case node do
-      %{kind: :ref, ref: "#" <> def_name} ->
-        if def_name in seen or not Map.has_key?(lexicon.defs, def_name) do
-          []
-        else
-          child = lexicon.defs[def_name]
-          [{def_name, child} | reachable_defs(lexicon, child, [def_name | seen])]
-        end
-
-      %{kind: :array, items: items} ->
-        reachable_defs(lexicon, items, seen)
-
-      %{kind: :union, refs: refs} ->
-        Enum.flat_map(refs, fn
-          "#" <> _ = ref -> reachable_defs(lexicon, %{kind: :ref, ref: ref}, seen)
-          _ -> []
-        end)
-
-      %{kind: :object, properties: props} ->
-        Enum.flat_map(props, fn {_name, prop} -> reachable_defs(lexicon, prop, seen) end)
-
-      %{kind: :record, record: record} ->
-        reachable_defs(lexicon, record, seen)
-
-      _ ->
-        []
-    end
-  end
-
   # --- Naming --------------------------------------------------------------------
 
-  # app.bsky.feed.post => Exosphere.Bsky.Feed.Post (the app.bsky prefix is
-  # collapsed to Bsky); community.lexicon.interaction.like =>
-  # Exosphere.Community.Lexicon.Interaction.Like (segments kept).
-  defp main_module("app.bsky." <> rest) do
-    rest
-    |> String.split(".")
-    |> Enum.map(&Macro.camelize/1)
-    |> then(&Module.concat([Exosphere, Bsky | &1]))
-  end
-
+  # app.bsky.feed.post => Exosphere.Bsky.Feed.Post; com.atproto.repo.strongRef
+  # => Exosphere.ATProto.Repo.StrongRef; community.lexicon.interaction.like =>
+  # Exosphere.Community.Interaction.Like; other authorities keep all segments.
   defp main_module(nsid) do
-    nsid
-    |> String.split(".")
-    |> Enum.map(&Macro.camelize/1)
-    |> then(&Module.concat([Exosphere | &1]))
+    case Enum.find(@namespace_rules, fn {prefix, _base} -> String.starts_with?(nsid, prefix) end) do
+      {prefix, base} ->
+        rest =
+          nsid
+          |> String.trim_leading(prefix)
+          |> String.split(".")
+          |> Enum.map(&Macro.camelize/1)
+
+        Module.concat(base ++ rest)
+
+      nil ->
+        nsid
+        |> String.split(".")
+        |> Enum.map(&Macro.camelize/1)
+        |> then(&Module.concat([Exosphere | &1]))
+    end
   end
 
   defp def_module(nsid, def_name),
     do: Module.concat(main_module(nsid), Macro.camelize(def_name))
 
-  defp module_spec(lexicon, {def_name, node}) do
-    module =
-      if def_name == "main", do: main_module(lexicon.id), else: def_module(lexicon.id, def_name)
+  defp module_spec(lexicon, def_name) do
+    node = lexicon.defs[def_name]
+    module = if def_name == "main", do: main_module(lexicon.id), else: def_module(lexicon.id, def_name)
 
     %{
       module: module,
@@ -170,12 +253,22 @@ defmodule Exosphere.Lexicon.Generator do
     }
   end
 
-  # Exosphere.Bsky.Feed.Post => "bsky/feed/post.ex" (relative to lib/exosphere)
+  # Exosphere.Bsky.Feed.Post => "bsky/feed/post.ex" (relative to lib/exosphere).
+  # ATProto is written as "atproto" to match the hand-written directory.
   defp module_path(module) do
-    module
-    |> Module.split()
-    |> Enum.drop(1)
-    |> Enum.map(&Macro.underscore/1)
+    parts =
+      module
+      |> Module.split()
+      |> Enum.drop(1)
+      |> Enum.map(&Macro.underscore/1)
+
+    parts =
+      case parts do
+        ["at_proto" | rest] -> ["atproto" | rest]
+        other -> other
+      end
+
+    parts
     |> Path.join()
     |> then(&"#{&1}.ex")
   end
@@ -225,21 +318,21 @@ defmodule Exosphere.Lexicon.Generator do
 
     object = if node.kind == :record, do: node.record, else: node
     fields = Enum.sort(object.properties)
-    required = MapSet.new(object.required)
+    req = %{required: MapSet.new(object.required), nullable: MapSet.new(object.nullable || [])}
 
     sections = [
       @header,
       "defmodule #{inspect(module)} do",
       moduledoc(spec, object, fields),
       attrs(fields, ctx),
-      struct_def(fields, required),
-      "  @type t :: %__MODULE__{#{type_pairs(fields, required, ctx)}}",
+      struct_def(fields, req),
+      "  @type t :: %__MODULE__{#{type_pairs(fields, req, ctx)}}",
       # Emitted with explicit key ordering: inspecting a map literal would
       # order atoms by term order, which varies with atom creation order
       # in the generating VM.
       "  @fields %{#{fields_map_literal(fields)}}",
       type_id_fn(),
-      new(fields, required, ctx),
+      new(fields, req, ctx),
       new_bang(),
       to_map(fields, ctx),
       from_map(),
@@ -297,6 +390,7 @@ defmodule Exosphere.Lexicon.Generator do
 
   defp kind_doc(%{kind: :string, format: format}) when not is_nil(format), do: "string, format `#{format}`"
   defp kind_doc(%{kind: :string}), do: "string"
+  defp kind_doc(%{kind: :token}), do: "token"
   defp kind_doc(%{kind: :integer}), do: "integer"
   defp kind_doc(%{kind: :boolean}), do: "boolean"
   defp kind_doc(%{kind: :array}), do: "array"
@@ -322,7 +416,7 @@ defmodule Exosphere.Lexicon.Generator do
     Enum.join(["alias Exosphere.Bsky.Runtime", "@type_id #{inspect(ctx.type_id)}" | union_attrs], "\n")
   end
 
-  defp struct_def(fields, required) do
+  defp struct_def(fields, %{required: required}) do
     enforce =
       fields
       |> Enum.filter(fn {name, _} -> MapSet.member?(required, name) end)
@@ -333,15 +427,17 @@ defmodule Exosphere.Lexicon.Generator do
     "@enforce_keys #{inspect(enforce)}\n  defstruct #{inspect(defaults ++ [extra: %{}])}"
   end
 
-  defp type_pairs(fields, required, ctx) do
+  defp type_pairs(fields, %{required: required, nullable: nullable}, ctx) do
     for {name, node} <- fields do
-      optional = if MapSet.member?(required, name), do: "", else: " | nil"
+      # Nullable fields accept nil even when required
+      optional = if MapSet.member?(required, name) and not MapSet.member?(nullable, name), do: "", else: " | nil"
       "#{field_atom(name)}: #{field_type(node, ctx)}#{optional}"
     end
     |> Enum.join(", ")
   end
 
   defp field_type(%{kind: :string}, _ctx), do: "String.t()"
+  defp field_type(%{kind: :token}, _ctx), do: "String.t()"
   defp field_type(%{kind: :integer}, _ctx), do: "integer()"
   defp field_type(%{kind: :boolean}, _ctx), do: "boolean()"
   defp field_type(%{kind: :blob}, _ctx), do: "term()"
@@ -376,12 +472,12 @@ defmodule Exosphere.Lexicon.Generator do
     """
   end
 
-  defp new(fields, required, ctx) do
+  defp new(fields, req, ctx) do
     bindings =
       fields
       |> Enum.with_index(1)
       |> Enum.map(fn {{name, node}, i} ->
-        "      {#{field_var(name)}, e#{i}} = #{getter(name, node, required, ctx)}"
+        "      {#{field_var(name)}, e#{i}} = #{getter(name, node, req, ctx)}"
       end)
 
     n = length(fields)
@@ -390,7 +486,13 @@ defmodule Exosphere.Lexicon.Generator do
       if n == 0, do: "[]", else: Enum.map_join(1..n, " ++ ", &"e#{&1}")
 
     assigns =
-      Enum.map_join(fields, ", ", fn {name, _} -> "#{field_atom(name)}: #{field_var(name)}" end)
+      case fields do
+        [] ->
+          ""
+
+        fields ->
+          Enum.map_join(fields, ", ", fn {name, _} -> "#{field_atom(name)}: #{field_var(name)}" end) <> ", "
+      end
 
     """
     @doc \"\"\"
@@ -400,14 +502,14 @@ defmodule Exosphere.Lexicon.Generator do
     \"\"\"
     @spec new(map()) :: {:ok, t()} | {:error, [{path :: String.t(), message :: String.t()}]}
     def new(attrs) when is_map(attrs) do
-      {attrs, extra} = Runtime.atomize(attrs, @fields)
+      {#{if(fields == [], do: "_attrs", else: "attrs")}, extra} = Runtime.atomize(attrs, @fields)
 
     #{Enum.join(bindings, "\n")}
 
       errors = #{error_list}
 
       if errors == [] do
-        {:ok, %__MODULE__{#{assigns}, extra: extra}}
+        {:ok, %__MODULE__{#{assigns}extra: extra}}
       else
         {:error, errors}
       end
@@ -417,14 +519,14 @@ defmodule Exosphere.Lexicon.Generator do
     """
   end
 
-  defp getter(name, node, required, ctx) do
+  defp getter(name, node, %{required: _, nullable: _} = req, ctx) do
     key = field_atom(name)
     path = inspect(name)
-    opts = get_opts(node, required, name)
+    opts = get_opts(node, req, name)
 
     case node.kind do
       :union ->
-        "Runtime.get_union(attrs, :#{key}, #{path}, #{opts}, @#{variants_attr(name)})"
+        "Runtime.get_union(attrs, :#{key}, #{path}, #{opts}, @#{variants_attr(name)}#{union_closed_arg(node)})"
 
       :array ->
         "Runtime.get_array(attrs, :#{key}, #{path}, #{opts}, #{array_item_fn(name, node, ctx)})"
@@ -436,6 +538,9 @@ defmodule Exosphere.Lexicon.Generator do
         end
 
       :string ->
+        "Runtime.get_string(attrs, :#{key}, #{path}, #{opts})"
+
+      :token ->
         "Runtime.get_string(attrs, :#{key}, #{path}, #{opts})"
 
       :integer ->
@@ -461,7 +566,7 @@ defmodule Exosphere.Lexicon.Generator do
         end
 
       %{kind: :union} ->
-        "fn v, path -> Runtime.item_union(v, path, @#{variants_attr(name)}) end"
+        "fn v, path -> Runtime.item_union(v, path, @#{variants_attr(name)}#{union_closed_arg(items)}) end"
 
       _ ->
         "fn v, _path -> {:ok, v} end"
@@ -472,17 +577,65 @@ defmodule Exosphere.Lexicon.Generator do
     node |> string_opts() |> inspect()
   end
 
-  defp get_opts(node, required, name) do
+  defp get_opts(node, %{required: required, nullable: nullable}, name) do
     opts =
       case node.kind do
         :string -> string_opts(node)
+        :token -> string_opts(node)
         :integer -> integer_opts(node)
         :boolean -> const_opts(node)
         :array -> array_opts(node)
         _ -> []
       end
 
-    if MapSet.member?(required, name), do: inspect([{:required, true} | opts]), else: inspect(opts)
+    opts
+    |> maybe_req(MapSet.member?(required, name))
+    |> maybe_nullable(MapSet.member?(nullable, name))
+    |> render_opts()
+  end
+
+  # Render keyword opts manually so large integers get underscores
+  # (e.g. maxLength 10000 -> 10_000), keeping generated files lint-clean.
+  defp render_opts([]), do: "[]"
+
+  defp render_opts(opts) do
+    "[" <>
+      Enum.map_join(opts, ", ", fn
+        {key, value} -> "#{key}: #{opt_value(value)}"
+      end) <> "]"
+  end
+
+  defp opt_value(value) when is_integer(value) and abs(value) > 9999,
+    do: value |> Integer.to_string() |> underscore()
+
+  defp opt_value(value), do: inspect(value)
+
+  defp underscore(string) do
+    string
+    |> String.graphemes()
+    |> Enum.reverse()
+    |> Enum.chunk_every(3)
+    |> Enum.map(&Enum.reverse/1)
+    |> Enum.reverse()
+    |> Enum.map_join("_", &Enum.join/1)
+  end
+
+  defp maybe_req(opts, true), do: [{:required, true} | opts]
+  defp maybe_req(opts, false), do: opts
+
+  defp maybe_nullable(opts, true), do: [{:nullable, true} | opts]
+  defp maybe_nullable(opts, false), do: opts
+
+  # Closed unions pass an extra positional arg to the Runtime validators
+  defp union_closed_arg(%{closed: true}), do: ", true"
+  defp union_closed_arg(_), do: ""
+  
+
+  defp string_opts(%{kind: :token} = node) do
+    []
+    |> opt(node.min_length, :min_length)
+    |> opt(node.max_length, :max_length)
+    |> opt(node.max_graphemes, :max_graphemes)
   end
 
   defp string_opts(node) do
@@ -593,13 +746,13 @@ defmodule Exosphere.Lexicon.Generator do
       |> Enum.flat_map(fn {name, node} -> field_helpers(name, node, ctx) end)
 
     base =
-      if extra == [] do
-        []
-      else
+      if Enum.any?(extra, &String.contains?(&1, "encode_ref(")) do
         [
           "defp encode_ref(v, module) when is_struct(v, module), do: module.to_map(v)",
           "defp encode_ref(v, _module) when is_map(v), do: v"
         ]
+      else
+        []
       end
 
     Enum.join(base ++ extra, "\n\n")

@@ -48,7 +48,7 @@ defmodule Exosphere.Bsky.Runtime do
   @spec get_string(map(), atom(), String.t(), keyword()) :: {term(), [error()]}
   def get_string(attrs, key, path, opts \\ []) do
     case fetch(attrs, key, path, opts) do
-      {:ok, nil} -> if(opts[:required], do: {nil, [{path, "is required"}]}, else: {nil, []})
+      {:ok, nil} -> if(opts[:required] == true and opts[:nullable] != true, do: {nil, [{path, "is required"}]}, else: {nil, []})
       {:ok, value} -> check_string(value, path, opts)
       {:error, error} -> {nil, [error]}
     end
@@ -58,7 +58,7 @@ defmodule Exosphere.Bsky.Runtime do
   @spec get_integer(map(), atom(), String.t(), keyword()) :: {term(), [error()]}
   def get_integer(attrs, key, path, opts \\ []) do
     case fetch(attrs, key, path, opts) do
-      {:ok, nil} -> if(opts[:required], do: {nil, [{path, "is required"}]}, else: {nil, []})
+      {:ok, nil} -> if(opts[:required] == true and opts[:nullable] != true, do: {nil, [{path, "is required"}]}, else: {nil, []})
       {:ok, value} when is_integer(value) -> check_integer(value, path, opts)
       {:ok, value} -> {nil, [{path, "expected integer, got #{type_name(value)}"}]}
       {:error, error} -> {nil, [error]}
@@ -69,7 +69,7 @@ defmodule Exosphere.Bsky.Runtime do
   @spec get_boolean(map(), atom(), String.t(), keyword()) :: {term(), [error()]}
   def get_boolean(attrs, key, path, opts \\ []) do
     case fetch(attrs, key, path, opts) do
-      {:ok, nil} -> if(opts[:required], do: {nil, [{path, "is required"}]}, else: {nil, []})
+      {:ok, nil} -> if(opts[:required] == true and opts[:nullable] != true, do: {nil, [{path, "is required"}]}, else: {nil, []})
       {:ok, value} when is_boolean(value) ->
         case Keyword.get(opts, :const) do
           nil -> {value, []}
@@ -96,7 +96,7 @@ defmodule Exosphere.Bsky.Runtime do
   def get_array(attrs, key, path, opts, item_fn) do
     case fetch(attrs, key, path, opts) do
       {:ok, nil} ->
-        if opts[:required], do: {nil, [{path, "is required"}]}, else: {nil, []}
+        if opts[:required] == true and opts[:nullable] != true, do: {nil, [{path, "is required"}]}, else: {nil, []}
 
       {:ok, value} when is_list(value) ->
         {values, errors} =
@@ -139,7 +139,7 @@ defmodule Exosphere.Bsky.Runtime do
   @spec get_ref(map(), atom(), String.t(), keyword(), module()) :: {term(), [error()]}
   def get_ref(attrs, key, path, opts, mod) do
     case fetch(attrs, key, path, opts) do
-      {:ok, nil} -> if(opts[:required], do: {nil, [{path, "is required"}]}, else: {nil, []})
+      {:ok, nil} -> if(opts[:required] == true and opts[:nullable] != true, do: {nil, [{path, "is required"}]}, else: {nil, []})
       {:ok, %^mod{} = value} -> {value, []}
       {:ok, value} when is_map(value) -> coerce(mod, value, path)
       {:ok, value} -> {nil, [{path, "expected #{inspect(mod)} or map, got #{type_name(value)}"}]}
@@ -158,7 +158,7 @@ defmodule Exosphere.Bsky.Runtime do
   def get_union(attrs, key, path, opts, variants) do
     case fetch(attrs, key, path, opts) do
       {:ok, nil} ->
-        if opts[:required], do: {nil, [{path, "is required"}]}, else: {nil, []}
+        if opts[:required] == true and opts[:nullable] != true, do: {nil, [{path, "is required"}]}, else: {nil, []}
 
       {:ok, value} ->
         case union_item(value, path, variants) do
@@ -172,18 +172,22 @@ defmodule Exosphere.Bsky.Runtime do
   end
 
   @doc "Validate a single union value against known variants."
-  @spec union_item(term(), String.t(), [{String.t(), module()}]) ::
+  @spec union_item(term(), String.t(), [{String.t(), module()}], boolean()) ::
           {:ok, term()} | {:error, {String.t(), String.t()}}
-  def union_item(%mod{} = value, path, variants) do
+  def union_item(value, path, variants, closed \\ false)
+
+  def union_item(%mod{} = value, path, variants, _closed) do
     if Enum.any?(variants, fn {_nsid, m} -> m == mod end),
       do: {:ok, value},
       else: {:error, {path, "unknown variant struct #{inspect(mod)}"}}
   end
 
-  def union_item(%{"$type" => type} = value, path, variants) do
+  def union_item(%{"$type" => type} = value, path, variants, closed) do
     case List.keyfind(variants, type, 0) do
       nil ->
-        {:ok, value}
+        if closed,
+          do: {:error, {path, "unknown $type: #{type}"}},
+          else: {:ok, value}
 
       {_type, mod} ->
         case coerce(mod, value, path) do
@@ -193,8 +197,9 @@ defmodule Exosphere.Bsky.Runtime do
     end
   end
 
-  def union_item(value, _path, _variants) when is_map(value), do: {:ok, value}
-  def union_item(value, path, _variants), do: {:error, {path, "expected map, got #{type_name(value)}"}}
+  def union_item(value, _path, _variants, false) when is_map(value), do: {:ok, value}
+  def union_item(value, path, _variants, true) when is_map(value), do: {:error, {path, "missing \"$type\" for closed union"}}
+  def union_item(value, path, _variants, _closed), do: {:error, {path, "expected map, got #{type_name(value)}"}}
 
   @doc "Fetch a field of any shape (unknown, blob, cid-link, bytes, unresolved ref)."
   @spec get_any(map(), atom(), String.t(), keyword()) :: {term(), [error()]}
@@ -231,10 +236,10 @@ defmodule Exosphere.Bsky.Runtime do
     do: {:error, [{path, "expected #{inspect(mod)} or map, got #{type_name(value)}"}]}
 
   @doc "Validate one union item against known variants."
-  @spec item_union(term(), String.t(), [{String.t(), module()}]) ::
+  @spec item_union(term(), String.t(), [{String.t(), module()}], boolean()) ::
           {:ok, term()} | {:error, [{String.t(), String.t()}]}
-  def item_union(value, path, variants) do
-    case union_item(value, path, variants) do
+  def item_union(value, path, variants, closed \\ false) do
+    case union_item(value, path, variants, closed) do
       {:ok, value} -> {:ok, value}
       {:error, {path, message}} -> {:error, [{path, message}]}
     end

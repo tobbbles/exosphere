@@ -46,7 +46,10 @@ defmodule Exosphere.Lexicon.GeneratorTest do
                Exosphere.Bsky.Embed.External,
                Exosphere.Bsky.Embed.External.External,
                Exosphere.Bsky.Embed.Record,
-               Exosphere.Community.Lexicon.Interaction.Like
+               Exosphere.Bsky.Graph.Follow,
+               Exosphere.ATProto.Repo.StrongRef,
+               Exosphere.ATProto.Label.Defs.SelfLabels,
+               Exosphere.Community.Interaction.Like
              ]),
              modules
            )
@@ -61,6 +64,8 @@ defmodule Exosphere.Lexicon.GeneratorTest do
     assert "bsky/richtext/facet.ex" in paths
     assert "bsky/richtext/facet/byte_slice.ex" in paths
     assert "bsky/embed/images.ex" in paths
-    assert "community/lexicon/interaction/like.ex" in paths
+    assert "community/interaction/like.ex" in paths
+    assert "atproto/repo/strong_ref.ex" in paths
+    assert "atproto/label/defs/self_labels.ex" in paths
   end
 end
