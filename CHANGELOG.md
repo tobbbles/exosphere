@@ -92,6 +92,10 @@ record-key primitives plus commit-signature verification.
     via `com.atproto.repo.getRecord`, `list/3` via `listRecords`, and
     `resolve/2` via NSID authority (DNS TXT `_lexicon.<domain>` → DID →
     PDS), per the lexicon resolution spec.
+  - `mix exosphere.lint.lexicons` — lints lexicon JSON documents against
+    the spec rules (via `Parser` + `Schema.validate_document/1`) with
+    style-guide warnings (missing descriptions); `--strict` fails on
+    warnings too.
   - `mix exosphere.gen.lexicons --from did:plc:… [--pds …]` — vendors a
     repo's published lexicons then generates typed modules for them;
     unresolved corpus refs now print warnings instead of silently

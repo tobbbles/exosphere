@@ -210,6 +210,13 @@ typed modules for them:
 $ mix exosphere.gen.lexicons --from did:plc:abc123
 ```
 
+Before publishing, lint your lexicon documents against the spec rules
+(spec errors plus style-guide warnings for missing descriptions):
+
+```console
+$ mix exosphere.lint.lexicons my_lexicon.json
+```
+
 ## Notes
 
 - The consumer **reconnects automatically** on disconnects and errors,
