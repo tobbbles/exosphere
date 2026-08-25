@@ -17,7 +17,9 @@ defmodule Exosphere.MixProject do
       package: package(),
       dialyzer: [
         # Put the project-level PLT in the priv/ directory (instead of the default _build/ location)
-        plt_file: {:no_warn, "priv/plts/project.plt"}
+        plt_file: {:no_warn, "priv/plts/project.plt"},
+        # The maintenance tasks in tasks/ call Mix.raise/Mix.shell/OptionParser
+        plt_add_apps: [:mix]
       ]
     ]
   end

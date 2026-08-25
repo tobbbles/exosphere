@@ -105,7 +105,8 @@ jobs:
 
     env:
       MIX_ENV: test
-      PLT_CACHE_VERSION: v2
+      # v3: rebuilt with :mix in the PLT (plt_add_apps) for the tasks/ modules
+      PLT_CACHE_VERSION: v3
 
     steps:
       - uses: actions/checkout@v4
