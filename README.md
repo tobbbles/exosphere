@@ -156,6 +156,60 @@ checks a `#commit` message's embedded blocks against its signed MST root —
 see the [Firehose guide](firehose.html) for when that succeeds (incremental
 CARs only carry new blocks) and how to build on it.
 
+## Lexicons: register, type-check, and publish
+
+Exosphere ships compile-time typed modules for the vendored bsky/community
+lexicons, and a runtime workflow for lexicons of your own — or anyone else's.
+
+Define (or fetch) a lexicon, type-check records against it, and publish it to
+a PDS as a `com.atproto.lexicon.schema` record:
+
+```elixir
+{:ok, schema} = Exosphere.Lexicon.Schema.new(%{
+  "lexicon" => 1,
+  "id" => "com.example.post",
+  "defs" => %{"main" => %{
+    "type" => "record", "key" => "tid",
+    "record" => %{"type" => "object",
+      "required" => ["text"],
+      "properties" => %{"text" => %{"type" => "string", "maxGraphemes" => 100}}}
+  }}
+})
+
+# Type-check records at runtime (spec semantics: unknown fields ignored,
+# open unions, byte-vs-grapheme string limits; pass strict: true to reject)
+:ok = Exosphere.Lexicon.register(schema)
+:ok = Exosphere.Lexicon.validate("com.example.post", %{
+  "$type" => "com.example.post", "text" => "hello"
+})
+
+# Publish: record key is the NSID, so it lives at
+# at://<did>/com.atproto.lexicon.schema/com.example.post
+{:ok, %{uri: uri, cid: cid}} =
+  Exosphere.Lexicon.publish(session, pds_url, did, schema)
+```
+
+Lexicons published by any repository can be fetched back and registered:
+
+```elixir
+# From a known repo
+{:ok, schema} =
+  Exosphere.Lexicon.Resolver.fetch(pds_url, did, "com.example.post", register: true)
+
+# Or every lexicon a repo publishes
+{:ok, schemas, _} = Exosphere.Lexicon.Resolver.list(pds_url, did)
+
+# Or via NSID authority (DNS TXT _lexicon.<domain> → DID → PDS)
+{:ok, schema} = Exosphere.Lexicon.Resolver.resolve("com.example.post")
+```
+
+To go back to compile-time safety, vendor a repo's lexicons and generate
+typed modules for them:
+
+```console
+$ mix exosphere.gen.lexicons --from did:plc:abc123
+```
+
 ## Notes
 
 - The consumer **reconnects automatically** on disconnects and errors,

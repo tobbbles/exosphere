@@ -69,6 +69,34 @@ record-key primitives plus commit-signature verification.
 
 ### Added
 
+- **Lexicon registration, type-checking, and publishing** — first-class
+  lexicon support beyond compile-time codegen:
+  - `Exosphere.Lexicon` — entry point: `register/1`, `validate/3`,
+    `publish/4`, `delete/4`.
+  - `Exosphere.Lexicon.Schema` — the `com.atproto.lexicon.schema` record
+    type: builds and validates lexicon documents against the meta-rules
+    (lexicon version, NSID id, single primary def, record `key`, ref
+    targets), round-trips wire records, and derives the record key (the
+    NSID) for publishing.
+  - `Exosphere.Lexicon.Validator` — runtime validation of wire-format
+    values against parsed lexicon IR: required/nullable distinction,
+    unknown fields ignored permissively (or `strict: true`), open/closed
+    unions with `$type` discrimination, byte-vs-grapheme string limits,
+    format checks (datetime, at-uri, nsid, did, cid, ...), cross-lexicon
+    ref resolution, and data-model conformance.
+  - `Exosphere.Lexicon.Registry` — process-free runtime NSID → lexicon
+    registry (`:persistent_term`), loadable from the vendored corpus;
+    `validate/3` type-checks by NSID, with an `optimistic: true` mode
+    mirroring PDS fail-open behavior.
+  - `Exosphere.Lexicon.Resolver` — fetch published lexicons: `fetch/4`
+    via `com.atproto.repo.getRecord`, `list/3` via `listRecords`, and
+    `resolve/2` via NSID authority (DNS TXT `_lexicon.<domain>` → DID →
+    PDS), per the lexicon resolution spec.
+  - `mix exosphere.gen.lexicons --from did:plc:… [--pds …]` — vendors a
+    repo's published lexicons then generates typed modules for them;
+    unresolved corpus refs now print warnings instead of silently
+    degrading to `term()`.
+  - Vendored `com/atproto/lexicon/schema.json` (the meta-schema itself).
 - **Repository verification pipeline** — the trustless read path:
   - `Exosphere.ATProto.Repo.verify_checkout/3` — downloads
     `com.atproto.sync.getRepo` from a PDS, reads the record set out of the

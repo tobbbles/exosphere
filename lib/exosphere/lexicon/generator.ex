@@ -65,9 +65,20 @@ defmodule Exosphere.Lexicon.Generator do
     Exosphere.ATProto.Identity.Handle,
     Exosphere.ATProto.MST,
     Exosphere.Bsky.Runtime,
+    Exosphere.Lexicon,
     Exosphere.Lexicon.Parser,
-    Exosphere.Lexicon.Generator
+    Exosphere.Lexicon.Generator,
+    Exosphere.Lexicon.Schema,
+    Exosphere.Lexicon.Validator,
+    Exosphere.Lexicon.Registry,
+    Exosphere.Lexicon.Resolver
   ]
+
+  # The lexicon meta-schema is vendored for completeness but has a
+  # hand-written counterpart (Exosphere.Lexicon.Schema) with full
+  # meta-rule validation; generating a struct for its single `lexicon`
+  # field would shadow it.
+  @skipped_lexicons ["com.atproto.lexicon.schema"]
 
   @doc """
   Generate all modules for `lexicons` (as from `Parser.parse_dir/1`).
@@ -170,11 +181,56 @@ defmodule Exosphere.Lexicon.Generator do
     end
   end
 
+  @doc """
+  Report refs the generator could not resolve: each is a
+  `{source_nsid, ref, location}` triple where `ref` points at an
+  unvendored lexicon (or a def the corpus does not contain), so the
+  affected fields degrade to pass-through `term()` values.
+  """
+  @spec unresolved_refs(%{String.t() => Parser.lexicon()}) :: [
+          {source_nsid :: String.t(), ref :: String.t(), location :: String.t()}
+        ]
+  def unresolved_refs(lexicons) do
+    lexicons
+    |> Enum.flat_map(fn {nsid, lexicon} ->
+      lexicon.defs
+      |> Enum.flat_map(fn {def_name, node} -> refs_in(node, "defs.#{def_name}") end)
+      |> Enum.map(fn {ref, location} -> {nsid, ref, location} end)
+    end)
+    |> Enum.reject(fn {nsid, ref, _location} ->
+      case resolve_ref(ref, nsid) do
+        {t_nsid, t_def} ->
+          case lexicons[t_nsid] do
+            nil -> false
+            t_lexicon -> t_lexicon.defs[t_def] != nil
+          end
+      end
+    end)
+    |> Enum.sort()
+    |> Enum.dedup()
+  end
+
+  defp refs_in(%{kind: :ref, ref: ref}, path), do: [{ref, path}]
+
+  defp refs_in(%{kind: :union, refs: refs}, path),
+    do: refs |> Enum.with_index() |> Enum.map(fn {r, i} -> {r, "#{path}.refs[#{i}]"} end)
+
+  defp refs_in(%{kind: :array, items: items}, path), do: refs_in(items, "#{path}.items")
+
+  defp refs_in(%{kind: :object, properties: props}, path) do
+    Enum.flat_map(props, fn {k, v} -> refs_in(v, "#{path}.#{k}") end)
+  end
+
+  defp refs_in(%{kind: :record, record: record}, path), do: refs_in(record, "#{path}.record")
+
+  defp refs_in(_, _path), do: []
+
   # Walk refs transitively from all record/object mains, collecting the set
   # of {nsid, def_name} targets that need generated modules.
   defp reachable_targets(lexicons) do
     seeds =
       lexicons
+      |> Enum.reject(fn {nsid, _lexicon} -> nsid in @skipped_lexicons end)
       |> Enum.filter(fn {_nsid, lexicon} ->
         main = lexicon.defs["main"]
         main && main.kind in [:record, :object]

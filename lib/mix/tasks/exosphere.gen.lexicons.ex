@@ -21,13 +21,26 @@ defmodule Mix.Tasks.Exosphere.Gen.Lexicons do
       mix exosphere.gen.lexicons --check
       mix exosphere.gen.lexicons --check community.lexicon
 
-  Generation is deterministic: the same vendored lexicons always produce the
-  same files, so output can be reviewed with `git diff`.
+  Fetch lexicons published by a repository (as `com.atproto.lexicon.schema`
+  records) before generating, vendoring them under `priv/lexicons` so the
+  result is reproducible on later runs:
+
+      mix exosphere.gen.lexicons --from did:plc:abc123 [--pds https://pds.example.com]
+
+  The PDS is found via DID resolution unless `--pds` is given. Lexicons
+  from authorities without a namespace rule generate under their full NSID
+  segments (e.g. `com.example.post` → `Exosphere.Com.Example.Post`).
+
+  Generation is deterministic: the same vendored lexicons always produce
+  the same files, so output can be reviewed with `git diff`. Refs the
+  corpus can not resolve (fields that degrade to `term()`) are reported
+  as warnings.
   """
 
   use Mix.Task
 
-  alias Exosphere.Lexicon.{Generator, Parser}
+  alias Exosphere.ATProto.Identity.DID
+  alias Exosphere.Lexicon.{Generator, Parser, Resolver}
 
   @lexicon_dir "priv/lexicons"
   @output_dir "lib/exosphere"
@@ -42,18 +55,22 @@ defmodule Mix.Tasks.Exosphere.Gen.Lexicons do
 
   @impl Mix.Task
   def run(args) do
-    {opts, positional, invalid} = OptionParser.parse(args, strict: [check: :boolean])
+    {opts, positional, invalid} =
+      OptionParser.parse(args, strict: [check: :boolean, from: :string, pds: :string])
 
     unless invalid == [] do
       Mix.raise("invalid arguments: #{inspect(invalid)}")
     end
 
     source = validate_source!(positional)
+    maybe_vendor_from!(opts)
 
     Mix.Task.run("app.start")
 
     case Parser.parse_dir(@lexicon_dir) do
       {:ok, lexicons} ->
+        warn_unresolved_refs(lexicons, opts)
+
         specs =
           lexicons
           |> Generator.generate()
@@ -90,6 +107,81 @@ defmodule Mix.Tasks.Exosphere.Gen.Lexicons do
 
   defp validate_source!(sources),
     do: Mix.raise("expected at most one source, got: #{inspect(sources)}")
+
+  # --from: fetch a repo's published lexicons and vendor them, so the
+  # generation below (and future runs) include them.
+  defp maybe_vendor_from!(opts) do
+    case Keyword.get(opts, :from) do
+      nil ->
+        :ok
+
+      did when is_binary(did) ->
+        if opts[:check] do
+          Mix.raise("--from can not be combined with --check")
+        end
+
+        pds_url = pds_url!(did, opts)
+
+        case Resolver.list(pds_url, did) do
+          {:ok, schemas, %{invalid: invalid}} ->
+            Enum.each(invalid, &Mix.shell().error("skipped invalid lexicon record: #{&1}"))
+            paths = Enum.map(schemas, &vendor!/1)
+            Mix.shell().info("Vendored #{length(paths)} lexicons from #{did}")
+
+          {:error, reason} ->
+            Mix.shell().error("failed to fetch lexicons from #{did}: #{inspect(reason)}")
+            exit({:shutdown, 1})
+        end
+    end
+  end
+
+  defp pds_url!(did, opts) do
+    case Keyword.get(opts, :pds) do
+      pds when is_binary(pds) ->
+        pds
+
+      nil ->
+        with {:ok, doc} <- DID.resolve(did),
+             {:ok, pds_url} <- DID.get_pds_endpoint(doc) do
+          pds_url
+        else
+          error ->
+            Mix.shell().error("could not find PDS for #{did}: #{inspect(error)}")
+            exit({:shutdown, 1})
+        end
+    end
+  end
+
+  # Write the raw document as priv/lexicons/<authority>/<name>.json,
+  # matching the vendored corpus layout.
+  defp vendor!(schema) do
+    path = Path.join(@lexicon_dir, "#{lexicon_path(schema.id)}.json")
+    File.mkdir_p!(Path.dirname(path))
+    File.write!(path, Jason.encode!(json_of(schema), pretty: true) <> "\n")
+    path
+  end
+
+  defp json_of(schema) do
+    %{"lexicon" => schema.lexicon, "id" => schema.id, "defs" => schema.defs}
+    |> Map.merge(if(schema.description, do: %{"description" => schema.description}, else: %{}))
+  end
+
+  defp lexicon_path(nsid) do
+    nsid
+    |> String.split(".")
+    |> Path.join()
+  end
+
+  defp warn_unresolved_refs(lexicons, _opts) do
+    lexicons
+    |> Generator.unresolved_refs()
+    |> Enum.each(fn {nsid, ref, location} ->
+      Mix.shell().error(
+        "warning: #{nsid} ref #{inspect(ref)} at #{location} is not in the corpus; " <>
+          "fields using it generate as term()"
+      )
+    end)
+  end
 
   defp scope(specs, nil), do: specs
 
