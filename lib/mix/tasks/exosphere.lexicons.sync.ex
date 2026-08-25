@@ -18,7 +18,7 @@ defmodule Mix.Tasks.Exosphere.Lexicons.Sync do
     com.atproto schemas are added by hand when a generated lexicon needs
     them
 
-  After syncing, run `mix exosphere.gen.bsky` to regenerate modules and
+  After syncing, run `mix exosphere.gen.lexicons` to regenerate modules and
   review the diff.
   """
 
@@ -34,12 +34,17 @@ defmodule Mix.Tasks.Exosphere.Lexicons.Sync do
 
     atproto_commit = sync_atproto()
 
-    atproto_com_count =
+    _ =
       sync_atproto_com(
         "https://raw.githubusercontent.com/bluesky-social/atproto/#{atproto_commit}/lexicons"
       )
 
-    community_count = sync_community()
+    _ = sync_community()
+
+    # Counts describe the vendored corpus on disk, not fetch successes
+    # (Tangled occasionally rate-limits bursts; failures leave files intact)
+    atproto_com_count = count_vendored("com/atproto/**/*.json")
+    community_count = count_vendored("community/**/*.json")
     synced_at = Date.utc_today()
     write_sources_md(atproto_commit, synced_at, atproto_com_count, community_count)
 
@@ -49,7 +54,7 @@ defmodule Mix.Tasks.Exosphere.Lexicons.Sync do
       bluesky-social/atproto pin: #{atproto_commit}
       tangled.org sync date:     #{synced_at}
 
-    Next: mix exosphere.gen.bsky && git diff
+    Next: mix exosphere.gen.lexicons && git diff
     """)
   end
 
@@ -155,13 +160,22 @@ defmodule Mix.Tasks.Exosphere.Lexicons.Sync do
 
     Vendored lexicon JSON files are snapshots of upstream sources, refreshed
     with `mix exosphere.lexicons.sync`. Regenerate modules with
-    `mix exosphere.gen.bsky` after syncing.
+    `mix exosphere.gen.lexicons` after syncing.
 
-    | Path | Source | Pin |
-    |------|--------|-----|
-    | `app/bsky/**`, `com/atproto/**` | https://github.com/bluesky-social/atproto/tree/main/lexicons | #{commit} |
-    | `com/atproto/**` (#{atproto_com_count} files), `community/**` (#{community_count} files) | https://tangled.org/lexicon.community/lexicons/tree/main/community (canonical; github.com/lexicon-community/lexicon is a mirror) | synced #{date} |
+    All sources are equal citizens: regenerate everything with
+    `mix exosphere.gen.lexicons`, or scope to one source with
+    `mix exosphere.gen.lexicons app.bsky | community.lexicon | com.atproto`.
+
+    | NSID prefix | Vendored at | Generated into | Upstream | Pin |
+    |-------------|-------------|----------------|----------|-----|
+    | `app.bsky.*` | `app/bsky/**` | `lib/exosphere/bsky` | https://github.com/bluesky-social/atproto/tree/main/lexicons | #{commit} |
+    | `com.atproto.*` (curated, #{atproto_com_count} files) | `com/atproto/**` | `lib/exosphere/atproto` | same atproto repo as above | #{commit} (refresh-in-place) |
+    | `community.lexicon.*` (#{community_count} files) | `community/**` | `lib/exosphere/community` | https://tangled.org/lexicon.community/lexicons/tree/main/community (canonical; github.com/lexicon-community/lexicon is a mirror) | synced #{date} |
     """)
+  end
+
+  defp count_vendored(glob) do
+    @lexicon_dir |> Path.join(glob) |> Path.wildcard() |> length()
   end
 
   defp gh(repo, path) do
