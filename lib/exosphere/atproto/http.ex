@@ -14,30 +14,18 @@ defmodule Exosphere.ATProto.HTTP do
 
   require Logger
 
+  alias Exosphere.ATProto.HTTP.Behaviour
+
+  @behaviour Behaviour
+
   @default_timeout 30_000
   @user_agent "Exosphere/#{Mix.Project.config()[:version]}"
 
-  @type json_term ::
-          nil
-          | boolean()
-          | number()
-          | binary()
-          | [json_term()]
-          | %{optional(binary()) => json_term()}
-
-  @type response :: %{
-          status: pos_integer(),
-          headers: [{String.t(), String.t()}],
-          body: binary() | json_term()
-        }
-
-  @type request_opts :: [
-          timeout: pos_integer(),
-          headers: [{String.t(), String.t()}],
-          json: map(),
-          body: binary(),
-          follow_redirects: boolean()
-        ]
+  # The response/request shapes live on the behaviour (the contract every
+  # adapter and test mock implements); re-exported here for the public API.
+  @type json_term :: Behaviour.json_term()
+  @type response :: Behaviour.response()
+  @type request_opts :: Behaviour.request_opts()
 
   @doc """
   Make an HTTP GET request.
