@@ -82,7 +82,7 @@ record-key primitives plus commit-signature verification.
     CIDs) + block map; `decode/1` is unchanged and delegates.
   - `Exosphere.ATProto.MST.from_repo_car/1` — record set straight from a
     repository CAR (bytes or decoded form).
-- **Firehose hexdocs guide** (`guides/firehose.md`, wired into `mix docs`
+- **Firehose hexdocs guide** (`docs/firehose.md`, wired into `mix docs`
   extras) — a standalone page covering consumer setup, message types, record
   extraction, verification, cursors/reconnection, and production tips.
 
