@@ -10,7 +10,7 @@ defmodule Exosphere.ATProto.OAuth.Client do
   and authenticate with PKCE alone.
   """
 
-  alias Exosphere.ATProto.OAuth.{ClientMetadata, JWS}
+  alias Exosphere.ATProto.OAuth.{ClientMetadata, JWK, JWS}
 
   defstruct [:metadata, :key, :redirect_uri]
 
@@ -96,7 +96,27 @@ defmodule Exosphere.ATProto.OAuth.Client do
       "exp" => now + @assertion_ttl
     }
 
-    JWS.sign(client.key, %{"alg" => "ES256", "typ" => "JWT"}, claims)
+    JWS.sign(client.key, assertion_headers(client.key), claims)
+  end
+
+  # The atproto OAuth profile requires `kid` on the assertion header so the
+  # authorization server can pick the verification key from the client's
+  # published `jwks` — the RFC 7638 thumbprint `ClientMetadata` publishes.
+  # bsky.social rejects the assertion outright without it ("kid required in
+  # client_assertion").
+  defp assertion_headers(key) do
+    header = %{"alg" => "ES256", "typ" => "JWT"}
+
+    kid =
+      case key do
+        %{"kid" => kid} when is_binary(kid) -> {:ok, kid}
+        key -> JWK.thumbprint(key)
+      end
+
+    case kid do
+      {:ok, kid} -> Map.put(header, "kid", kid)
+      {:error, _reason} -> header
+    end
   end
 
   @doc """
