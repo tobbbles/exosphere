@@ -84,7 +84,7 @@ task takes individual files or directories and exits non-zero on errors.
 The runtime registry maps NSIDs to parsed lexicons and backs validation:
 
 ```elixir
-{:ok, _} = Exosphere.Lexicon.Registry.load_vendored()  # bsky + community + curated atproto
+{:ok, _} = Exosphere.Lexicon.Registry.load_vendored()  # bsky + community + the full atproto corpus
 :ok = Exosphere.Lexicon.register(schema)               # your own (parsed, %Schema{}, or raw JSON)
 
 :ok = Exosphere.Lexicon.validate("com.example.post", %{
@@ -214,7 +214,7 @@ the firehose, so don't cache authority results long-term.
 For lexicons you control — or third-party ones you've vendored — the
 generator produces typed struct modules with `new/1` (build + validate),
 `to_map/1` (wire encoding with `$type`), `from_map/1`, and `type_id/0`.
-The library's own `app.bsky.*`, `community.lexicon.*`, and curated
+The library's own `app.bsky.*`, `community.lexicon.*`, and
 `com.atproto.*` modules are generated this way from `priv/lexicons`.
 
 A host app generates modules for its own lexicons without touching the
