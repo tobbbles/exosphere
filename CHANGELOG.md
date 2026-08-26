@@ -7,6 +7,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+- vendor the full com.atproto lexicon corpus (incl. moderation defs) (#23)
+
 ## [0.4.0] - 2026-08-26
 
 ### Added
