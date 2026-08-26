@@ -66,7 +66,8 @@ defmodule Exosphere.ATProto.Spaces.Blake3Test do
   # frame — so single-digit-millisecond expansions keep sync comfortably
   # interactive. This is a generous regression bound, not a bench target.
   test "element expansion stays in the interactive range" do
-    element = "com.example.groupPost/3jwdwj2ctlk26/bafyreidhesplazc3hl7eado7q7kjtg6dijzsiusug74uay5vh4atxszqm4"
+    element =
+      "com.example.groupPost/3jwdwj2ctlk26/bafyreidhesplazc3hl7eado7q7kjtg6dijzsiusug74uay5vh4atxszqm4"
 
     {micros, _} = :timer.tc(fn -> Blake3.hash(element, 2048) end)
     assert micros < 50_000, "single expansion took #{micros / 1000}ms"

@@ -45,6 +45,15 @@ defmodule Exosphere.ATProto.OAuth.ScopeTest do
              "space:#{@space}?authority=#{@other}&skey=default&collection=com.example.groupNote&collection=com.example.groupPost&action=read_self&action=read&manage=update"
   end
 
+  test "percent-encoded params decode like the reference" do
+    assert {:ok, scope} = Scope.parse("space:#{@space}?authority=did%3Aplc%3Abob")
+    assert scope.authority == "did:plc:bob"
+    assert Scope.to_string(scope) == "space:#{@space}?authority=did:plc:bob"
+
+    # Malformed percent-encoding falls through undecoded (and fails validation)
+    assert {:error, :invalid_scope} = Scope.parse("space:#{@space}?authority=did%ZZlc")
+  end
+
   test "collections collapse to * and dedupe" do
     assert {:ok, scope} =
              Scope.parse(

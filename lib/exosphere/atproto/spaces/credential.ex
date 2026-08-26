@@ -171,6 +171,9 @@ defmodule Exosphere.ATProto.Spaces.Credential do
 
       {:ok, %{status: status}} ->
         {:error, {:http_error, status}}
+
+      {:error, _} = error ->
+        error
     end
   end
 

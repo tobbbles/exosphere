@@ -159,7 +159,8 @@ defmodule Exosphere.ATProto.Spaces.Commit do
   defp check_shape(commit) do
     bytes32 = ["hash", "mac", "ikm"]
 
-    if commit["ver"] == @version and Enum.all?(bytes32, &is_binary(commit[&1]) and byte_size(commit[&1]) == 32) and
+    if commit["ver"] == @version and
+         Enum.all?(bytes32, &(is_binary(commit[&1]) and byte_size(commit[&1]) == 32)) and
          is_binary(commit["sig"]) and byte_size(commit["sig"]) > 0 and is_binary(commit["rev"]) do
       :ok
     else

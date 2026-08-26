@@ -104,7 +104,7 @@ defmodule Exosphere.ATProto.OAuth.Scope do
     params = [
       {"authority", scope.authority == :self, [scope.authority]},
       {"skey", scope.skey == :any, [scope.skey]},
-      {"collection", scope.collections == [], scope.collections},
+      {"collection", scope.collections == [], normalize_collections(scope.collections)},
       {"action", actions_default?(scope.actions), canonical(scope.actions, @action_order)},
       {"manage", scope.manage == [], canonical(scope.manage, @manage_order)}
     ]
@@ -191,18 +191,51 @@ defmodule Exosphere.ATProto.OAuth.Scope do
     end
   end
 
-  # Every key maps to the list of its values, repeats preserved.
+  # Every key maps to the list of its (percent-decoded) values, repeats
+  # preserved — matching the reference's URLSearchParams / decodeURIComponent
+  # handling, so `space:t?authority=did%3Aplc%3Aabc` parses.
   defp parse_query(query) do
     query
     |> String.split("&", trim: true)
     |> Enum.map(fn pair ->
       case String.split(pair, "=", parts: 2) do
-        [k, v] -> {k, v}
-        [k] -> {k, ""}
+        [k, v] -> {percent_decode(k), percent_decode(v)}
+        [k] -> {percent_decode(k), ""}
       end
     end)
     |> Enum.group_by(&elem(&1, 0), &elem(&1, 1))
   end
+
+  # RFC 3986 percent-decoding (not form decoding: '+' stays '+').
+  defp percent_decode(value) do
+    case String.split(value, "%") do
+      [_single] ->
+        value
+
+      [head | encoded] ->
+        decode_parts(encoded, head)
+    end
+  catch
+    :throw, :bad_percent -> value
+  end
+
+  defp decode_parts([h | t], acc) do
+    case h do
+      <<hex::binary-size(2), rest::binary>> when byte_size(hex) == 2 ->
+        case Integer.parse(hex, 16) do
+          {byte, ""} when byte in 0..255 ->
+            decode_parts(t, <<acc::binary, byte, rest::binary>>)
+
+          _ ->
+            throw(:bad_percent)
+        end
+
+      _ ->
+        throw(:bad_percent)
+    end
+  end
+
+  defp decode_parts([], acc), do: acc
 
   defp parse_params(params) do
     if Enum.all?(Map.keys(params), &(&1 in @known_params)) do
@@ -215,7 +248,9 @@ defmodule Exosphere.ATProto.OAuth.Scope do
   defp parse_type("*"), do: {:ok, :any}
 
   defp parse_type(type) do
-    if NSID.valid?(type), do: {:ok, type}, else: {:error, :invalid_scope}
+    if NSID.valid?(percent_decode(type)),
+      do: {:ok, percent_decode(type)},
+      else: {:error, :invalid_scope}
   end
 
   defp reject_named_type(%{"type" => _}), do: {:error, :invalid_scope}

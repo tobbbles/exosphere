@@ -197,6 +197,16 @@ defmodule Exosphere.ATProto.Spaces.CredentialTest do
              )
   end
 
+  test "mint passes transport errors through instead of crashing" do
+    Process.put(:post_response, {:error, :econnrefused})
+
+    assert {:error, :econnrefused} =
+             Credential.mint(@space_host, @space, "jwt",
+               dpop_key: dp_key(),
+               http: RecordingHTTP
+             )
+  end
+
   test "mint requires a dpop key" do
     assert {:error, :missing_dpop_key} =
              Credential.mint(@space_host, @space, "jwt", http: RecordingHTTP)
@@ -225,6 +235,11 @@ defmodule Exosphere.ATProto.Spaces.CredentialTest do
                get_signing_key: fn _, _, _ -> {:ok, JWK.to_public(ctx.authority)} end,
                sub: "at://other"
              )
+  end
+
+  defp dp_key do
+    {:ok, key} = DPoP.generate_key()
+    key
   end
 
   defp find_header(headers, name) do
