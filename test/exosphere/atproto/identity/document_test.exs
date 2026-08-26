@@ -47,4 +47,105 @@ defmodule Exosphere.ATProto.Identity.DocumentTest do
     assert {:error, :not_found} = Document.get_handle(doc)
     assert {:error, :not_found} = Document.get_signing_key(doc)
   end
+
+  describe "space entries (proposal 0016)" do
+    @account_key <<0x02, 0::unsigned-integer-size(256)>>
+    @space_key <<0x03, 0::unsigned-integer-size(256)>>
+
+    defp multibase(key) do
+      "z" <> Base58.encode(<<0xE7, 0x01, key::binary>>)
+    end
+
+    defp document(methods, services) do
+      {:ok, doc} =
+        Document.parse(%{
+          "id" => "did:plc:authority",
+          "verificationMethod" => methods,
+          "service" => services
+        })
+
+      doc
+    end
+
+    test "dedicated #atproto_space entries win" do
+      doc =
+        document(
+          [
+            %{
+              "id" => "did:plc:authority#atproto",
+              "type" => "Multikey",
+              "controller" => "did:plc:authority",
+              "publicKeyMultibase" => multibase(@account_key)
+            },
+            %{
+              "id" => "did:plc:authority#atproto_space",
+              "type" => "Multikey",
+              "controller" => "did:plc:authority",
+              "publicKeyMultibase" => multibase(@space_key)
+            }
+          ],
+          [
+            %{
+              "id" => "did:plc:authority#atproto_pds",
+              "type" => "AtprotoPersonalDataServer",
+              "serviceEndpoint" => "https://pds.example.com"
+            },
+            %{
+              "id" => "did:plc:authority#atproto_space_host",
+              "type" => "AtprotoSpaceHost",
+              "serviceEndpoint" => "https://space-host.example.com"
+            }
+          ]
+        )
+
+      assert {:ok, @space_key, :secp256k1} = Document.get_space_signing_key(doc)
+      assert {:ok, @account_key, :secp256k1} = Document.get_signing_key(doc)
+      assert {:ok, "https://space-host.example.com"} = Document.get_space_host_endpoint(doc)
+      assert {:ok, "https://pds.example.com"} = Document.get_pds_endpoint(doc)
+    end
+
+    test "space entries fall back to #atproto / #atproto_pds when absent" do
+      doc =
+        document(
+          [
+            %{
+              "id" => "did:plc:authority#atproto",
+              "type" => "Multikey",
+              "controller" => "did:plc:authority",
+              "publicKeyMultibase" => multibase(@account_key)
+            }
+          ],
+          [
+            %{
+              "id" => "did:plc:authority#atproto_pds",
+              "type" => "AtprotoPersonalDataServer",
+              "serviceEndpoint" => "https://pds.example.com"
+            }
+          ]
+        )
+
+      assert {:ok, @account_key, :secp256k1} = Document.get_space_signing_key(doc)
+      assert {:ok, "https://pds.example.com"} = Document.get_space_host_endpoint(doc)
+    end
+
+    test "missing both entries is :not_found" do
+      doc = document([], [])
+
+      assert {:error, :not_found} = Document.get_space_signing_key(doc)
+      assert {:error, :not_found} = Document.get_space_host_endpoint(doc)
+    end
+
+    test "#atproto_space_host matches on id fragment, not type" do
+      doc =
+        document([], [
+          %{
+            "id" => "did:plc:authority#atproto_space_host",
+            "type" => "UndocumentedServiceType",
+            "serviceEndpoint" => "https://space-host.example.com"
+          }
+        ])
+
+      assert {:ok, "https://space-host.example.com"} = Document.get_space_host_endpoint(doc)
+    end
+  end
 end
