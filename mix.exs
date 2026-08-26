@@ -50,6 +50,7 @@ defmodule Exosphere.MixProject do
       {:ex_secp256k1, "~> 0.7"},
       {:credo, "~> 1.7", only: [:dev, :test], runtime: false},
       {:dialyxir, "~> 1.4", only: [:dev, :test], runtime: false},
+      {:stream_data, "~> 1.1", only: [:test], runtime: false},
       {:ex_doc, "~> 0.40", only: :dev, runtime: false, warn_if_outdated: true}
     ]
   end
