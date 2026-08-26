@@ -38,7 +38,9 @@ defmodule Exosphere.ATProto.Spaces.RepoTest do
     # Records come back in index order (canonical: shortest path first, then
     # bytewise — the Note path sorts before the Post paths at equal length).
     assert Enum.map(verified.records, & &1.rkey) == ["3jwd3", "3jwd1", "3jwd2"]
-    assert Enum.map(verified.records, & &1.collection) == ~w(com.example.groupNote com.example.groupPost com.example.groupPost)
+
+    assert Enum.map(verified.records, & &1.collection) ==
+             ~w(com.example.groupNote com.example.groupPost com.example.groupPost)
 
     assert %{"text" => "hello"} = Enum.find(verified.records, &(&1.rkey == "3jwd1")).record
 
@@ -53,7 +55,9 @@ defmodule Exosphere.ATProto.Spaces.RepoTest do
     index_only = Repo.serialize(commit, @records, exclude_values: true)
 
     assert {:ok, verified} =
-             Repo.verify_car(index_only, @ctx, keypair.public_key, :secp256k1, expect_values: false)
+             Repo.verify_car(index_only, @ctx, keypair.public_key, :secp256k1,
+               expect_values: false
+             )
 
     assert verified.records == []
     assert map_size(verified.index) == 3
@@ -90,7 +94,12 @@ defmodule Exosphere.ATProto.Spaces.RepoTest do
 
     # The frame keeps its original CID; its contents no longer hash to it.
     assert {:error, :content_hash_mismatch} =
-             Repo.verify_car(tampered_car(car, r2, evil_bytes), @ctx, keypair.public_key, :secp256k1)
+             Repo.verify_car(
+               tampered_car(car, r2, evil_bytes),
+               @ctx,
+               keypair.public_key,
+               :secp256k1
+             )
   end
 
   test "record blocks must follow the index order", %{keypair: keypair, car: car} do
@@ -119,7 +128,9 @@ defmodule Exosphere.ATProto.Spaces.RepoTest do
     evil_bytes = map_bytes(index, Enum.reverse(paths))
 
     assert {:error, :index_not_canonical} =
-             Repo.verify_car(retargeted_car(car, index_cid, evil_bytes), @ctx,
+             Repo.verify_car(
+               retargeted_car(car, index_cid, evil_bytes),
+               @ctx,
                keypair.public_key,
                :secp256k1
              )
@@ -135,7 +146,9 @@ defmodule Exosphere.ATProto.Spaces.RepoTest do
              )
 
     assert {:error, :invalid_mac} =
-             Repo.verify_car(car, %{space: @space, author: "did:plc:someone-else"},
+             Repo.verify_car(
+               car,
+               %{space: @space, author: "did:plc:someone-else"},
                keypair.public_key,
                :secp256k1
              )
@@ -154,7 +167,9 @@ defmodule Exosphere.ATProto.Spaces.RepoTest do
 
     header = CBOR.encode!(%{"version" => 1, "roots" => [commit_cid]})
     entry = CID.to_bytes(commit_cid) <> commit_bytes
-    car = IO.iodata_to_binary([varint(byte_size(header)), header, varint(byte_size(entry)), entry])
+
+    car =
+      IO.iodata_to_binary([varint(byte_size(header)), header, varint(byte_size(entry)), entry])
 
     assert {:error, {:expected_two_roots, 1}} =
              Repo.verify_car(car, @ctx, keypair.public_key, :secp256k1)

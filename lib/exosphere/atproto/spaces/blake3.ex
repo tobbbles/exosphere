@@ -24,8 +24,14 @@ defmodule Exosphere.ATProto.Spaces.Blake3 do
   import Bitwise
 
   @iv {
-    0x6A09E667, 0xBB67AE85, 0x3C6EF372, 0xA54FF53A,
-    0x510E527F, 0x9B05688C, 0x1F83D9AB, 0x5BE0CD19
+    0x6A09E667,
+    0xBB67AE85,
+    0x3C6EF372,
+    0xA54FF53A,
+    0x510E527F,
+    0x9B05688C,
+    0x1F83D9AB,
+    0x5BE0CD19
   }
 
   # permuted[i] = m[MSG_PERMUTATION[i]]
@@ -169,11 +175,22 @@ defmodule Exosphere.ATProto.Spaces.Blake3 do
   # length, v15 the flags.
   defp compress(cv, m, counter, block_len, flags) do
     v = {
-      elem(cv, 0), elem(cv, 1), elem(cv, 2), elem(cv, 3),
-      elem(cv, 4), elem(cv, 5), elem(cv, 6), elem(cv, 7),
-      elem(@iv, 0), elem(@iv, 1), elem(@iv, 2), elem(@iv, 3),
-      counter &&& @mask, (counter >>> 32) &&& @mask,
-      block_len &&& @mask, flags &&& @mask
+      elem(cv, 0),
+      elem(cv, 1),
+      elem(cv, 2),
+      elem(cv, 3),
+      elem(cv, 4),
+      elem(cv, 5),
+      elem(cv, 6),
+      elem(cv, 7),
+      elem(@iv, 0),
+      elem(@iv, 1),
+      elem(@iv, 2),
+      elem(@iv, 3),
+      counter &&& @mask,
+      counter >>> 32 &&& @mask,
+      block_len &&& @mask,
+      flags &&& @mask
     }
 
     v
@@ -226,21 +243,21 @@ defmodule Exosphere.ATProto.Spaces.Blake3 do
     vc = elem(v, c)
     vd = elem(v, d)
 
-    va = (va + vb + mx) &&& @mask
+    va = va + vb + mx &&& @mask
     vd = rotr32(bxor(vd, va), 16)
-    vc = (vc + vd) &&& @mask
+    vc = vc + vd &&& @mask
     vb = rotr32(bxor(vb, vc), 12)
-    va = (va + vb + my) &&& @mask
+    va = va + vb + my &&& @mask
     vd = rotr32(bxor(vd, va), 8)
-    vc = (vc + vd) &&& @mask
+    vc = vc + vd &&& @mask
     vb = rotr32(bxor(vb, vc), 7)
 
     v |> put_elem(a, va) |> put_elem(b, vb) |> put_elem(c, vc) |> put_elem(d, vd)
   end
 
-  defp rotr32(x, n), do: ((x >>> n) ||| bsl_masked(x, 32 - n)) &&& @mask
+  defp rotr32(x, n), do: (x >>> n ||| bsl_masked(x, 32 - n)) &&& @mask
 
-  defp bsl_masked(x, n), do: (x <<< n) &&& @mask
+  defp bsl_masked(x, n), do: x <<< n &&& @mask
 
   defp permute(m),
     do: List.to_tuple(for i <- 0..15, do: elem(m, elem(@msg_permutation, i)))
@@ -262,8 +279,14 @@ defmodule Exosphere.ATProto.Spaces.Blake3 do
 
   defp first8(words) do
     {
-      elem(words, 0), elem(words, 1), elem(words, 2), elem(words, 3),
-      elem(words, 4), elem(words, 5), elem(words, 6), elem(words, 7)
+      elem(words, 0),
+      elem(words, 1),
+      elem(words, 2),
+      elem(words, 3),
+      elem(words, 4),
+      elem(words, 5),
+      elem(words, 6),
+      elem(words, 7)
     }
   end
 end
