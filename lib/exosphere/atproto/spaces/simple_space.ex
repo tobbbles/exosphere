@@ -5,10 +5,11 @@ defmodule Exosphere.ATProto.Spaces.SimpleSpace do
   user's own DID, administered through a handful of XRPC calls.
 
   Administration (`create_space/3` … `remove_member/3`, `manage=` scopes,
-  OAuth-authenticated on the owner's PDS) and reading (`get_space/3`,
-  `list_members/3`) take the authorization as `headers:` (a space-scoped
-  OAuth session's bearer token) or `credential:` (a space credential +
-  DPoP key, for read paths that accept one).
+  OAuth-authenticated on the owner's PDS) takes the authorization as
+  `headers:` (a space-scoped OAuth session's bearer token). `get_space/3`
+  also accepts a `credential:` (space credential + DPoP key);
+  `list_members/3` requires OAuth — the host-internal member list is not
+  readable with a space credential.
 
   The user-access policy and app-access axes are options, not strings:
 
@@ -79,8 +80,9 @@ defmodule Exosphere.ATProto.Spaces.SimpleSpace do
   end
 
   @doc """
-  Delete a space (`com.atproto.simplespace.deleteSpace`), cascading to its
-  members' permissioned repos. `manage=delete`.
+  Delete a space (`com.atproto.simplespace.deleteSpace`). The authority's own
+  repo in the space is deleted with it; other members' repos are flagged as
+  belonging to a deleted space rather than erased. `manage=delete`.
   """
   @spec delete_space(String.t(), String.t(), auth(), keyword()) ::
           :ok | {:error, term()}
@@ -164,7 +166,7 @@ defmodule Exosphere.ATProto.Spaces.SimpleSpace do
     qs = URI.encode_query(params)
     url = "#{String.trim_trailing(host, "/")}/xrpc/#{@nsid}.#{method}?#{qs}"
 
-    case request(http, :get, url, [], auth, opts) do
+    case request(http, :get, url, [], auth) do
       {:ok, %{status: 200, body: body}} when is_map(body) ->
         {:ok, body}
 
@@ -173,6 +175,9 @@ defmodule Exosphere.ATProto.Spaces.SimpleSpace do
 
       {:ok, %{status: status}} ->
         {:error, {:http_error, status}}
+
+      {:error, _} = error ->
+        error
     end
   end
 
@@ -180,7 +185,7 @@ defmodule Exosphere.ATProto.Spaces.SimpleSpace do
     http = Keyword.get(opts, :http, HTTP)
     url = "#{String.trim_trailing(host, "/")}/xrpc/#{@nsid}.#{method}"
 
-    case request(http, :post, url, [json: body], auth, opts) do
+    case request(http, :post, url, [json: body], auth) do
       {:ok, %{status: 200, body: resp}} when is_map(resp) ->
         {:ok, resp}
 
@@ -189,6 +194,9 @@ defmodule Exosphere.ATProto.Spaces.SimpleSpace do
 
       {:ok, %{status: status}} ->
         {:error, {:http_error, status}}
+
+      {:error, _} = error ->
+        error
     end
   end
 
@@ -196,9 +204,16 @@ defmodule Exosphere.ATProto.Spaces.SimpleSpace do
   defp maybe_put(map, key, value), do: Map.put(map, key, value)
 
   # OAuth sessions pass plain headers; credentials go DPoP-bound per request.
-  defp request(http, method, url, opts, [headers: headers], _opts),
-    do: http.request(method, url, Keyword.put(opts, :headers, headers))
+  defp request(http, method, url, opts, auth) when is_list(auth) do
+    cond do
+      headers = auth[:headers] ->
+        http.request(method, url, Keyword.put(opts, :headers, headers))
 
-  defp request(http, method, url, opts, [credential: cred, dpop_key: key], _opts),
-    do: Request.authorized(http, method, url, opts, key, cred)
+      cred = auth[:credential] ->
+        Request.authorized(http, method, url, opts, auth[:dpop_key], cred)
+
+      true ->
+        {:error, :invalid_auth}
+    end
+  end
 end

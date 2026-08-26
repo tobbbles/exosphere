@@ -22,8 +22,10 @@ defmodule Exosphere.ATProto.Spaces.Writes do
   @type auth :: [headers: [{String.t(), String.t()}]] | [session: Session.t()]
 
   @doc """
-  Create a record (`com.atproto.space.createRecord`) with a server-chosen
-  rkey, into the member `repo_did`'s permissioned repo.
+  Create a record (`com.atproto.space.createRecord`) into the member
+  `repo_did`'s permissioned repo — server-chosen rkey unless `:rkey` is
+  given. `:validate` toggles Lexicon validation (unset = validate known
+  Lexicons only).
   """
   @spec create_record(String.t(), String.t(), String.t(), String.t(), map(), auth(), keyword()) ::
           {:ok, map()} | {:error, term()}
@@ -31,7 +33,9 @@ defmodule Exosphere.ATProto.Spaces.Writes do
     procedure(
       pds,
       "createRecord",
-      %{"space" => space_ref, "repo" => repo_did, "collection" => collection, "record" => record},
+      %{"space" => space_ref, "repo" => repo_did, "collection" => collection, "record" => record}
+      |> maybe_put("rkey", Keyword.get(opts, :rkey))
+      |> maybe_put("validate", Keyword.get(opts, :validate)),
       auth,
       opts
     )
@@ -149,6 +153,9 @@ defmodule Exosphere.ATProto.Spaces.Writes do
 
       {:ok, %{status: status}} ->
         {:error, {:http_error, status}}
+
+      {:error, _} = error ->
+        error
     end
   end
 

@@ -25,6 +25,7 @@ defmodule Exosphere.ATProto.Spaces.SyncTest do
     @impl true
     def post(url, opts \\ []) do
       verify_dpop!(opts, "POST", url)
+      Process.put(:last_post_body, opts[:json])
       stage(:post, url)
     end
 
@@ -75,6 +76,27 @@ defmodule Exosphere.ATProto.Spaces.SyncTest do
     }
   end
 
+  test "list_repo_ops decodes the head commit's bytes", ctx do
+    Process.put(:get, fn _url ->
+      {:ok,
+       %{
+         status: 200,
+         headers: [],
+         body: %{
+           "ops" => [],
+           "commit" => %{
+             "ver" => 1,
+             "hash" => Base.url_encode64(<<7::256>>, padding: false),
+             "rev" => "head"
+           }
+         }
+       }}
+    end)
+
+    assert {:ok, %{commit: %{"hash" => <<7::256>>}}} =
+             Sync.list_repo_ops(@repo_host, @space, @author, ctx.cred, http: SyncHTTP)
+  end
+
   test "list_repos returns the writer set with decoded commit hashes", ctx do
     hash = :crypto.hash(:sha256, "state")
 
@@ -106,17 +128,17 @@ defmodule Exosphere.ATProto.Spaces.SyncTest do
              Sync.list_repos(@space_host, @space, ctx.cred, http: SyncHTTP)
 
     assert repo == %{did: @author, rev: "3kbcq3p7ad400", hash: hash}
-  end
 
-  test "get_latest_commit returns the head commit", ctx do
-    commit = signed_commit(ctx)
+    # limit/cursor reach the wire
+    assert {:ok, _} =
+             Sync.list_repos(@space_host, @space, ctx.cred,
+               http: SyncHTTP,
+               limit: 500,
+               cursor: "next"
+             )
 
-    Process.put(:get, fn _url ->
-      {:ok, %{status: 200, headers: [], body: %{"commit" => commit}}}
-    end)
-
-    assert {:ok, ^commit} =
-             Sync.get_latest_commit(@repo_host, @space, @author, ctx.cred, http: SyncHTTP)
+    assert Process.get(:last_url) =~ "limit=500"
+    assert Process.get(:last_url) =~ "cursor=next"
   end
 
   test "list_repo_ops pages ops with the head commit", ctx do
@@ -144,11 +166,18 @@ defmodule Exosphere.ATProto.Spaces.SyncTest do
        %{
          status: 200,
          headers: [],
-         body: %{"ops" => ops, "commit" => %{"rev" => "head"}}
+         body: %{
+           "ops" => ops,
+           "commit" => %{
+             "ver" => 1,
+             "hash" => Base.url_encode64(:crypto.hash(:sha256, "head-state"), padding: false),
+             "rev" => "head"
+           }
+         }
        }}
     end)
 
-    assert {:ok, %{ops: ^ops, commit: %{"rev" => "head"}, cursor: nil}} =
+    assert {:ok, %{ops: ^ops, commit: %{"rev" => "head", "hash" => head_hash}, cursor: nil}} =
              Sync.list_repo_ops(@repo_host, @space, @author, ctx.cred,
                http: SyncHTTP,
                since: "3kbcq3p7ad400"
@@ -188,7 +217,9 @@ defmodule Exosphere.ATProto.Spaces.SyncTest do
                commit_ctx,
                author_pub,
                :secp256k1,
-               ctx.cred, http: SyncHTTP)
+               ctx.cred,
+               http: SyncHTTP
+             )
 
     assert length(verified.records) == 2
     assert Lthash.digest(verified.lthash) == commit["hash"]
@@ -234,17 +265,22 @@ defmodule Exosphere.ATProto.Spaces.SyncTest do
     assert Sync.synced?(running, Lthash.digest(running))
   end
 
-  test "register_notify subscribes and returns the registration", ctx do
-    Process.put(:get, fn url ->
-      assert String.contains?(url, "com.atproto.space.registerNotify")
+  test "register_notify posts the subscriber's service identifier", ctx do
+    service = "did:web:syncer.example.com#atproto_space_syncer"
+
+    Process.put(:post, fn url ->
+      assert String.contains?(url, "/xrpc/com.atproto.space.registerNotify")
       {:ok, %{status: 200, headers: [], body: %{"expiresAt" => "2026-01-01T00:00:00Z"}}}
     end)
 
     assert {:ok, %{"expiresAt" => _}} =
-             Sync.register_notify(@space_host, @space, ctx.cred, http: SyncHTTP)
+             Sync.register_notify(@space_host, @space, service, ctx.cred, http: SyncHTTP)
 
-    Process.put(:get, fn _url -> {:ok, %{status: 200, headers: [], body: %{}}} end)
-    assert :ok = Sync.unregister_notify(@space_host, @space, ctx.cred, http: SyncHTTP)
+    # The notify registration is a procedure: JSON body {space, service}.
+    assert Process.get(:last_post_body) == %{"space" => @space, "service" => service}
+
+    Process.put(:post, fn _url -> {:ok, %{status: 200, headers: [], body: %{}}} end)
+    assert :ok = Sync.unregister_notify(@space_host, @space, service, ctx.cred, http: SyncHTTP)
   end
 
   test "list_records and get_record hit the repo host", ctx do
@@ -263,6 +299,4 @@ defmodule Exosphere.ATProto.Spaces.SyncTest do
                http: SyncHTTP
              )
   end
-
-  defp signed_commit(_ctx), do: %{"ver" => 1, "hash" => <<0::256>>, "rev" => "3kbcq3p7ad400"}
 end

@@ -137,6 +137,11 @@ defmodule Exosphere.ATProto.Spaces.CredentialTest do
 
     assert opts[:json]["space"] == @space
     refute Map.has_key?(opts[:json], "clientAttestation")
+
+    # The exchange proof is signed by exactly the key the credential binds to.
+    {:ok, proof} = find_header(opts[:headers], "dpop")
+    {:ok, jkt} = JWK.thumbprint(JWK.to_public(ctx.dpop_key))
+    assert {:ok, %{jkt: ^jkt}} = DPoP.verify_proof(proof, "POST", url)
   end
 
   test "mint carries a client attestation when gating", ctx do

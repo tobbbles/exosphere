@@ -36,7 +36,9 @@ defmodule Exosphere.ATProto.Spaces.WritesTest do
                @repo,
                "com.example.groupPost",
                %{"text" => "hi"},
-               [headers: [{"authorization", "Bearer tok"}]], http: WritesHTTP)
+               [headers: [{"authorization", "Bearer tok"}]],
+               http: WritesHTTP
+             )
 
     {url, opts} = Process.get({:last, :post})
     assert url == @pds <> "/xrpc/com.atproto.space.createRecord"
@@ -58,7 +60,9 @@ defmodule Exosphere.ATProto.Spaces.WritesTest do
                "com.example.groupPost",
                "3jz1",
                %{"text" => "hi"},
-               [headers: []], http: WritesHTTP)
+               [headers: []],
+               http: WritesHTTP
+             )
 
     {_url, opts} = Process.get({:last, :post})
     assert opts[:json]["rkey"] == "3jz1"
@@ -70,7 +74,9 @@ defmodule Exosphere.ATProto.Spaces.WritesTest do
                @repo,
                "com.example.groupPost",
                "3jz1",
-               [headers: []], http: WritesHTTP)
+               [headers: []],
+               http: WritesHTTP
+             )
 
     {_url, opts} = Process.get({:last, :post})
 
@@ -109,6 +115,38 @@ defmodule Exosphere.ATProto.Spaces.WritesTest do
     assert opts[:json]["validate"] == true
   end
 
+  test "transport errors pass through instead of crashing" do
+    Process.put({:response, :post}, {:error, :nxdomain})
+
+    assert {:error, :nxdomain} =
+             Writes.create_record(
+               @pds,
+               @space,
+               @repo,
+               "com.example.groupPost",
+               %{},
+               [headers: []], http: WritesHTTP)
+  end
+
+  test "create/put accept rkey and validate options" do
+    assert {:ok, _} =
+             Writes.create_record(
+               @pds,
+               @space,
+               @repo,
+               "com.example.groupPost",
+               %{"text" => "hi"},
+               [headers: []],
+               http: WritesHTTP,
+               rkey: "pinned",
+               validate: false
+             )
+
+    {_url, opts} = Process.get({:last, :post})
+    assert opts[:json]["rkey"] == "pinned"
+    assert opts[:json]["validate"] == false
+  end
+
   test "a DPoP-bound session drives both headers per request" do
     {:ok, dpop_key} = DPoP.generate_key()
 
@@ -127,7 +165,9 @@ defmodule Exosphere.ATProto.Spaces.WritesTest do
                @repo,
                "com.example.groupPost",
                %{},
-               [session: session], http: WritesHTTP)
+               [session: session],
+               http: WritesHTTP
+             )
 
     {_url, opts} = Process.get({:last, :post})
     headers = opts[:headers] || []

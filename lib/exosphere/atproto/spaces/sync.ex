@@ -47,7 +47,10 @@ defmodule Exosphere.ATProto.Spaces.Sync do
   @spec list_repos(String.t(), String.t(), credential(), keyword()) ::
           {:ok, %{repos: [map()], cursor: String.t() | nil}} | {:error, term()}
   def list_repos(space_host, space_ref, cred, opts \\ []) do
-    params = %{space: space_ref}
+    params =
+      %{space: space_ref}
+      |> maybe_put("limit", Keyword.get(opts, :limit))
+      |> maybe_put("cursor", Keyword.get(opts, :cursor))
 
     with {:ok, body} <- get(space_host, "com.atproto.space.listRepos", params, cred, opts) do
       repos =
@@ -101,7 +104,8 @@ defmodule Exosphere.ATProto.Spaces.Sync do
       |> maybe_put("excludeValues", Keyword.get(opts, :exclude_values))
 
     with {:ok, body} <- get(repo_host, "com.atproto.space.listRepoOps", params, cred, opts) do
-      {:ok, %{ops: body["ops"] || [], commit: body["commit"], cursor: body["cursor"]}}
+      {:ok,
+       %{ops: body["ops"] || [], commit: decode_commit(body["commit"]), cursor: body["cursor"]}}
     end
   end
 
@@ -178,36 +182,29 @@ defmodule Exosphere.ATProto.Spaces.Sync do
 
   @doc """
   Subscribe to write notifications for the space (`com.atproto.space.registerNotify`,
-  on the space host). The host returns an expiration for the registration,
-  which may outlive the credential's own expiry — renew before then.
+  a procedure on the space host). The subscriber is named by `service` — a
+  service identifier (a DID with an optional service fragment), not a bare
+  URL, because `notifyWrite` is delivered with service auth addressed to that
+  identifier. Re-registering replaces the registration and extends the
+  expiry, which may outlive the credential's own — renew before then.
   Websocket delivery of `notifyWrite` stays in the consumer's process tree.
   """
-  @spec register_notify(String.t(), String.t(), credential(), keyword()) ::
+  @spec register_notify(String.t(), String.t(), String.t(), credential(), keyword()) ::
           {:ok, map()} | {:error, term()}
-  def register_notify(space_host, space_ref, cred, opts \\ []) do
-    http = Keyword.get(opts, :http, HTTP)
-    url = xrpc_url(space_host, "com.atproto.space.registerNotify", %{space: space_ref})
-
-    case Request.authorized(http, :get, url, [], cred.dpop_key, cred.credential) do
-      {:ok, %{status: 200, body: body}} when is_map(body) -> {:ok, body}
-      {:ok, %{status: status}} -> {:error, {:http_error, status}}
-      error -> error
-    end
+  def register_notify(space_host, space_ref, service, cred, opts \\ []) do
+    notify_procedure(space_host, "registerNotify", space_ref, service, cred, opts)
   end
 
   @doc """
-  Withdraw a notify registration (`com.atproto.space.unregisterNotify`).
+  Withdraw a notify registration (`com.atproto.space.unregisterNotify`),
+  passing the same `service` identifier it was registered under.
   Registrations may also simply be left to expire.
   """
-  @spec unregister_notify(String.t(), String.t(), credential(), keyword()) ::
+  @spec unregister_notify(String.t(), String.t(), String.t(), credential(), keyword()) ::
           :ok | {:error, term()}
-  def unregister_notify(space_host, space_ref, cred, opts \\ []) do
-    http = Keyword.get(opts, :http, HTTP)
-    url = xrpc_url(space_host, "com.atproto.space.unregisterNotify", %{space: space_ref})
-
-    case Request.authorized(http, :get, url, [], cred.dpop_key, cred.credential) do
-      {:ok, %{status: 200}} -> :ok
-      {:ok, %{status: status}} -> {:error, {:http_error, status}}
+  def unregister_notify(space_host, space_ref, service, cred, opts \\ []) do
+    case notify_procedure(space_host, "unregisterNotify", space_ref, service, cred, opts) do
+      {:ok, _} -> :ok
       error -> error
     end
   end
@@ -242,6 +239,40 @@ defmodule Exosphere.ATProto.Spaces.Sync do
       {:ok, %{status: 200, body: body}} when is_map(body) -> {:ok, body}
       {:ok, %{status: status}} -> {:error, {:http_error, status}}
       error -> error
+    end
+  end
+
+  # Lexicon `bytes` travel base64url in JSON; the signedCommit carries four.
+  defp decode_commit(nil), do: nil
+
+  defp decode_commit(%{} = commit) do
+    commit
+    |> Map.update("hash", nil, &decode_bytes/1)
+    |> Map.update("ikm", nil, &decode_bytes/1)
+    |> Map.update("mac", nil, &decode_bytes/1)
+    |> Map.update("sig", nil, &decode_bytes/1)
+  end
+
+  defp notify_procedure(space_host, method, space_ref, service, cred, opts) do
+    http = Keyword.get(opts, :http, HTTP)
+    url = "#{String.trim_trailing(space_host, "/")}/xrpc/com.atproto.space.#{method}"
+
+    case Request.authorized(
+           http,
+           :post,
+           url,
+           [json: %{"space" => space_ref, "service" => service}],
+           cred.dpop_key,
+           cred.credential
+         ) do
+      {:ok, %{status: 200, body: body}} when is_map(body) ->
+        {:ok, body}
+
+      {:ok, %{status: status}} ->
+        {:error, {:http_error, status}}
+
+      error ->
+        error
     end
   end
 

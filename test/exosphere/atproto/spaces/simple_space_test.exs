@@ -134,6 +134,18 @@ defmodule Exosphere.ATProto.Spaces.SimpleSpaceTest do
              SimpleSpace.remove_member(@pds, @space, "did:plc:friend", @headers, http: SpaceHTTP)
   end
 
+  test "transport errors pass through instead of crashing" do
+    Process.put(:post_response, {:error, :nxdomain})
+
+    assert {:error, :nxdomain} =
+             SimpleSpace.create_space(@pds, "com.example.group", @headers, http: SpaceHTTP)
+
+    Process.put(:get_response, {:error, :econnrefused})
+
+    assert {:error, :econnrefused} =
+             SimpleSpace.get_space(@pds, @space, @headers, http: SpaceHTTP)
+  end
+
   test "refusals surface the host's error code" do
     Process.put(
       :post_response,
@@ -152,7 +164,9 @@ defmodule Exosphere.ATProto.Spaces.SimpleSpaceTest do
                "https://app.example.com",
                @space,
                "did:plc:user",
-               @headers, http: SpaceHTTP)
+               @headers,
+               http: SpaceHTTP
+             )
 
     {url, _} = Process.get({:get, self()})
     assert url =~ "com.atproto.simplespace.checkUserAccess?"
