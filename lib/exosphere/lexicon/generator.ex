@@ -89,12 +89,22 @@ defmodule Exosphere.Lexicon.Generator do
   - `:base` — root module namespace (default `Exosphere`). With
     `base: MyApp`, `pub.oysters.post` generates as
     `MyApp.Pub.Oysters.Post`.
+  - `:rules` — extra namespace rules: `{prefix, [segments]}` pairs
+    checked before the built-ins, mapping an authority to a fixed
+    module path (`{"pub.oysters.", [Oysters, Lexicons]}` →
+    `Oysters.Lexicons.Post` instead of the stuttering
+    `Oysters.Pub.Oysters.Post`).
+  - `:external` — `%{{nsid, def_name} => module}` map of defs that
+    already exist as compiled modules elsewhere (e.g. the library's
+    own generated corpus). Refs resolving into it point at the given
+    module instead of generating a duplicate under `:base` — a host
+    app referencing `com.atproto.repo.strongRef` gets
+    `Exosphere.ATProto.Repo.StrongRef`, not a second struct its
+    library-typed code would reject.
   - `:seeds` — NSIDs to generate from (default: all lexicons whose
     `main` def is a record or object). Refs still resolve against the
     full `lexicons` map, so a host app can seed with its own lexicons
-    while passing the vendored corpus alongside for ref resolution —
-    fields referencing corpus types (e.g. `com.atproto.repo.strongRef`)
-    generate typed modules instead of degrading to `term()`.
+    while passing the vendored corpus alongside for ref resolution.
 
   Namespace rules: `app.bsky.*` maps to `<base>.Bsky.*`,
   `com.atproto.*` to `<base>.ATProto.*`, `community.lexicon.*` to
@@ -104,10 +114,11 @@ defmodule Exosphere.Lexicon.Generator do
   Generation starts from the seed lexicons whose `main` def is a record
   or object (XRPC query/procedure/subscription and permission-set defs
   are parsed but not yet generated), then walks refs transitively across
-  lexicons — including into main-less `defs.json` lexicons — generating
-  a nested module for each reachable object/record def. Refs to
-  non-object defs (e.g. string enum defs) and to unvendored lexicons
-  degrade to pass-through `term()` values.
+  lexicons — including into main-less `defs.json` lexicons — generating a
+  nested module for each reachable object/record def. Refs to non-object
+  defs (e.g. string enum defs), to unvendored lexicons, and into
+  `:external` targets degrade to the referenced module or a pass-through
+  `term()` value.
 
   Returns specs (module, path relative to the output dir, formatted
   code), ordered parents-first.
@@ -118,18 +129,23 @@ defmodule Exosphere.Lexicon.Generator do
   def generate(lexicons, opts \\ []) do
     base = Keyword.get(opts, :base, Exosphere)
     seeds = Keyword.get(opts, :seeds)
-    targets = reachable_targets(lexicons, seeds)
+    rules = Keyword.get(opts, :rules, [])
+    external = Keyword.get(opts, :external, %{})
+    targets = reachable_targets(lexicons, seeds, external)
 
     specs =
       Enum.map(targets, fn {nsid, def_name} ->
-        module_spec(lexicons[nsid], def_name, base)
+        module_spec(lexicons[nsid], def_name, base, rules)
       end)
 
-    endpoint_specs = endpoint_specs(lexicons, base, seeds)
+    endpoint_specs = endpoint_specs(lexicons, base, seeds, rules)
 
     check_collisions!(specs ++ endpoint_specs)
 
-    modules = Map.new(specs, &{{&1.nsid, &1.def_name || "main"}, &1.module})
+    modules =
+      specs
+      |> Map.new(&{{&1.nsid, &1.def_name || "main"}, &1.module})
+      |> Map.merge(external)
 
     ctx = %{modules: modules}
 
@@ -248,13 +264,17 @@ defmodule Exosphere.Lexicon.Generator do
   # Walk refs transitively from the seed record/object mains, collecting
   # the set of {nsid, def_name} targets that need generated modules.
   # `seeds` (when given) limits which lexicons generation starts from;
-  # the ref walk still crosses the whole `lexicons` map.
-  defp reachable_targets(lexicons, seeds) do
+  # the ref walk still crosses the whole `lexicons` map. Targets in
+  # `external` already exist as compiled modules elsewhere and are
+  # referenced, not regenerated.
+  defp reachable_targets(lexicons, seeds, external) do
+    external_set = MapSet.new(Map.keys(external))
     seed_nsids = seeds && MapSet.new(seeds)
 
     mains =
       for {nsid, lexicon} <- lexicons,
           nsid not in @skipped_lexicons,
+          not MapSet.member?(external_set, {nsid, "main"}),
           main = lexicon.defs["main"],
           main.kind in [:record, :object],
           is_nil(seed_nsids) or MapSet.member?(seed_nsids, nsid),
@@ -262,36 +282,46 @@ defmodule Exosphere.Lexicon.Generator do
 
     seed_set = MapSet.new(mains)
 
-    walk(MapSet.to_list(seed_set), seed_set, lexicons)
+    walk(MapSet.to_list(seed_set), seed_set, lexicons, external_set)
     |> MapSet.to_list()
     |> Enum.sort()
   end
 
-  defp walk([], visited, _lexicons), do: visited
+  defp walk([], visited, _lexicons, _external), do: visited
 
-  defp walk([{nsid, def_name} | rest], visited, lexicons) do
+  defp walk([{nsid, def_name} | rest], visited, lexicons, external) do
     node = lexicons[nsid].defs[def_name]
 
     refs =
       node
       |> node_refs()
       |> Enum.map(&resolve_ref(&1, nsid))
-      |> Enum.reject(&is_nil/1)
-      |> Enum.filter(fn {t_nsid, t_def} ->
-        # Only object/record defs become modules; other def kinds and
-        # unvendored lexicons stay passthrough.
-        case lexicons[t_nsid] do
+      |> Enum.reject(fn target ->
+        # nil is unparseable; external targets already exist as compiled
+        # modules and are referenced, not regenerated; only object/record
+        # defs become modules (other kinds and unvendored lexicons stay
+        # passthrough); visited targets are already scheduled.
+        case target do
           nil ->
-            false
+            true
 
-          t_lexicon ->
-            target = t_lexicon.defs[t_def]
-            target != nil and target.kind in [:record, :object]
+          key ->
+            MapSet.member?(external, key) or MapSet.member?(visited, key) or
+              not generated_def?(lexicons, key)
         end
       end)
-      |> Enum.reject(&MapSet.member?(visited, &1))
 
-    walk(refs ++ rest, Enum.reduce(refs, visited, &MapSet.put(&2, &1)), lexicons)
+    walk(refs ++ rest, Enum.reduce(refs, visited, &MapSet.put(&2, &1)), lexicons, external)
+  end
+
+  defp generated_def?(lexicons, {t_nsid, t_def}) do
+    case lexicons[t_nsid] do
+      nil ->
+        false
+
+      t_lexicon ->
+        t_lexicon.defs[t_def] != nil and t_lexicon.defs[t_def].kind in [:record, :object]
+    end
   end
 
   # All ref strings reachable inside a schema node.
@@ -371,7 +401,7 @@ defmodule Exosphere.Lexicon.Generator do
   # query/procedure lexicon in that namespace.
   @endpoint_namespaces ["app.bsky.", "community.lexicon."]
 
-  defp endpoint_specs(lexicons, base, seeds) do
+  defp endpoint_specs(lexicons, base, seeds, rules) do
     lexicons
     |> Enum.filter(fn {nsid, lexicon} ->
       main = lexicon.defs["main"]
@@ -382,7 +412,7 @@ defmodule Exosphere.Lexicon.Generator do
     end)
     |> Enum.group_by(fn {nsid, _lexicon} -> namespace_of(nsid) end)
     |> Enum.map(fn {namespace, endpoints} ->
-      module = namespace_module(namespace, base)
+      module = namespace_module(namespace, base, rules)
       check_endpoint_name_clashes!(module, endpoints)
 
       %{
@@ -404,8 +434,8 @@ defmodule Exosphere.Lexicon.Generator do
 
   # The namespace module for e.g. "app.bsky.actor" is <base>.Bsky.Actor;
   # the bare "app.bsky" namespace is <base>.Bsky itself.
-  defp namespace_module(namespace, base) do
-    case Enum.find(@namespace_rules, fn {prefix, _suffix} ->
+  defp namespace_module(namespace, base, rules) do
+    case Enum.find(rules ++ @namespace_rules, fn {prefix, _suffix} ->
            String.starts_with?(namespace, prefix)
          end) do
       {prefix, suffix} ->
@@ -638,9 +668,10 @@ defmodule Exosphere.Lexicon.Generator do
 
   # app.bsky.feed.post => <base>.Bsky.Feed.Post; com.atproto.repo.strongRef
   # => <base>.ATProto.Repo.StrongRef; community.lexicon.interaction.like =>
-  # <base>.Community.Interaction.Like; other authorities keep all segments.
-  defp main_module(nsid, base) do
-    case Enum.find(@namespace_rules, fn {prefix, _suffix} ->
+  # <base>.Community.Interaction.Like; `rules` (checked first) map host
+  # authorities to a fixed path; other authorities keep all segments.
+  defp main_module(nsid, base, rules) do
+    case Enum.find(rules ++ @namespace_rules, fn {prefix, _suffix} ->
            String.starts_with?(nsid, prefix)
          end) do
       {prefix, suffix} ->
@@ -649,6 +680,7 @@ defmodule Exosphere.Lexicon.Generator do
           |> String.trim_leading(prefix)
           |> String.split(".")
           |> Enum.map(&Macro.camelize/1)
+          |> Enum.reject(&(&1 == ""))
 
         Module.concat([base | suffix] ++ rest)
 
@@ -660,16 +692,16 @@ defmodule Exosphere.Lexicon.Generator do
     end
   end
 
-  defp def_module(nsid, def_name, base),
-    do: Module.concat(main_module(nsid, base), Macro.camelize(def_name))
+  defp def_module(nsid, def_name, base, rules),
+    do: Module.concat(main_module(nsid, base, rules), Macro.camelize(def_name))
 
-  defp module_spec(lexicon, def_name, base) do
+  defp module_spec(lexicon, def_name, base, rules) do
     node = lexicon.defs[def_name]
 
     module =
       if def_name == "main",
-        do: main_module(lexicon.id, base),
-        else: def_module(lexicon.id, def_name, base)
+        do: main_module(lexicon.id, base, rules),
+        else: def_module(lexicon.id, def_name, base, rules)
 
     %{
       module: module,

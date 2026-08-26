@@ -94,14 +94,23 @@ record-key primitives plus commit-signature verification.
     parsed IR) without registering it.
   - `Resolver.list/3` returns `{:ok, %{schemas: ..., invalid: ...}}` so
     it composes with `with`.
-  - `mix exosphere.gen.lexicons --dir/--out/--namespace` for host apps:
-    `--dir` scopes generation to the app's own lexicon directory while
-    the vendored corpus is still parsed for ref resolution (corpus
-    types like `com.atproto.repo.strongRef` generate typed instead of
-    degrading to `term()`); `--out` sets the output tree (default
-    `lib/exosphere`) and `--namespace` the module root (default
-    `Exosphere`). `Generator.generate/2` exposes the same via
-    `base:`/`seeds:` opts.
+  - `mix exosphere.gen.lexicons --dir/--out/--namespace/--map` for host
+    apps: `--dir` scopes generation to the app's own lexicon directory
+    while the vendored corpus — resolved absolutely from the exosphere
+    dependency's priv, not the caller's relative path — is parsed for
+    ref resolution. Refs into the corpus point at the library's
+    compiled modules instead of generating duplicates under the host
+    namespace (a record referencing
+    `com.atproto.repo.strongRef` gets `Exosphere.ATProto.Repo.StrongRef`).
+    `--out` sets the output tree (default `lib/exosphere`),
+    `--namespace` the module root (default `Exosphere`), and
+    `--map authority=Suffix` (repeatable) strips host authority
+    segments the way the built-in rules do for `app.bsky`
+    (`--namespace Oysters --map pub.oysters=Lexicons` →
+    `Oysters.Lexicons.Post`). `Generator.generate/2` exposes the same
+    via `base:`/`seeds:`/`rules:`/`external:` opts. Unresolved-ref
+    warnings are scoped to the seeded lexicons when generating from
+    `--dir`.
 - **Lexicon registration, type-checking, and publishing** — first-class
   lexicon support beyond compile-time codegen:
   - `Exosphere.Lexicon` — entry point: `register/1`, `validate/3`,

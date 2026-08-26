@@ -90,26 +90,55 @@ defmodule Exosphere.Lexicon.GeneratorTest do
     }
   }
 
-  test "seeds + base generate host modules with corpus-resolved refs" do
+  test "seeds + base + external generate host modules referencing library modules" do
     {:ok, corpus} = Parser.parse_dir("priv/lexicons")
     {:ok, ours} = Parser.parse(@host_lexicon)
     lexicons = Map.put(corpus, "pub.oysters.comment", ours)
 
+    # The module map the library's own generation produces — what a host
+    # app's dependency already has compiled
+    external =
+      corpus
+      |> Generator.generate()
+      |> Map.new(&{{&1.nsid, &1.def_name || "main"}, &1.module})
+
     specs =
-      Generator.generate(lexicons, base: Oysters, seeds: ["pub.oysters.comment"])
+      Generator.generate(lexicons,
+        base: Oysters,
+        seeds: ["pub.oysters.comment"],
+        external: external
+      )
 
     modules = Enum.map(specs, & &1.module)
 
-    # The host record generates under the host namespace, and the corpus
-    # strongRef it references generates typed alongside instead of
-    # degrading subject to term()
-    assert Oysters.Pub.Oysters.Comment in modules
-    assert Oysters.ATProto.Repo.StrongRef in modules
-    refute Exosphere.Bsky.Feed.Post in modules
+    # Only the host record generates; the corpus strongRef it references
+    # points at the library's compiled module instead of duplicating a
+    # second struct under the host namespace
+    assert modules == [Oysters.Pub.Oysters.Comment]
+    refute Oysters.ATProto.Repo.StrongRef in modules
 
-    comment = Enum.find(specs, &(&1.module == Oysters.Pub.Oysters.Comment))
+    comment = hd(specs)
     assert comment.path == "pub/oysters/comment.ex"
-    assert comment.code =~ "subject: StrongRef.t()"
+    assert comment.code =~ "subject: Exosphere.ATProto.Repo.StrongRef.t()"
+  end
+
+  test "rules map a host authority to a non-stuttering namespace" do
+    {:ok, corpus} = Parser.parse_dir("priv/lexicons")
+    {:ok, ours} = Parser.parse(@host_lexicon)
+    lexicons = Map.put(corpus, "pub.oysters.comment", ours)
+
+    external =
+      corpus |> Generator.generate() |> Map.new(&{{&1.nsid, &1.def_name || "main"}, &1.module})
+
+    specs =
+      Generator.generate(lexicons,
+        base: Oysters,
+        seeds: ["pub.oysters.comment"],
+        external: external,
+        rules: [{"pub.oysters.", ["Lexicons"]}]
+      )
+
+    assert [%{module: Oysters.Lexicons.Comment, path: "lexicons/comment.ex"}] = specs
   end
 
   test "default base and seeds are unchanged (no opts)" do

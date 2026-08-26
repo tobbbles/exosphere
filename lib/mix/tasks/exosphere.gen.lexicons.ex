@@ -35,14 +35,20 @@ defmodule Mix.Tasks.Exosphere.Gen.Lexicons do
   Host apps point at their own lexicon directory and output tree:
 
       mix exosphere.gen.lexicons --dir priv/lexicons \\
-        --out lib/oysters --namespace Oysters
+        --out lib/oysters --namespace Oysters --map pub.oysters=Lexicons
 
   `--dir` scopes *generation* to that directory's lexicons while the
-  vendored corpus is still parsed for ref resolution — a record
-  referencing `com.atproto.repo.strongRef` gets a typed module instead
-  of degrading to `term()`. `--out` sets the output directory
-  (default `lib/exosphere`) and `--namespace` the module root (default
-  `Exosphere`; e.g. `pub.oysters.post` → `Oysters.Pub.Oysters.Post`).
+  vendored corpus (resolved absolutely, from the exosphere dependency's
+  own priv — not the caller's) is still parsed for ref resolution. Refs
+  into the corpus point at the library's compiled modules — a record
+  referencing `com.atproto.repo.strongRef` gets
+  `Exosphere.ATProto.Repo.StrongRef`, not a duplicate struct under the
+  host namespace. `--out` sets the output directory (default
+  `lib/exosphere`) and `--namespace` the module root (default
+  `Exosphere`). `--map authority=Suffix` (repeatable) strips the
+  authority segments the way the built-in rules do for `app.bsky` —
+  with the example above, `pub.oysters.post` → `Oysters.Lexicons.Post`
+  rather than the stuttering `Oysters.Pub.Oysters.Post`.
 
   Generation is deterministic: the same vendored lexicons always produce
   the same files, so output can be reviewed with `git diff`. Refs the
@@ -76,7 +82,8 @@ defmodule Mix.Tasks.Exosphere.Gen.Lexicons do
           pds: :string,
           dir: :string,
           out: :string,
-          namespace: :string
+          namespace: :string,
+          map: :keep
         ]
       )
 
@@ -87,17 +94,18 @@ defmodule Mix.Tasks.Exosphere.Gen.Lexicons do
     source = validate_source!(positional)
     out_dir = Keyword.get(opts, :out, @output_dir)
     base = base_module!(opts)
+    rules = namespace_rules!(opts)
     maybe_vendor_from!(opts, Keyword.get(opts, :dir, @lexicon_dir))
 
     Mix.Task.run("app.start")
 
     case parse_sources(opts) do
-      {:ok, lexicons, seeds} ->
-        warn_unresolved_refs(lexicons, opts)
+      {:ok, lexicons, seeds, external} ->
+        warn_unresolved_refs(lexicons, seeds)
 
         specs =
           lexicons
-          |> Generator.generate(base: base, seeds: seeds)
+          |> Generator.generate(base: base, seeds: seeds, rules: rules, external: external)
           |> scope(source)
 
         if opts[:check] do
@@ -117,21 +125,63 @@ defmodule Mix.Tasks.Exosphere.Gen.Lexicons do
     end
   end
 
+  # The vendored corpus must be addressed absolutely: a relative
+  # "priv/lexicons" means the *caller's* priv, which from a host app is
+  # its own directory, not the library's. When developing exosphere
+  # itself, prefer the source tree (the _build copy app_dir/2 returns can
+  # go stale when priv/lexicons is edited without a recompile).
+  defp corpus_dir do
+    in_exosphere? = Mix.Project.config()[:app] == :exosphere and File.dir?(@lexicon_dir)
+    if in_exosphere?, do: @lexicon_dir, else: Application.app_dir(:exosphere, "priv/lexicons")
+  end
+
   # --dir scopes generation (only those lexicons seed modules) while the
-  # vendored corpus is always parsed alongside for ref resolution — a
-  # host app's `subject` ref to com.atproto.repo.strongRef generates a
-  # typed module instead of degrading to term().
+  # vendored corpus is always parsed alongside. Corpus defs the library
+  # itself already generated are handed back as `external` — refs into
+  # them point at the library's compiled modules instead of generating
+  # duplicates under the host namespace.
   defp parse_sources(opts) do
     case Keyword.get(opts, :dir) do
       nil ->
-        with {:ok, corpus} <- Parser.parse_dir(@lexicon_dir), do: {:ok, corpus, nil}
+        with {:ok, corpus} <- Parser.parse_dir(corpus_dir()), do: {:ok, corpus, nil, %{}}
 
       dir ->
         with {:ok, ours} <- Parser.parse_dir(dir),
-             {:ok, corpus} <- Parser.parse_dir(@lexicon_dir) do
-          {:ok, Map.merge(corpus, ours), Map.keys(ours)}
+             {:ok, corpus} <- Parser.parse_dir(corpus_dir()) do
+          external =
+            corpus
+            |> Generator.generate()
+            |> Map.new(&{{&1.nsid, &1.def_name || "main"}, &1.module})
+            |> Map.drop(Map.keys(ours))
+
+          {:ok, Map.merge(corpus, ours), Map.keys(ours), external}
         end
     end
+  end
+
+  # --map authority=Suffix (repeatable): strips the authority segments and
+  # maps them to a namespace under the base, mirroring how the built-in
+  # rules treat app.bsky — `--namespace Oysters --map pub.oysters=Lexicons`
+  # gives Oysters.Lexicons.Post instead of the stuttering
+  # Oysters.Pub.Oysters.Post.
+  defp namespace_rules!(opts) do
+    opts
+    |> Keyword.get_values(:map)
+    |> Enum.map(fn mapping ->
+      case String.split(mapping, "=", parts: 2) do
+        [authority, suffix] when authority != "" and suffix != "" ->
+          segments = String.split(suffix, ".")
+
+          unless Enum.all?(segments, &Regex.match?(~r/^[A-Z][A-Za-z0-9_]*$/, &1)) do
+            Mix.raise("invalid --map #{inspect(mapping)}; suffix must be CamelCase segments")
+          end
+
+          {String.trim_trailing(authority, ".") <> ".", segments}
+
+        _ ->
+          Mix.raise("invalid --map #{inspect(mapping)}; expected authority=Suffix")
+      end
+    end)
   end
 
   defp base_module!(opts) do
@@ -237,10 +287,21 @@ defmodule Mix.Tasks.Exosphere.Gen.Lexicons do
     |> Path.join()
   end
 
-  defp warn_unresolved_refs(lexicons, _opts) do
+  # When generating from --dir, only the seeded lexicons are ours to
+  # fix; corpus-internal gaps are the library's problem. Resolution
+  # still runs against the full map (corpus included).
+  defp warn_unresolved_refs(lexicons, nil),
+    do: do_warn_unresolved_refs(Generator.unresolved_refs(lexicons))
+
+  defp warn_unresolved_refs(lexicons, seeds) do
     lexicons
     |> Generator.unresolved_refs()
-    |> Enum.each(fn {nsid, ref, location} ->
+    |> Enum.filter(fn {nsid, _ref, _location} -> nsid in seeds end)
+    |> do_warn_unresolved_refs()
+  end
+
+  defp do_warn_unresolved_refs(refs) do
+    Enum.each(refs, fn {nsid, ref, location} ->
       Mix.shell().error(
         "warning: #{nsid} ref #{inspect(ref)} at #{location} is not in the corpus; " <>
           "fields using it generate as term()"
