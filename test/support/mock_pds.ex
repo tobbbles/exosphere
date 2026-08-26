@@ -11,7 +11,9 @@ defmodule Exosphere.Test.MockPDS do
   #
   # It speaks plain HTTP on 127.0.0.1 (allowed for localhost in the spec's
   # local-development profile), needs no extra deps, and runs entirely
-  # in-process for tests.
+  # in-process for tests. Origins use the IP, not "localhost", so client
+  # connections never depend on how the runner resolves the name (an
+  # IPv6-first resolution can stall until the 30s HTTP timeout).
 
   use GenServer
 
@@ -29,7 +31,7 @@ defmodule Exosphere.Test.MockPDS do
     case GenServer.start(__MODULE__, opts) do
       {:ok, pid} ->
         port = GenServer.call(pid, :port)
-        {:ok, %__MODULE__{pid: pid, port: port, origin: "http://localhost:#{port}"}}
+        {:ok, %__MODULE__{pid: pid, port: port, origin: "http://127.0.0.1:#{port}"}}
 
       error ->
         error
@@ -60,9 +62,9 @@ defmodule Exosphere.Test.MockPDS do
   def issuer(%__MODULE__{origin: origin}), do: origin
 
   @doc """
-  The did:web DID hosted by this server (`did:web:localhost:PORT`).
+  The did:web DID hosted by this server (`did:web:127.0.0.1:PORT`).
   """
-  def did(%__MODULE__{port: port}), do: "did:web:localhost:#{port}"
+  def did(%__MODULE__{port: port}), do: "did:web:127.0.0.1:#{port}"
 
   # -- GenServer ------------------------------------------------------------
 
@@ -72,7 +74,7 @@ defmodule Exosphere.Test.MockPDS do
       :gen_tcp.listen(0, [:binary, packet: :raw, active: false, ip: {127, 0, 0, 1}, backlog: 16])
 
     {:ok, port} = :inet.port(listen)
-    origin = "http://localhost:#{port}"
+    origin = "http://127.0.0.1:#{port}"
 
     state = %{
       listen: listen,
@@ -126,14 +128,14 @@ defmodule Exosphere.Test.MockPDS do
   # -- Routing --------------------------------------------------------------
 
   defp route("GET", "/.well-known/did.json", _, _, _, state) do
-    did = "did:web:localhost:#{state.port}"
+    did = "did:web:127.0.0.1:#{state.port}"
 
     json(
       200,
       %{
         "@context" => ["https://www.w3.org/ns/did/v1"],
         "id" => did,
-        "alsoKnownAs" => ["at://localhost:#{state.port}"],
+        "alsoKnownAs" => ["at://127.0.0.1:#{state.port}"],
         "service" => [
           %{
             "id" => "#{did}#atproto_pds",
@@ -204,7 +206,7 @@ defmodule Exosphere.Test.MockPDS do
       # With a login_hint the account was chosen up-front (identity flow);
       # without one the "user logged in at the AS" and got this server's
       # own account (server flow).
-      sub = par.form["login_hint"] || "did:web:localhost:#{state.port}"
+      sub = par.form["login_hint"] || "did:web:127.0.0.1:#{state.port}"
 
       state =
         put_in(state, [:codes, code], %{
@@ -247,7 +249,7 @@ defmodule Exosphere.Test.MockPDS do
          :ok <- check_ath(proof, token) do
       json(
         200,
-        %{"did" => issued.sub, "handle" => "localhost:#{state.port}", "collections" => []},
+        %{"did" => issued.sub, "handle" => "127.0.0.1:#{state.port}", "collections" => []},
         [nonce_header(state)],
         state
       )
