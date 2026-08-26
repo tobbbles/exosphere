@@ -111,7 +111,12 @@ defmodule Exosphere.ATProto.Spaces.CommitTest do
     {:ok, commit} = Commit.sign(repo, @ctx, keypair.private_key, :secp256k1)
 
     assert {:error, :rev_mismatch} =
-             Commit.verify(%{commit | "rev" => "3kbcq3p7ad999"}, @ctx, keypair.public_key, :secp256k1)
+             Commit.verify(
+               %{commit | "rev" => "3kbcq3p7ad999"},
+               @ctx,
+               keypair.public_key,
+               :secp256k1
+             )
 
     assert {:error, :invalid_commit} =
              Commit.verify(%{commit | "ver" => 2}, @ctx, keypair.public_key, :secp256k1)
@@ -176,5 +181,5 @@ defmodule Exosphere.ATProto.Spaces.CommitTest do
     end)
   end
 
-  defp first_slash(s), do: (s |> String.split("/") |> hd() |> byte_size())
+  defp first_slash(s), do: s |> String.split("/") |> hd() |> byte_size()
 end

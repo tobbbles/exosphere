@@ -19,7 +19,11 @@ defmodule Exosphere.ATProto.Spaces.LthashTest do
   test "digest vectors lock the algorithm" do
     assert Lthash.new() |> Lthash.digest() |> Base.encode16() == @empty_digest
 
-    assert Lthash.new() |> Lthash.add("one") |> Lthash.add("two") |> Lthash.digest() |> Base.encode16() ==
+    assert Lthash.new()
+           |> Lthash.add("one")
+           |> Lthash.add("two")
+           |> Lthash.digest()
+           |> Base.encode16() ==
              @one_two_digest
   end
 
@@ -58,7 +62,13 @@ defmodule Exosphere.ATProto.Spaces.LthashTest do
   end
 
   property "order-independence: the state depends only on the set" do
-    check all elements <- list_of(string(:alphanumeric, min_length: 1, max_length: 12), min_length: 1, max_length: 20) do
+    check all(
+            elements <-
+              list_of(string(:alphanumeric, min_length: 1, max_length: 12),
+                min_length: 1,
+                max_length: 20
+              )
+          ) do
       forward = Enum.reduce(elements, Lthash.new(), &Lthash.add(&2, &1))
       backward = Enum.reverse(elements) |> Enum.reduce(Lthash.new(), &Lthash.add(&2, &1))
       shuffled = Enum.shuffle(elements) |> Enum.reduce(Lthash.new(), &Lthash.add(&2, &1))
@@ -70,7 +80,13 @@ defmodule Exosphere.ATProto.Spaces.LthashTest do
   end
 
   property "add-then-remove identity returns to the empty state" do
-    check all elements <- list_of(string(:alphanumeric, min_length: 1, max_length: 12), min_length: 1, max_length: 15) do
+    check all(
+            elements <-
+              list_of(string(:alphanumeric, min_length: 1, max_length: 12),
+                min_length: 1,
+                max_length: 15
+              )
+          ) do
       unique = Enum.uniq(elements)
 
       h =
@@ -83,7 +99,13 @@ defmodule Exosphere.ATProto.Spaces.LthashTest do
   end
 
   property "incremental fold equals batch fold (exactly — these are integers)" do
-    check all elements <- list_of(string(:alphanumeric, min_length: 1, max_length: 12), min_length: 2, max_length: 25) do
+    check all(
+            elements <-
+              list_of(string(:alphanumeric, min_length: 1, max_length: 12),
+                min_length: 2,
+                max_length: 25
+              )
+          ) do
       {prefix, rest} = Enum.split(elements, div(length(elements), 2))
 
       incremental =
