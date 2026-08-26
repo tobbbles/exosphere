@@ -15,6 +15,7 @@ Exosphere is a collection of AT Protocol clients and utilities.
 
 - `Exosphere.ATProto.*`: lower-level, spec-aligned implementation building blocks (see [atproto.com](https://atproto.com/))
 - `Exosphere.*`: public-facing API modules built on top of `Exosphere.ATProto.*` (XRPC client, OAuth session, firehose consumer, etc.)
+- **Built-in lexicons**: Exosphere ships the Bluesky (`app.bsky.*`), curated AT Protocol (`com.atproto.*`), and [lexicon-community](https://lexicon.community) (`community.lexicon.*`) schemas as vendored, generated modules — record structs with validation, plus typed XRPC endpoint functions — and registers them for runtime type-checking (see the [Lexicons guide](lexicons.html))
 
 ## Getting started
 
@@ -163,6 +164,20 @@ lexicons, and a runtime workflow for lexicons of your own — or anyone else's.
 See the [Lexicons guide](lexicons.html) for the full walkthrough: authoring,
 linting, validation semantics, publishing and safe modification, resolution,
 and host-app code generation.
+
+Out of the box, three lexicon corpora are vendored and generated:
+
+| Corpus | Scope | Modules |
+|--------|-------|---------|
+| Bluesky | the full `app.bsky.*` corpus (164 schemas) | `Exosphere.Bsky.*` records + typed XRPC endpoints |
+| AT Protocol | curated `com.atproto.*` (`strongRef`, label defs, the lexicon meta-schema) | `Exosphere.ATProto.*` records |
+| lexicon-community | 17 `community.lexicon.*` schemas (bookmarks, calendar, interaction, …) | `Exosphere.Community.*` records + endpoints |
+
+That's 86 generated modules, refreshable with `mix exosphere.lexicons.sync`
+and regenerable with `mix exosphere.gen.lexicons` (CI checks for drift). The
+whole set is also available at runtime — `Exosphere.Lexicon.Registry.load_vendored/0`
+registers all 184 lexicons for `Exosphere.Lexicon.validate/3` — and your own
+lexicons join the same workflow via `load_dir/1` or code generation.
 
 Define (or fetch) a lexicon, type-check records against it, and publish it to
 a PDS as a `com.atproto.lexicon.schema` record:
