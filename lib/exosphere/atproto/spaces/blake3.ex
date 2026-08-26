@@ -7,12 +7,14 @@ defmodule Exosphere.ATProto.Spaces.Blake3 do
 
   Exosphere keeps a zero-new-NIF property: BLAKE3 is used only to expand
   LtHash elements — 2048 bytes per record, folded once per sync checkpoint or
-  full-repo verification, never per firehose frame. A pure-Elixir
-  implementation expands an element in the tens of microseconds (see the bench
-  in `test/exosphere/atproto/spaces/blake3_test.exs`), which keeps the sync
-  path comfortably interactive while adding no mandatory dependency. If a
-  future hot path needs native BLAKE3, a NIF can slot in behind this module's
-  `hash/2` interface without touching callers.
+  full-repo verification, never per firehose frame. Measured on this
+  codebase's CI-class hardware, a pure-Elixir expansion runs in the hundreds
+  of microseconds (~0.25–0.5 ms; see the regression bounds in
+  `test/exosphere/atproto/spaces/blake3_test.exs`) — a 1000-record checkpoint
+  folds in well under a second, which keeps the sync path interactive while
+  adding no mandatory dependency. If a future hot path needs native BLAKE3,
+  a NIF can slot in behind this module's `hash/2` interface without touching
+  callers.
 
   Implemented after the BLAKE3 [reference implementation]; unkeyed mode only.
 

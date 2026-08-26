@@ -55,6 +55,16 @@ defmodule Exosphere.ATProto.Spaces.Repo do
 
   Every frame's CID is checked against the sha256 of its contents, so a
   tampered block fails here, loudly.
+
+  Two verifications here are deliberately stricter than the reference
+  consumer: the index block must be *canonically* encoded (the reference
+  accepts any decodable index, since set-hash folding is order-independent),
+  and `expect_values: false` rejects a CAR that carries record blocks. Both
+  are safe against reference-produced CARs (the reference provider always
+  emits canonical, values-excluded shapes) but reject more of the possible
+  input space — an imposition on other producers, kept because canonical
+  indexes make streaming order checks meaningful and an unexpected block is
+  worth failing loudly on.
   """
   @spec decode_car(binary()) :: {:ok, decoded_car()} | {:error, term()}
   def decode_car(data) when is_binary(data) do
