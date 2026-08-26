@@ -49,11 +49,11 @@ defmodule Exosphere.Lexicon do
 
   @doc """
   Register a lexicon (parsed, or a raw JSON document) in the runtime
-  `Lexicon.Registry`. See `Registry.register/1`.
+  `Lexicon.Registry`. See `Exosphere.Lexicon.Registry.register/1`.
   """
   defdelegate register(lexicon), to: Registry
 
-  @doc "Register many lexicons at once. See `Registry.register_all/1`."
+  @doc "Register many lexicons at once. See `Exosphere.Lexicon.Registry.register_all/1`."
   defdelegate register_all(lexicons), to: Registry
 
   @doc """
@@ -63,7 +63,7 @@ defmodule Exosphere.Lexicon do
   map. Options are forwarded to `Validator.validate/4` (notably
   `strict: true` to reject unknown fields, open-union variants, and
   refs whose target lexicon is not registered).
-  See `Registry.validate/3`.
+  See `Exosphere.Lexicon.Registry.validate/3`.
   """
   defdelegate validate(type, value, opts \\ []), to: Registry
 

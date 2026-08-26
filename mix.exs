@@ -58,7 +58,7 @@ defmodule Exosphere.MixProject do
     [
       main: "readme",
       logo: "docs/static/logo.png",
-      extras: ["README.md", "docs/firehose.md", "docs/oauth.md"]
+      extras: ["README.md", "docs/firehose.md", "docs/lexicons.md", "docs/oauth.md"]
     ]
   end
 

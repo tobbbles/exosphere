@@ -160,6 +160,9 @@ CARs only carry new blocks) and how to build on it.
 
 Exosphere ships compile-time typed modules for the vendored bsky/community
 lexicons, and a runtime workflow for lexicons of your own — or anyone else's.
+See the [Lexicons guide](lexicons.html) for the full walkthrough: authoring,
+linting, validation semantics, publishing and safe modification, resolution,
+and host-app code generation.
 
 Define (or fetch) a lexicon, type-check records against it, and publish it to
 a PDS as a `com.atproto.lexicon.schema` record:

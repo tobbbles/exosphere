@@ -24,8 +24,8 @@ defmodule Exosphere.Lexicon.Validator do
   whose target lexicon is not registered is skipped silently in the
   permissive mode** — the field passes unchecked. Use `strict: true` to
   make unresolved refs an error, and load the referenced lexicons
-  (`Registry.load_vendored/0` covers the vendored corpus) before
-  validating anything that refs into it.
+  (`Exosphere.Lexicon.Registry.load_vendored/0` covers the vendored
+  corpus) before validating anything that refs into it.
 
   Values are the JSON wire representation (CID links as
   `%{"$link" => cid}`, bytes as `%{"$bytes" => b64}`, blobs as

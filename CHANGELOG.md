@@ -161,6 +161,12 @@ record-key primitives plus commit-signature verification.
     CIDs) + block map; `decode/1` is unchanged and delegates.
   - `Exosphere.ATProto.MST.from_repo_car/1` — record set straight from a
     repository CAR (bytes or decoded form).
+- **Lexicons hexdocs guide** (`docs/lexicons.md`, wired into `mix docs`
+  extras) — the developer guide for the lexicon workflow: authoring and
+  meta-rule validation, linting, registration and validation semantics
+  (permissive vs strict, unresolved refs), publishing and safe
+  modification (spec evolution rules), fetching/resolution, host-app
+  code generation, and the limits of what schemas can express.
 - **Firehose hexdocs guide** (`docs/firehose.md`, wired into `mix docs`
   extras) — a standalone page covering consumer setup, message types, record
   extraction, verification, cursors/reconnection, and production tips.
