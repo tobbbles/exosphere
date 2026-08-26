@@ -69,6 +69,80 @@ record-key primitives plus commit-signature verification.
 
 ### Added
 
+- **Lexicon integration feedback fixes** (from the first host-app integration):
+  - `Registry.register/1` unwraps `%Lexicon.Schema{}` structs instead of
+    storing them where parsed IR belongs (registering a schema used to
+    poison the registry — every later validation failed).
+  - `strict: true` validation now errors on refs (and union refs) whose
+    target lexicon is not registered; the permissive mode still skips
+    them, and the `Validator` moduledoc says so.
+  - `Registry.load_dir/1` registers a directory of lexicon JSON (host
+    apps no longer hand-roll parse-and-register); `load_vendored/0` is
+    defined in terms of it. `register_all/1` accepts the
+    `%{nsid => lexicon}` map `Parser.parse_dir/1` returns.
+  - Implemented the remaining spec string formats — `language`, `tid`,
+    `record-key`, `at-identifier` — and `mix exosphere.lint.lexicons`
+    warns on string formats outside the spec set (typos included).
+  - Record `key` validated against the spec values (`tid`, `nsid`,
+    `any`, `literal:<value>`) instead of "any non-empty string".
+  - `Schema.new/1` returns an error tuple for malformed top-level keys
+    instead of raising.
+  - `Lexicon.publish(session, schema)` / `delete(session, nsid)` read
+    the PDS URL and DID from the session (`session.pds`/`session.sub`);
+    the explicit-argument arities remain.
+  - `Lexicon.validate_with/2,4` type-checks against a schema (or its
+    parsed IR) without registering it.
+  - `Resolver.list/3` returns `{:ok, %{schemas: ..., invalid: ...}}` so
+    it composes with `with`.
+  - `mix exosphere.gen.lexicons --dir/--out/--namespace/--map` for host
+    apps: `--dir` scopes generation to the app's own lexicon directory
+    while the vendored corpus — resolved absolutely from the exosphere
+    dependency's priv, not the caller's relative path — is parsed for
+    ref resolution. Refs into the corpus point at the library's
+    compiled modules instead of generating duplicates under the host
+    namespace (a record referencing
+    `com.atproto.repo.strongRef` gets `Exosphere.ATProto.Repo.StrongRef`).
+    `--out` sets the output tree (default `lib/exosphere`),
+    `--namespace` the module root (default `Exosphere`), and
+    `--map authority=Suffix` (repeatable) strips host authority
+    segments the way the built-in rules do for `app.bsky`
+    (`--namespace Oysters --map pub.oysters=Lexicons` →
+    `Oysters.Lexicons.Post`). `Generator.generate/2` exposes the same
+    via `base:`/`seeds:`/`rules:`/`external:` opts. Unresolved-ref
+    warnings are scoped to the seeded lexicons when generating from
+    `--dir`.
+- **Lexicon registration, type-checking, and publishing** — first-class
+  lexicon support beyond compile-time codegen:
+  - `Exosphere.Lexicon` — entry point: `register/1`, `validate/3`,
+    `publish/4`, `delete/4`.
+  - `Exosphere.Lexicon.Schema` — the `com.atproto.lexicon.schema` record
+    type: builds and validates lexicon documents against the meta-rules
+    (lexicon version, NSID id, single primary def, record `key`, ref
+    targets), round-trips wire records, and derives the record key (the
+    NSID) for publishing.
+  - `Exosphere.Lexicon.Validator` — runtime validation of wire-format
+    values against parsed lexicon IR: required/nullable distinction,
+    unknown fields ignored permissively (or `strict: true`), open/closed
+    unions with `$type` discrimination, byte-vs-grapheme string limits,
+    format checks (datetime, at-uri, nsid, did, cid, ...), cross-lexicon
+    ref resolution, and data-model conformance.
+  - `Exosphere.Lexicon.Registry` — process-free runtime NSID → lexicon
+    registry (`:persistent_term`), loadable from the vendored corpus;
+    `validate/3` type-checks by NSID, with an `optimistic: true` mode
+    mirroring PDS fail-open behavior.
+  - `Exosphere.Lexicon.Resolver` — fetch published lexicons: `fetch/4`
+    via `com.atproto.repo.getRecord`, `list/3` via `listRecords`, and
+    `resolve/2` via NSID authority (DNS TXT `_lexicon.<domain>` → DID →
+    PDS), per the lexicon resolution spec.
+  - `mix exosphere.lint.lexicons` — lints lexicon JSON documents against
+    the spec rules (via `Parser` + `Schema.validate_document/1`) with
+    style-guide warnings (missing descriptions); `--strict` fails on
+    warnings too.
+  - `mix exosphere.gen.lexicons --from did:plc:… [--pds …]` — vendors a
+    repo's published lexicons then generates typed modules for them;
+    unresolved corpus refs now print warnings instead of silently
+    degrading to `term()`.
+  - Vendored `com/atproto/lexicon/schema.json` (the meta-schema itself).
 - **Repository verification pipeline** — the trustless read path:
   - `Exosphere.ATProto.Repo.verify_checkout/3` — downloads
     `com.atproto.sync.getRepo` from a PDS, reads the record set out of the
@@ -87,6 +161,12 @@ record-key primitives plus commit-signature verification.
     CIDs) + block map; `decode/1` is unchanged and delegates.
   - `Exosphere.ATProto.MST.from_repo_car/1` — record set straight from a
     repository CAR (bytes or decoded form).
+- **Lexicons hexdocs guide** (`docs/lexicons.md`, wired into `mix docs`
+  extras) — the developer guide for the lexicon workflow: authoring and
+  meta-rule validation, linting, registration and validation semantics
+  (permissive vs strict, unresolved refs), publishing and safe
+  modification (spec evolution rules), fetching/resolution, host-app
+  code generation, and the limits of what schemas can express.
 - **Firehose hexdocs guide** (`docs/firehose.md`, wired into `mix docs`
   extras) — a standalone page covering consumer setup, message types, record
   extraction, verification, cursors/reconnection, and production tips.

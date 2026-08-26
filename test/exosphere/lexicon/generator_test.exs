@@ -68,4 +68,82 @@ defmodule Exosphere.Lexicon.GeneratorTest do
     assert "atproto/repo/strong_ref.ex" in paths
     assert "atproto/label/defs/self_labels.ex" in paths
   end
+
+  # Host-app generation: --dir seeds only the host lexicons, but refs
+  # resolve against the corpus passed alongside, and modules land under
+  # the host's namespace.
+  @host_lexicon %{
+    "lexicon" => 1,
+    "id" => "pub.oysters.comment",
+    "defs" => %{
+      "main" => %{
+        "type" => "record",
+        "key" => "tid",
+        "record" => %{
+          "type" => "object",
+          "required" => ["subject"],
+          "properties" => %{
+            "subject" => %{"type" => "ref", "ref" => "com.atproto.repo.strongRef"}
+          }
+        }
+      }
+    }
+  }
+
+  test "seeds + base + external generate host modules referencing library modules" do
+    {:ok, corpus} = Parser.parse_dir("priv/lexicons")
+    {:ok, ours} = Parser.parse(@host_lexicon)
+    lexicons = Map.put(corpus, "pub.oysters.comment", ours)
+
+    # The module map the library's own generation produces — what a host
+    # app's dependency already has compiled
+    external =
+      corpus
+      |> Generator.generate()
+      |> Map.new(&{{&1.nsid, &1.def_name || "main"}, &1.module})
+
+    specs =
+      Generator.generate(lexicons,
+        base: Oysters,
+        seeds: ["pub.oysters.comment"],
+        external: external
+      )
+
+    modules = Enum.map(specs, & &1.module)
+
+    # Only the host record generates; the corpus strongRef it references
+    # points at the library's compiled module instead of duplicating a
+    # second struct under the host namespace
+    assert modules == [Oysters.Pub.Oysters.Comment]
+    refute Oysters.ATProto.Repo.StrongRef in modules
+
+    comment = hd(specs)
+    assert comment.path == "pub/oysters/comment.ex"
+    assert comment.code =~ "subject: Exosphere.ATProto.Repo.StrongRef.t()"
+  end
+
+  test "rules map a host authority to a non-stuttering namespace" do
+    {:ok, corpus} = Parser.parse_dir("priv/lexicons")
+    {:ok, ours} = Parser.parse(@host_lexicon)
+    lexicons = Map.put(corpus, "pub.oysters.comment", ours)
+
+    external =
+      corpus |> Generator.generate() |> Map.new(&{{&1.nsid, &1.def_name || "main"}, &1.module})
+
+    specs =
+      Generator.generate(lexicons,
+        base: Oysters,
+        seeds: ["pub.oysters.comment"],
+        external: external,
+        rules: [{"pub.oysters.", ["Lexicons"]}]
+      )
+
+    assert [%{module: Oysters.Lexicons.Comment, path: "lexicons/comment.ex"}] = specs
+  end
+
+  test "default base and seeds are unchanged (no opts)" do
+    {:ok, lexicons} = Parser.parse_dir("priv/lexicons")
+
+    assert Enum.any?(Generator.generate(lexicons), &(&1.module == Exosphere.Bsky.Feed.Post))
+  end
 end

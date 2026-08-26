@@ -21,13 +21,45 @@ defmodule Mix.Tasks.Exosphere.Gen.Lexicons do
       mix exosphere.gen.lexicons --check
       mix exosphere.gen.lexicons --check community.lexicon
 
-  Generation is deterministic: the same vendored lexicons always produce the
-  same files, so output can be reviewed with `git diff`.
+  Fetch lexicons published by a repository (as `com.atproto.lexicon.schema`
+  records) before generating, vendoring them under `priv/lexicons` so the
+  result is reproducible on later runs:
+
+      mix exosphere.gen.lexicons --from did:plc:abc123 [--pds https://pds.example.com]
+
+  The PDS is found via DID resolution unless `--pds` is given. Lexicons
+  from authorities without a namespace rule generate under their full NSID
+  segments (e.g. `com.example.post` → `Exosphere.Com.Example.Post`).
+
+  By default the vendored `priv/lexicons` of this project is the source.
+  Host apps point at their own lexicon directory and output tree:
+
+      mix exosphere.gen.lexicons --dir priv/lexicons \\
+        --out lib/oysters --namespace Oysters --map pub.oysters=Lexicons
+
+  `--dir` scopes *generation* to that directory's lexicons while the
+  vendored corpus (resolved absolutely, from the exosphere dependency's
+  own priv — not the caller's) is still parsed for ref resolution. Refs
+  into the corpus point at the library's compiled modules — a record
+  referencing `com.atproto.repo.strongRef` gets
+  `Exosphere.ATProto.Repo.StrongRef`, not a duplicate struct under the
+  host namespace. `--out` sets the output directory (default
+  `lib/exosphere`) and `--namespace` the module root (default
+  `Exosphere`). `--map authority=Suffix` (repeatable) strips the
+  authority segments the way the built-in rules do for `app.bsky` —
+  with the example above, `pub.oysters.post` → `Oysters.Lexicons.Post`
+  rather than the stuttering `Oysters.Pub.Oysters.Post`.
+
+  Generation is deterministic: the same vendored lexicons always produce
+  the same files, so output can be reviewed with `git diff`. Refs the
+  corpus can not resolve (fields that degrade to `term()`) are reported
+  as warnings.
   """
 
   use Mix.Task
 
-  alias Exosphere.Lexicon.{Generator, Parser}
+  alias Exosphere.ATProto.Identity.DID
+  alias Exosphere.Lexicon.{Generator, Parser, Resolver}
 
   @lexicon_dir "priv/lexicons"
   @output_dir "lib/exosphere"
@@ -42,28 +74,45 @@ defmodule Mix.Tasks.Exosphere.Gen.Lexicons do
 
   @impl Mix.Task
   def run(args) do
-    {opts, positional, invalid} = OptionParser.parse(args, strict: [check: :boolean])
+    {opts, positional, invalid} =
+      OptionParser.parse(args,
+        strict: [
+          check: :boolean,
+          from: :string,
+          pds: :string,
+          dir: :string,
+          out: :string,
+          namespace: :string,
+          map: :keep
+        ]
+      )
 
     unless invalid == [] do
       Mix.raise("invalid arguments: #{inspect(invalid)}")
     end
 
     source = validate_source!(positional)
+    out_dir = Keyword.get(opts, :out, @output_dir)
+    base = base_module!(opts)
+    rules = namespace_rules!(opts)
+    maybe_vendor_from!(opts, Keyword.get(opts, :dir, @lexicon_dir))
 
     Mix.Task.run("app.start")
 
-    case Parser.parse_dir(@lexicon_dir) do
-      {:ok, lexicons} ->
+    case parse_sources(opts) do
+      {:ok, lexicons, seeds, external} ->
+        warn_unresolved_refs(lexicons, seeds)
+
         specs =
           lexicons
-          |> Generator.generate()
+          |> Generator.generate(base: base, seeds: seeds, rules: rules, external: external)
           |> scope(source)
 
         if opts[:check] do
-          check(specs, source)
+          check(specs, source, out_dir)
         else
-          files = Generator.write!(specs, @output_dir)
-          Mix.shell().info("Generated #{length(files)} modules into #{@output_dir}")
+          files = Generator.write!(specs, out_dir)
+          Mix.shell().info("Generated #{length(files)} modules into #{out_dir}")
         end
 
       {:error, {path, reason}} ->
@@ -73,6 +122,89 @@ defmodule Mix.Tasks.Exosphere.Gen.Lexicons do
       {:error, reason} ->
         Mix.shell().error("Failed to read lexicons: #{inspect(reason)}")
         exit({:shutdown, 1})
+    end
+  end
+
+  # The vendored corpus must be addressed absolutely: a relative
+  # "priv/lexicons" means the *caller's* priv, which from a host app is
+  # its own directory, not the library's. When developing exosphere
+  # itself, prefer the source tree (the _build copy app_dir/2 returns can
+  # go stale when priv/lexicons is edited without a recompile).
+  defp corpus_dir do
+    in_exosphere? = Mix.Project.config()[:app] == :exosphere and File.dir?(@lexicon_dir)
+    if in_exosphere?, do: @lexicon_dir, else: Application.app_dir(:exosphere, "priv/lexicons")
+  end
+
+  # --dir scopes generation (only those lexicons seed modules) while the
+  # vendored corpus is always parsed alongside. Corpus defs the library
+  # itself already generated are handed back as `external` — refs into
+  # them point at the library's compiled modules instead of generating
+  # duplicates under the host namespace.
+  defp parse_sources(opts) do
+    case Keyword.get(opts, :dir) do
+      nil ->
+        with {:ok, corpus} <- Parser.parse_dir(corpus_dir()), do: {:ok, corpus, nil, %{}}
+
+      dir ->
+        with {:ok, ours} <- Parser.parse_dir(dir),
+             {:ok, corpus} <- Parser.parse_dir(corpus_dir()) do
+          external =
+            corpus
+            |> Generator.generate()
+            |> Map.new(&{{&1.nsid, &1.def_name || "main"}, &1.module})
+            |> Map.drop(Map.keys(ours))
+
+          {:ok, Map.merge(corpus, ours), Map.keys(ours), external}
+        end
+    end
+  end
+
+  # --map authority=Suffix (repeatable): strips the authority segments and
+  # maps them to a namespace under the base, mirroring how the built-in
+  # rules treat app.bsky — `--namespace Oysters --map pub.oysters=Lexicons`
+  # gives Oysters.Lexicons.Post instead of the stuttering
+  # Oysters.Pub.Oysters.Post.
+  defp namespace_rules!(opts) do
+    opts
+    |> Keyword.get_values(:map)
+    |> Enum.map(fn mapping ->
+      case String.split(mapping, "=", parts: 2) do
+        [authority, suffix] when authority != "" and suffix != "" ->
+          segments = String.split(suffix, ".")
+
+          unless Enum.all?(segments, &Regex.match?(~r/^[A-Z][A-Za-z0-9_]*$/, &1)) do
+            Mix.raise("invalid --map #{inspect(mapping)}; suffix must be CamelCase segments")
+          end
+
+          {String.trim_trailing(authority, ".") <> ".", segments}
+
+        _ ->
+          Mix.raise("invalid --map #{inspect(mapping)}; expected authority=Suffix")
+      end
+    end)
+  end
+
+  defp base_module!(opts) do
+    case Keyword.get(opts, :namespace) do
+      nil ->
+        Exosphere
+
+      namespace ->
+        namespace
+        |> String.split(".")
+        |> case do
+          ["" | _] ->
+            Mix.raise("invalid --namespace: #{inspect(namespace)}")
+
+          segments ->
+            segments
+            |> Enum.all?(&Regex.match?(~r/^[A-Z][A-Za-z0-9_]*$/, &1))
+            |> unless do
+              Mix.raise("invalid --namespace: #{inspect(namespace)}")
+            end
+
+            Module.concat(segments)
+        end
     end
   end
 
@@ -91,35 +223,121 @@ defmodule Mix.Tasks.Exosphere.Gen.Lexicons do
   defp validate_source!(sources),
     do: Mix.raise("expected at most one source, got: #{inspect(sources)}")
 
+  # --from: fetch a repo's published lexicons and vendor them, so the
+  # generation below (and future runs) include them.
+  defp maybe_vendor_from!(opts, lexicon_dir) do
+    case Keyword.get(opts, :from) do
+      nil ->
+        :ok
+
+      did when is_binary(did) ->
+        if opts[:check] do
+          Mix.raise("--from can not be combined with --check")
+        end
+
+        pds_url = pds_url!(did, opts)
+
+        case Resolver.list(pds_url, did) do
+          {:ok, %{schemas: schemas, invalid: invalid}} ->
+            Enum.each(invalid, &Mix.shell().error("skipped invalid lexicon record: #{&1}"))
+            paths = Enum.map(schemas, &vendor!(&1, lexicon_dir))
+            Mix.shell().info("Vendored #{length(paths)} lexicons from #{did}")
+
+          {:error, reason} ->
+            Mix.shell().error("failed to fetch lexicons from #{did}: #{inspect(reason)}")
+            exit({:shutdown, 1})
+        end
+    end
+  end
+
+  defp pds_url!(did, opts) do
+    case Keyword.get(opts, :pds) do
+      pds when is_binary(pds) ->
+        pds
+
+      nil ->
+        with {:ok, doc} <- DID.resolve(did),
+             {:ok, pds_url} <- DID.get_pds_endpoint(doc) do
+          pds_url
+        else
+          error ->
+            Mix.shell().error("could not find PDS for #{did}: #{inspect(error)}")
+            exit({:shutdown, 1})
+        end
+    end
+  end
+
+  # Write the raw document as <dir>/<authority>/<name>.json, matching
+  # the vendored corpus layout.
+  defp vendor!(schema, lexicon_dir) do
+    path = Path.join(lexicon_dir, "#{lexicon_path(schema.id)}.json")
+    File.mkdir_p!(Path.dirname(path))
+    File.write!(path, Jason.encode!(json_of(schema), pretty: true) <> "\n")
+    path
+  end
+
+  defp json_of(schema) do
+    %{"lexicon" => schema.lexicon, "id" => schema.id, "defs" => schema.defs}
+    |> Map.merge(if(schema.description, do: %{"description" => schema.description}, else: %{}))
+  end
+
+  defp lexicon_path(nsid) do
+    nsid
+    |> String.split(".")
+    |> Path.join()
+  end
+
+  # When generating from --dir, only the seeded lexicons are ours to
+  # fix; corpus-internal gaps are the library's problem. Resolution
+  # still runs against the full map (corpus included).
+  defp warn_unresolved_refs(lexicons, nil),
+    do: do_warn_unresolved_refs(Generator.unresolved_refs(lexicons))
+
+  defp warn_unresolved_refs(lexicons, seeds) do
+    lexicons
+    |> Generator.unresolved_refs()
+    |> Enum.filter(fn {nsid, _ref, _location} -> nsid in seeds end)
+    |> do_warn_unresolved_refs()
+  end
+
+  defp do_warn_unresolved_refs(refs) do
+    Enum.each(refs, fn {nsid, ref, location} ->
+      Mix.shell().error(
+        "warning: #{nsid} ref #{inspect(ref)} at #{location} is not in the corpus; " <>
+          "fields using it generate as term()"
+      )
+    end)
+  end
+
   defp scope(specs, nil), do: specs
 
   defp scope(specs, source) do
     Enum.filter(specs, &String.starts_with?(&1.nsid, source))
   end
 
-  defp check(specs, source) do
+  defp check(specs, source, out_dir) do
     drifted =
       Enum.filter(specs, fn %{path: rel, code: code} ->
-        path = Path.join(@output_dir, rel)
+        path = Path.join(out_dir, rel)
         File.exists?(path) && File.read!(path) != code
       end)
 
     missing =
-      Enum.filter(specs, fn %{path: rel} -> not File.exists?(Path.join(@output_dir, rel)) end)
+      Enum.filter(specs, fn %{path: rel} -> not File.exists?(Path.join(out_dir, rel)) end)
 
     # Stale generated files (present on disk, no longer produced)
     produced = MapSet.new(specs, & &1.path)
     scope_glob = if source, do: "#{@sources[source]}/**/*.ex", else: "**/*.ex"
 
     stale =
-      @output_dir
+      out_dir
       |> Path.join(scope_glob)
       |> Path.wildcard()
-      |> Enum.map(&Path.relative_to(&1, @output_dir))
+      |> Enum.map(&Path.relative_to(&1, out_dir))
       |> Enum.reject(&MapSet.member?(produced, &1))
       |> Enum.filter(fn rel ->
         # Only flag files we generated; runtime.ex and friends are hand-written
-        case File.read(Path.join(@output_dir, rel)) do
+        case File.read(Path.join(out_dir, rel)) do
           {:ok, content} -> String.starts_with?(content, @generated_marker)
           _ -> false
         end
@@ -127,8 +345,8 @@ defmodule Mix.Tasks.Exosphere.Gen.Lexicons do
 
     if drifted != [] or missing != [] or stale != [] do
       Enum.each(drifted, &Mix.shell().error("drifted: #{&1.path}"))
-      Enum.each(missing, &Mix.shell().error("missing: #{Path.join(@output_dir, &1.path)}"))
-      Enum.each(stale, &Mix.shell().error("stale: #{Path.join(@output_dir, &1)}"))
+      Enum.each(missing, &Mix.shell().error("missing: #{Path.join(out_dir, &1.path)}"))
+      Enum.each(stale, &Mix.shell().error("stale: #{Path.join(out_dir, &1)}"))
       exit({:shutdown, 1})
     else
       Mix.shell().info("Generated modules up to date (#{length(specs)} files)")
