@@ -12,7 +12,7 @@ defmodule Mix.Tasks.Exosphere.Gen.Lexicons do
 
       mix exosphere.gen.lexicons app.bsky          # → lib/exosphere/bsky/**
       mix exosphere.gen.lexicons community.lexicon # → lib/exosphere/community/**
-      mix exosphere.gen.lexicons com.atproto       # → lib/exosphere/atproto/** (curated)
+      mix exosphere.gen.lexicons com.atproto       # → lib/exosphere/atproto/**
 
   With `--check`, regenerates in memory and exits non-zero if any tracked
   generated file would change (used in CI to catch drift). The check only

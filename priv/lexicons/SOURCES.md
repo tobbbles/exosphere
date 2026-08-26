@@ -10,6 +10,6 @@ All sources are equal citizens: regenerate everything with
 
 | NSID prefix | Vendored at | Generated into | Upstream | Pin |
 |-------------|-------------|----------------|----------|-----|
-| `app.bsky.*` | `app/bsky/**` | `lib/exosphere/bsky` | https://github.com/bluesky-social/atproto/tree/main/lexicons | 79d911fc2bd7 |
-| `com.atproto.*` (curated, 3 files) | `com/atproto/**` | `lib/exosphere/atproto` | same atproto repo as above | 79d911fc2bd7 (refresh-in-place) |
-| `community.lexicon.*` (17 files) | `community/**` | `lib/exosphere/community` | https://tangled.org/lexicon.community/lexicons/tree/main/community (canonical; github.com/lexicon-community/lexicon is a mirror) | synced 2026-08-25 |
+| `app.bsky.*` (164 files) | `app/bsky/**` | `lib/exosphere/bsky` | https://github.com/bluesky-social/atproto/tree/main/lexicons | 4d2097ff37e0 |
+| `com.atproto.*` (95 files) | `com/atproto/**` | `lib/exosphere/atproto` | same atproto repo as above | 4d2097ff37e0 |
+| `community.lexicon.*` (17 files) | `community/**` | `lib/exosphere/community` | https://tangled.org/lexicon.community/lexicons/tree/main/community (canonical; github.com/lexicon-community/lexicon is a mirror) | synced 2026-08-26 |
