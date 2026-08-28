@@ -1,6 +1,8 @@
 defmodule Exosphere.ATProto.Repo.CommitTest do
   use ExUnit.Case, async: true
 
+  doctest Exosphere.ATProto.Repo.Commit
+
   alias Exosphere.ATProto.{CAR, CBOR, CID, Crypto, MST, TestRepoCar, TID}
   alias Exosphere.ATProto.Identity.Document
   alias Exosphere.ATProto.Repo.Commit
