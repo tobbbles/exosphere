@@ -16,6 +16,11 @@ Exosphere is a collection of AT Protocol clients and utilities.
 - `Exosphere.ATProto.*`: lower-level, spec-aligned implementation building blocks (see [atproto.com](https://atproto.com/))
 - `Exosphere.*`: public-facing API modules built on top of `Exosphere.ATProto.*` (XRPC client, OAuth session, firehose consumer, etc.)
 
+Exosphere reads atproto and, increasingly, serves it: alongside the clients
+there are the repository-side primitives a PDS needs — CAR encoding, an
+incrementally-updated MST, inclusion and covering proofs, commit signing, and
+firehose emission.
+
 ## Getting started
 
 ### Installation
@@ -29,6 +34,15 @@ def deps do
   ]
 end
 ```
+
+#### Build requirements
+
+Exosphere compiles a small Rust NIF (`native/exosphere_blake3`) for BLAKE3 with
+extendable output, which `Exosphere.ATProto.Spaces.Lthash` needs and no
+published Elixir binding provides. Building it needs a **Rust toolchain**
+([rustup](https://rustup.rs/)) on the machine that compiles the project. The
+`ex_secp256k1` dependency already ships a NIF, but as a precompiled artifact;
+this one builds from source.
 
 ### Quickstart: XRPC client
 
@@ -220,6 +234,49 @@ Before publishing, lint your lexicon documents against the spec rules
 $ mix exosphere.lint.lexicons my_lexicon.json
 ```
 
+## Serving atproto
+
+Most of exosphere reads atproto. These are the pieces for the other direction —
+the repository-side primitives a server needs — usable individually or together:
+
+| Concern | Reading | Serving |
+|---|---|---|
+| CAR archives | `CAR.decode_full/1` | `CAR.encode/3`, `CAR.encode_iodata/3`, `CAR.decode_raw/1` |
+| The record tree | `MST.build/1`, `MST.read/2` | `MST.apply_ops/3`, `MST.overlay/2` |
+| Proofs | — | `MST.proof/3`, `MST.covering_proof/4`, `MST.invert/3`, `MST.diff/3` |
+| Commits | `Repo.Commit.verify/3` | `Repo.Commit.build/4`, `Repo.Commit.sign/3` |
+| The firehose | `Firehose.Consumer`, `Frame.decode/1` | `Firehose.Emitter`, `Frame.encode_message/2` |
+
+`Exosphere.ATProto.Firehose.Emitter` composes them: it applies the writes to
+the tree, signs a commit over the new root, assembles the CAR slice, and frames
+it.
+
+```elixir
+alias Exosphere.ATProto.Firehose.Emitter
+
+{:ok, result} =
+  Emitter.commit(blocks,
+    did: did,
+    seq: next_seq(),
+    private_key: signing_key,
+    root: current_mst_root,
+    writes: [{:create, "app.bsky.feed.post/3lbqmqtqhpk2a", %{"text" => "hello"}}]
+  )
+
+broadcast(result.frame)
+persist(result.blocks)
+```
+
+The commit carries a covering proof, so a consumer holding no repository state
+can verify it on its own — check the signature, run the operations backwards,
+and confirm they land on the previous root.
+
+Storage stays yours. Blocks go in as a `%{CID => bytes}` map or a
+`fn cid -> {:ok, bytes} | :error end` for a repository too big to hold in one,
+and new blocks come back for you to persist — nothing is written anywhere, no
+process is started, and no supervision tree is owned. Writes touch only the
+tree nodes on the operated paths rather than rebuilding the repository.
+
 ## Notes
 
 - The consumer **reconnects automatically** on disconnects and errors,
@@ -231,7 +288,8 @@ $ mix exosphere.lint.lexicons my_lexicon.json
 
 This project uses GitHub Actions:
 
-- **CI**: runs `mix format --check-formatted`, `mix credo --strict`, `mix test`, and `mix dialyzer` on pushes + PRs.
+- **CI**: runs `mix format --check-formatted`, `mix credo --strict`, `mix test`, and `mix dialyzer` on pushes + PRs. Jobs install a Rust toolchain for the BLAKE3 NIF and cache its build.
+- **Network-backed suites**: `mix test` excludes them. `mix test --only live` runs discovery against real Bluesky infrastructure; `mix test --only external` re-verifies the Spaces spec pins against the current alpha lexicons and runs the serving primitives over a real repository.
 - **Auto-versioning on merge**: when a PR is merged into `main`, a workflow requires exactly one label: `major`, `minor`, or `patch`. It bumps `mix.exs`, commits, tags `vX.Y.Z`, and pushes (which triggers the Hex release workflow).
 - **Release**: pushing a tag like `v0.1.0` publishes the package + docs to Hex.
 

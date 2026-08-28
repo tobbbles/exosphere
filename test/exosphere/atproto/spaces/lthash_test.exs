@@ -1,6 +1,8 @@
 defmodule Exosphere.ATProto.Spaces.LthashTest do
   @moduledoc false
   use ExUnit.Case, async: true
+
+  doctest Exosphere.ATProto.Spaces.Lthash
   use ExUnitProperties
 
   alias Exosphere.ATProto.Spaces.Lthash
@@ -116,6 +118,54 @@ defmodule Exosphere.ATProto.Spaces.LthashTest do
       batch = Enum.reduce(elements, Lthash.new(), &Lthash.add(&2, &1))
 
       assert Lthash.state(incremental) == Lthash.state(batch)
+    end
+  end
+
+  describe "add_many/2 and remove_many/2" do
+    test "match folding one element at a time" do
+      elements = for i <- 1..200, do: "com.example.rec/3jqfcqzm3fx#{i}/bafy#{i}"
+
+      one_at_a_time = Enum.reduce(elements, Lthash.new(), &Lthash.add(&2, &1))
+      in_one_call = Lthash.add_many(Lthash.new(), elements)
+
+      assert Lthash.equal?(one_at_a_time, in_one_call)
+    end
+
+    test "remove_many is the exact inverse of add_many" do
+      elements = for i <- 1..100, do: "com.example.rec/3jqfcqzm3fx#{i}/bafy#{i}"
+
+      set = Lthash.add_many(Lthash.new(), elements)
+      refute Lthash.empty?(set)
+
+      assert Lthash.empty?(Lthash.remove_many(set, elements))
+    end
+
+    test "an empty batch is a no-op" do
+      set = Lthash.add(Lthash.new(), "one")
+
+      assert Lthash.equal?(Lthash.add_many(set, []), set)
+      assert Lthash.equal?(Lthash.remove_many(set, []), set)
+    end
+
+    test "order still does not matter in bulk" do
+      elements = for i <- 1..50, do: "com.example.rec/3jqfcqzm3fx#{i}/bafy#{i}"
+
+      assert Lthash.equal?(
+               Lthash.add_many(Lthash.new(), elements),
+               Lthash.add_many(Lthash.new(), Enum.shuffle(elements))
+             )
+    end
+
+    # The bulk path exists so a full-repo verification is one dirty-scheduled
+    # NIF call rather than tens of thousands of boundary crossings. A generous
+    # bound, to catch it regressing to per-element work.
+    test "folds a repo-sized batch quickly" do
+      elements = for i <- 1..10_000, do: "com.example.rec/3jqfcqzm3fx#{i}/bafy#{i}"
+
+      {micros, folded} = :timer.tc(fn -> Lthash.add_many(Lthash.new(), elements) end)
+
+      refute Lthash.empty?(folded)
+      assert micros < 500_000, "folding 10k elements took #{micros / 1000}ms"
     end
   end
 end

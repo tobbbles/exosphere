@@ -2,7 +2,10 @@ defmodule Exosphere.ATProto.Spaces.Blake3Test do
   @moduledoc false
   use ExUnit.Case, async: true
 
+  doctest Exosphere.ATProto.Spaces.Blake3
+
   alias Exosphere.ATProto.Spaces.Blake3
+  alias Exosphere.ATProto.Spaces.Blake3.Reference
 
   # Official vectors from the BLAKE3 repo (input[i] = i % 251).
   @official_vectors [
@@ -61,19 +64,49 @@ defmodule Exosphere.ATProto.Spaces.Blake3Test do
     end
   end
 
-  # The BLAKE3 decision (pure Elixir, no new dependency): verification folds
-  # one 2048-byte expansion per record per checkpoint — never per firehose
-  # frame — so single-digit-millisecond expansions keep sync comfortably
-  # interactive. This is a generous regression bound, not a bench target.
-  test "element expansion stays in the interactive range" do
+  # The NIF and the pure-Elixir implementation it replaced are independent
+  # implementations of the same spec — the reference one was written straight
+  # from the BLAKE3 reference code, this one binds the upstream Rust crate — so
+  # agreement between them is real evidence, not a tautology. Probed across
+  # both chunk boundaries and output lengths, including the dirty-scheduler
+  # threshold.
+  test "agrees with the pure-Elixir reference implementation" do
+    inputs = [
+      <<>>,
+      "a",
+      "an element string",
+      pattern(1023),
+      pattern(1024),
+      pattern(1025),
+      pattern(4096),
+      # past the 256KiB threshold, so this exercises hash_xof_dirty/2
+      pattern(300_000)
+    ]
+
+    for input <- inputs, len <- [1, 32, 33, 64, 65, 2048] do
+      assert Blake3.hash(input, len) == Reference.hash(input, len),
+             "NIF and reference disagree at input #{byte_size(input)}B, output #{len}B"
+    end
+  end
+
+  # The BLAKE3 decision (a NIF over the upstream Rust crate — the `:blake3` Hex
+  # package exposes only the fixed 32-byte digest, with no XOF, so it cannot
+  # back LtHash at all): verification folds one 2048-byte expansion per record,
+  # so a large repo folds tens of thousands of them. The pure-Elixir predecessor
+  # ran ~292µs per expansion; the NIF runs ~1µs. These are generous regression
+  # bounds, not bench targets — they are here to catch the NIF silently falling
+  # back or the build losing :release mode.
+  test "element expansion is native-fast" do
     element =
       "com.example.groupPost/3jwdwj2ctlk26/bafyreidhesplazc3hl7eado7q7kjtg6dijzsiusug74uay5vh4atxszqm4"
 
-    {micros, _} = :timer.tc(fn -> Blake3.hash(element, 2048) end)
-    assert micros < 50_000, "single expansion took #{micros / 1000}ms"
+    # warm the code path so the first-call cost is not measured
+    Blake3.hash(element, 2048)
 
-    {micros, _} = :timer.tc(fn -> for(_ <- 1..100, do: Blake3.hash(element, 2048)) end)
-    assert micros < 3_000_000, "100 expansions took #{micros / 1000}ms"
+    {micros, _} = :timer.tc(fn -> for(_ <- 1..1_000, do: Blake3.hash(element, 2048)) end)
+
+    assert micros < 200_000,
+           "1000 expansions took #{micros / 1000}ms — expected well under 200ms natively"
   end
 
   defp pattern(0), do: <<>>
