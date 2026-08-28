@@ -139,11 +139,21 @@ defmodule Exosphere.ATProto.Spaces.SimpleSpace do
   (`com.atproto.simplespace.checkUserAccess`): given a user and space, the
   verdict the authority asked for. Served by the managing app — this is the
   caller side exosphere consumers need to implement one.
+
+  The user's DID goes on the wire as `user`, not `did`. Pass `:client_id` when
+  a client attestation was presented, so the managing app can gate on the app
+  as well as the user.
+
+  The response is `%{"authorized" => boolean}`.
   """
   @spec check_user_access(String.t(), String.t(), String.t(), auth(), keyword()) ::
           {:ok, map()} | {:error, term()}
   def check_user_access(endpoint, space_ref, did, auth, opts \\ []) do
-    query(endpoint, "checkUserAccess", %{space: space_ref, did: did}, auth, opts)
+    params =
+      %{space: space_ref, user: did}
+      |> maybe_put("clientId", Keyword.get(opts, :client_id))
+
+    query(endpoint, "checkUserAccess", params, auth, opts)
   end
 
   # -- wire shapes ---------------------------------------------------------------

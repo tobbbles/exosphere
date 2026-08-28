@@ -15,6 +15,13 @@ defmodule Exosphere.ATProto.Spaces.Lthash do
   `@noble/hashes`, the library the reference uses): the empty digest, and the
   digest after folding the elements `"one"` and `"two"`.
 
+  Expansion and lane folding both happen in the BLAKE3 NIF
+  (`Exosphere.ATProto.Spaces.Blake3`), fused into one native call — a full-repo
+  verification folds one element per record, so this is the sync path's hot
+  loop. Use `add_many/2` and `remove_many/2` for bulk folds: they hand the
+  whole batch to a single dirty-scheduled call instead of crossing the NIF
+  boundary once per record.
+
   ## Examples
 
       iex> alias Exosphere.ATProto.Spaces.Lthash
@@ -22,9 +29,7 @@ defmodule Exosphere.ATProto.Spaces.Lthash do
       "E5A00AA9991AC8A5EE3109844D84A55583BD20572AD3FFCD42792F3C36B183AD"
   """
 
-  import Bitwise
-
-  alias Exosphere.ATProto.Spaces.Blake3
+  alias Exosphere.ATProto.Spaces.Blake3.Native
 
   @lanes 1024
   @lane_bytes 2
@@ -63,7 +68,20 @@ defmodule Exosphere.ATProto.Spaces.Lthash do
   """
   @spec add(t(), String.t()) :: t()
   def add(%__MODULE__{state: state}, element) when is_binary(element) do
-    %__MODULE__{state: lane_fold(state, Blake3.hash(element, @state_bytes), &+/2)}
+    %__MODULE__{state: Native.lthash_fold(state, element, true)}
+  end
+
+  @doc """
+  Add many elements in one native call.
+
+  Equivalent to `Enum.reduce(elements, set, &add(&2, &1))`, but crosses the NIF
+  boundary once — the difference matters when folding a whole repo.
+  """
+  @spec add_many(t(), [String.t()]) :: t()
+  def add_many(%__MODULE__{} = set, []), do: set
+
+  def add_many(%__MODULE__{state: state}, elements) when is_list(elements) do
+    %__MODULE__{state: Native.lthash_fold_many(state, elements, true)}
   end
 
   @doc """
@@ -71,7 +89,17 @@ defmodule Exosphere.ATProto.Spaces.Lthash do
   """
   @spec remove(t(), String.t()) :: t()
   def remove(%__MODULE__{state: state}, element) when is_binary(element) do
-    %__MODULE__{state: lane_fold(state, Blake3.hash(element, @state_bytes), &-/2)}
+    %__MODULE__{state: Native.lthash_fold(state, element, false)}
+  end
+
+  @doc """
+  Remove many elements in one native call.
+  """
+  @spec remove_many(t(), [String.t()]) :: t()
+  def remove_many(%__MODULE__{} = set, []), do: set
+
+  def remove_many(%__MODULE__{state: state}, elements) when is_list(elements) do
+    %__MODULE__{state: Native.lthash_fold_many(state, elements, false)}
   end
 
   @doc """
@@ -92,13 +120,4 @@ defmodule Exosphere.ATProto.Spaces.Lthash do
   """
   @spec equal?(t(), t()) :: boolean()
   def equal?(%__MODULE__{state: a}, %__MODULE__{state: b}), do: a == b
-
-  # Lane-wise (a ⊕op b) mod 2^16 over little-endian u16 lanes. Wrapping is a
-  # mask, so subtraction of a larger lane borrows from nothing — mod 2^16.
-  defp lane_fold(<<a::little-16, rest_a::binary>>, <<b::little-16, rest_b::binary>>, op) do
-    lane = op.(a, b) &&& 0xFFFF
-    <<lane::little-16, lane_fold(rest_a, rest_b, op)::binary>>
-  end
-
-  defp lane_fold(<<>>, <<>>, _op), do: <<>>
 end
