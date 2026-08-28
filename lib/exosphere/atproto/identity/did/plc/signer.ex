@@ -21,12 +21,13 @@ defmodule Exosphere.ATProto.Identity.DID.PLC.Signer do
   bits, or whitespace is rejected before it ever reaches the curve.
   """
 
-  alias Exosphere.ATProto.CBOR
   alias Exosphere.ATProto.Crypto
   alias Exosphere.ATProto.Identity.DID.PLC.Operation
 
   @did_prefix "did:plc:"
   @did_length 24
+
+  @whitespace ~r/\s/
 
   @doc """
   Sign an unsigned operation, returning it with `sig` set.
@@ -118,15 +119,9 @@ defmodule Exosphere.ATProto.Identity.DID.PLC.Signer do
   """
   @spec cid(Operation.t()) :: {:ok, String.t()} | {:error, term()}
   def cid(op) when is_map(op) do
-    case CBOR.encode(op) do
-      {:ok, _bytes} ->
-        case Exosphere.ATProto.CID.create(op) do
-          {:ok, cid} -> {:ok, Exosphere.ATProto.CID.encode(cid)}
-          error -> error
-        end
-
-      error ->
-        error
+    # CID.create encodes (and therefore validates encodability) itself.
+    with {:ok, cid} <- Exosphere.ATProto.CID.create(op) do
+      {:ok, Exosphere.ATProto.CID.encode(cid)}
     end
   end
 
@@ -151,7 +146,7 @@ defmodule Exosphere.ATProto.Identity.DID.PLC.Signer do
       String.contains?(sig, "=") ->
         {:error, :signature_padding_chars}
 
-      String.match?(sig, ~r/\s/) ->
+      String.match?(sig, @whitespace) ->
         {:error, :signature_whitespace}
 
       true ->

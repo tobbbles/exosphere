@@ -48,9 +48,11 @@ defmodule Exosphere.ATProto.Identity.DID.PLC do
           backoff_ms: pos_integer()
         ]
 
-  # The directory tightened the production limit to 4 KB (from the spec's
-  # 7.5 KB); refusing locally beats a rejected round trip.
-  @max_operation_bytes 4096
+  # The production directory caps an operation at 4,000 bytes of DAG-CBOR
+  # (MAX_OP_BYTES in did-method-plc/did-method-plc packages/server/src/
+  # constraints.ts), tightened from the spec text's 7,500; refusing locally
+  # beats a rejected round trip.
+  @max_operation_bytes 4000
 
   @doc """
   Resolve a did:plc to its DID Document.
@@ -183,7 +185,12 @@ defmodule Exosphere.ATProto.Identity.DID.PLC do
 
   Retries on transport failures and 5xx responses with linear backoff. A 4xx
   is **not** retried — the directory has judged the operation invalid, and
-  resending it unchanged cannot help.
+  resending it unchanged cannot help. The exception is **429**: it comes from
+  infrastructure rate limiting (the directory's own limits answer 400), not a
+  judgment on the operation, so it retries like a 5xx.
+
+  Note that the directory rate-limits *per DID* — 10 operations an hour, 30 a
+  day, 100 a week — and retries count against those limits.
 
   Submission is idempotent at the directory: resubmitting an operation the
   directory already holds is accepted rather than duplicated, so a retry
@@ -218,6 +225,14 @@ defmodule Exosphere.ATProto.Identity.DID.PLC do
       {:ok, %{status: status}} when status in 200..299 ->
         Logger.debug("[DID.PLC] Operation accepted for #{did}")
         {:ok, did}
+
+      {:ok, %{status: 429}} when attempt < max_attempts ->
+        Logger.warning("[DID.PLC] HTTP 429 (rate limited) for #{did}, retrying")
+        Process.sleep(backoff * attempt)
+        do_submit(did, op, opts, attempt + 1)
+
+      {:ok, %{status: 429}} ->
+        {:error, {:http_error, 429}}
 
       {:ok, %{status: status, body: body}} when status in 400..499 ->
         Logger.error("[DID.PLC] Operation rejected for #{did}: #{inspect(body, limit: 200)}")

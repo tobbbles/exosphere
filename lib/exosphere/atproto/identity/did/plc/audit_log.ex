@@ -46,6 +46,27 @@ defmodule Exosphere.ATProto.Identity.DID.PLC.AuditLog do
   (The directory has historically accepted operations that do not satisfy its
   own rules — see did-method-plc issue #109 — so "the directory stored it"
   is not evidence of validity.)
+
+  ## Strictness vs the directory
+
+  Shape rules follow the *spec*, which in places is stricter than what the
+  production directory actually enforces: the spec allows at most 5 rotation
+  keys while the directory accepts up to 10 (`MAX_ROTATION_ENTRIES` in its
+  `constraints.ts`), and the spec's 7,500-byte operation cap is enforced at
+  4,000. A legitimate directory-stored log can therefore fail validation
+  here. That is deliberate — this module validates what an operation
+  *should* be, not everything the directory has ever admitted — but callers
+  screening arbitrary directory logs should know the divergence exists.
+
+  ## Malformed input
+
+  Entries are validated before they are trusted: `cid` must be present (and
+  is recomputed from the operation bytes — a log is a content-addressed
+  chain, so a reported CID that does not match its own operation is
+  malformed however well it links), `operation` must be a map, every
+  entry's `did` must agree with the DID the genesis operation derives, and
+  timestamps must be strictly increasing along the chain — the reference
+  implementation enforces the same.
   """
 
   alias Exosphere.ATProto.Identity.DID.PLC.Operation
@@ -69,7 +90,12 @@ defmodule Exosphere.ATProto.Identity.DID.PLC.AuditLog do
   def validate([]), do: {:error, :empty_log}
 
   def validate(entries) when is_list(entries) do
-    with :ok <- validate_genesis(hd(entries)),
+    # The first entry is validated before anything dereferences it; the rest
+    # are checked inside the walk.
+    with :ok <- check_entry(hd(entries), %{}),
+         :ok <- validate_genesis(hd(entries)),
+         {:ok, did} <- Signer.derive_did(hd(entries)["operation"]),
+         :ok <- check_entry_dids(entries, did),
          {:ok, nullified} <- walk(entries, %{}, nil, MapSet.new()),
          :ok <- validate_active_shapes(entries, nullified) do
       {:ok, nullified}
@@ -119,52 +145,89 @@ defmodule Exosphere.ATProto.Identity.DID.PLC.AuditLog do
 
   # -- the walk --------------------------------------------------------------
 
-  # `seen` maps cid -> %{entry, signer_index, nullified?}; `head` is the CID of
-  # the current active tip.
+  # `seen` maps cid -> %{entry, signer_index}; `head` is the CID of the
+  # current active tip.
   defp walk([], _seen, _head, nullified), do: {:ok, nullified}
 
   defp walk([entry | rest], seen, head, nullified) do
-    op = entry["operation"]
-
-    with {:ok, signer_index, nullified} <- link(entry, op, seen, head, nullified) do
+    with :ok <- check_entry(entry, seen),
+         :ok <- check_cid(entry),
+         {:ok, signer_index, nullified} <- link(entry, seen, head, nullified) do
       seen = Map.put(seen, entry["cid"], %{entry: entry, signer_index: signer_index})
       walk(rest, seen, entry["cid"], nullified)
     end
   end
 
-  # Genesis: self-signed by one of its own rotation keys.
-  defp link(entry, op, seen, _head, nullified) when map_size(seen) == 0 do
-    case Signer.verify_with_keys(op, Operation.rotation_keys(op)) do
-      {:ok, index} ->
-        with :ok <- check_did(entry, op), do: {:ok, index, nullified}
-
-      {:error, _} ->
-        {:error, {:invalid_signature, entry["cid"]}}
+  # Malformed input is an error, not a crash: log entries are untrusted wire
+  # data. The directory never repeats a CID, so a repeat is malformed input.
+  defp check_entry(entry, seen) do
+    cond do
+      not is_map(entry) -> {:error, {:invalid_entry, :not_a_map}}
+      not is_binary(entry["cid"]) -> {:error, {:invalid_entry, :missing_cid}}
+      not is_map(entry["operation"]) -> {:error, {:invalid_entry, :missing_operation}}
+      Map.has_key?(seen, entry["cid"]) -> {:error, {:duplicate_cid, entry["cid"]}}
+      true -> :ok
     end
   end
 
-  defp link(entry, op, seen, head, nullified) do
-    prev = Map.get(op, "prev")
+  # The reported CID is recomputed from the operation bytes and must agree.
+  # As well as parity with the reference implementation, this pins `seen` to
+  # content-addressed keys an attacker cannot choose freely.
+  defp check_cid(entry) do
+    case Signer.cid(entry["operation"]) do
+      {:ok, cid} ->
+        if cid == entry["cid"] do
+          :ok
+        else
+          {:error, {:cid_mismatch, expected: cid, got: entry["cid"]}}
+        end
 
-    case Map.get(seen, prev) do
+      error ->
+        error
+    end
+  end
+
+  # Genesis: self-signed by one of its own rotation keys.
+  defp link(entry, seen, _head, nullified) when map_size(seen) == 0 do
+    op = entry["operation"]
+
+    case Signer.verify_with_keys(op, Operation.rotation_keys(op)) do
+      {:ok, index} -> {:ok, index, nullified}
+      {:error, _} -> {:error, {:invalid_signature, entry["cid"]}}
+    end
+  end
+
+  defp link(entry, seen, head, nullified) do
+    op = entry["operation"]
+
+    case Map.get(op, "prev") do
+      # A null `prev` this deep in the log is a second genesis, not a lookup
+      # miss — report it as what it is.
       nil ->
-        {:error, {:unknown_prev, prev}}
+        {:error, {:unexpected_genesis, entry["cid"]}}
 
-      %{entry: prev_entry} ->
-        cond do
-          MapSet.member?(nullified, prev) ->
-            {:error, {:builds_on_nullified, entry["cid"]}}
+      prev ->
+        case Map.get(seen, prev) do
+          nil ->
+            {:error, {:unknown_prev, prev}}
 
-          Operation.tombstone?(prev_entry["operation"]) ->
-            {:error, {:builds_on_tombstone, entry["cid"]}}
+          %{entry: prev_entry} ->
+            cond do
+              MapSet.member?(nullified, prev) ->
+                {:error, {:builds_on_nullified, entry["cid"]}}
 
-          true ->
-            verify_link(entry, op, prev, prev_entry, seen, head, nullified)
+              Operation.tombstone?(prev_entry["operation"]) ->
+                {:error, {:builds_on_tombstone, entry["cid"]}}
+
+              true ->
+                verify_link(entry, prev, prev_entry, seen, head, nullified)
+            end
         end
     end
   end
 
-  defp verify_link(entry, op, prev, prev_entry, seen, head, nullified) do
+  defp verify_link(entry, prev, prev_entry, seen, head, nullified) do
+    op = entry["operation"]
     keys = Operation.rotation_keys(prev_entry["operation"])
 
     case Signer.verify_with_keys(op, keys) do
@@ -172,10 +235,17 @@ defmodule Exosphere.ATProto.Identity.DID.PLC.AuditLog do
         {:error, {:invalid_signature, entry["cid"]}}
 
       {:ok, index} ->
-        if prev == head do
-          {:ok, index, nullified}
-        else
-          fork(entry, prev, index, seen, head, nullified)
+        # Timestamps are server-assigned and strictly ordered: against the
+        # predecessor for an extension, against the head for a fork — the
+        # reference implementation enforces the same.
+        anchor = if prev == head, do: prev_entry, else: Map.fetch!(seen, head).entry
+
+        with :ok <- check_chronology(entry, anchor) do
+          if prev == head do
+            {:ok, index, nullified}
+          else
+            fork(entry, prev, index, seen, head, nullified)
+          end
         end
     end
   end
@@ -241,6 +311,17 @@ defmodule Exosphere.ATProto.Identity.DID.PLC.AuditLog do
     end
   end
 
+  defp check_chronology(entry, anchor_entry) do
+    with {:ok, at} <- timestamp(entry),
+         {:ok, anchor_at} <- timestamp(anchor_entry) do
+      if DateTime.compare(at, anchor_at) == :gt do
+        :ok
+      else
+        {:error, {:invalid_timestamp_order, entry["cid"]}}
+      end
+    end
+  end
+
   defp validate_genesis(entry) do
     if is_nil(Map.get(entry["operation"], "prev")) do
       :ok
@@ -249,18 +330,15 @@ defmodule Exosphere.ATProto.Identity.DID.PLC.AuditLog do
     end
   end
 
-  # The DID a genesis operation derives must be the DID the log is for.
-  defp check_did(entry, op) do
-    case Signer.derive_did(op) do
-      {:ok, did} ->
-        case Map.get(entry, "did") do
-          nil -> :ok
-          ^did -> :ok
-          other -> {:error, {:did_mismatch, expected: did, got: other}}
-        end
-
-      error ->
-        error
-    end
+  # Every entry in a log belongs to the DID its genesis derives. A missing
+  # `did` is tolerated (it is redundant data), a disagreeing one is not.
+  defp check_entry_dids(entries, did) do
+    Enum.reduce_while(entries, :ok, fn entry, :ok ->
+      case Map.get(entry, "did") do
+        nil -> {:cont, :ok}
+        ^did -> {:cont, :ok}
+        other -> {:halt, {:error, {:did_mismatch, expected: did, got: other}}}
+      end
+    end)
   end
 end

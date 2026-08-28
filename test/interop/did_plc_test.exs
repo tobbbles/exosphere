@@ -13,9 +13,29 @@ defmodule Exosphere.Interop.DIDPLCTest do
   use ExUnit.Case, async: true
 
   alias Exosphere.ATProto.Crypto
+  alias Exosphere.ATProto.Identity.DID.PLC
   alias Exosphere.ATProto.Identity.DID.PLC.AuditLog
   alias Exosphere.ATProto.Identity.DID.PLC.Operation
   alias Exosphere.ATProto.Identity.DID.PLC.Signer
+
+  # Scripts a sequence of POST responses through the process dictionary
+  # (submit/3 runs in the caller's process, so no agent is needed) and
+  # counts how many attempts were made.
+  defmodule SubmitHTTP do
+    @moduledoc false
+    @behaviour Exosphere.ATProto.HTTP.Behaviour
+
+    def post(_url, _opts \\ []) do
+      Process.put(:post_count, Process.get(:post_count, 0) + 1)
+      [next | rest] = Process.get(:post_responses)
+      Process.put(:post_responses, rest)
+      next
+    end
+
+    def posts, do: Process.get(:post_count, 0)
+
+    def get(_url, _opts \\ []), do: {:ok, %{status: 404, body: %{}}}
+  end
 
   @root Path.expand(Path.join([__DIR__, "..", "fixtures", "did-plc"]))
 
@@ -30,20 +50,23 @@ defmodule Exosphere.Interop.DIDPLCTest do
     log_nullified_tombstone
   )
 
-  @invalid ~w(
-    log_invalid_nullification_too_slow
-    log_invalid_nullification_reused_key
-    log_invalid_update_nullified
-    log_invalid_update_tombstoned
-    log_invalid_sig_k256_high_s
-    log_invalid_sig_p256_high_s
-    log_invalid_sig_der
-    log_invalid_sig_b64_padding_chars
-    log_invalid_sig_b64_padding_bits
-    log_invalid_sig_b64_newline
-    log_duplicate_rotation_keys
-    log_empty_rotation_keys
-  )
+  # Each invalid log must be rejected for its OWN reason — a rule regressing
+  # into over-strictness would keep a boolean test green while the fixture
+  # stopped testing what it exists to test.
+  @invalid_reasons %{
+    log_invalid_nullification_too_slow: :recovery_window_expired,
+    log_invalid_nullification_reused_key: :insufficient_authority,
+    log_invalid_update_nullified: :builds_on_nullified,
+    log_invalid_update_tombstoned: :builds_on_tombstone,
+    log_invalid_sig_k256_high_s: :invalid_signature,
+    log_invalid_sig_p256_high_s: :invalid_signature,
+    log_invalid_sig_der: :invalid_signature,
+    log_invalid_sig_b64_padding_chars: :invalid_signature,
+    log_invalid_sig_b64_padding_bits: :invalid_signature,
+    log_invalid_sig_b64_newline: :invalid_signature,
+    log_duplicate_rotation_keys: :duplicate_rotation_keys,
+    log_empty_rotation_keys: :empty_rotation_keys
+  }
 
   defp log(name) do
     @root |> Path.join("#{name}.json") |> File.read!() |> Jason.decode!()
@@ -67,15 +90,129 @@ defmodule Exosphere.Interop.DIDPLCTest do
   end
 
   describe "invalid audit logs" do
-    test "every invalid fixture is rejected" do
-      accepted =
-        for name <- @invalid,
-            AuditLog.validate_against_flags(log(name)) == :ok,
-            do: name
+    test "every invalid fixture is rejected for its specific reason" do
+      for {name, expected} <- @invalid_reasons do
+        assert {:error, {^expected, _cid}} = AuditLog.validate(log(name)),
+               "#{name} should be rejected with #{inspect(expected)}"
+      end
+    end
+  end
 
-      assert accepted == [],
-             "logs that should be rejected were accepted:\n" <>
-               Enum.map_join(accepted, "\n", &"  - #{&1}")
+  describe "malformed logs" do
+    test "entries missing cid or operation are errors, not crashes" do
+      [g | _] = log("log_tombstone")
+
+      assert {:error, {:invalid_entry, :missing_cid}} = AuditLog.validate([Map.delete(g, "cid")])
+
+      assert {:error, {:invalid_entry, :missing_operation}} =
+               AuditLog.validate([Map.delete(g, "operation")])
+
+      assert {:error, {:invalid_entry, :not_a_map}} = AuditLog.validate(["not an entry"])
+      assert {:error, {:duplicate_cid, _}} = AuditLog.validate([g, g])
+    end
+
+    test "a reported CID that does not match the operation bytes is rejected" do
+      [e0, e1 | _] = log("log_tombstone")
+
+      assert {:error, {:cid_mismatch, expected: _, got: "bafyreiFAKE"}} =
+               AuditLog.validate([%{e0 | "cid" => "bafyreiFAKE"}, e1])
+    end
+
+    test "entries belonging to a different DID are rejected" do
+      [e0, e1 | _] = log("log_tombstone")
+
+      assert {:error, {:did_mismatch, expected: _, got: "did:plc:zzzzzzzzzzzzzzzzzzzzzzzz"}} =
+               AuditLog.validate([e0, %{e1 | "did" => "did:plc:zzzzzzzzzzzzzzzzzzzzzzzz"}])
+    end
+
+    test "timestamps must strictly increase along the chain" do
+      [e0, e1 | _] = log("log_tombstone")
+
+      assert {:error, {:invalid_timestamp_order, _}} =
+               AuditLog.validate([e0, %{e1 | "createdAt" => e0["createdAt"]}])
+    end
+
+    test "a second genesis is rejected as such, not as an unknown prev" do
+      [g | _] = log("log_tombstone")
+
+      {:ok, kp} = Crypto.generate_keypair(:secp256k1)
+      {:ok, dk} = Crypto.to_did_key(kp.public_key, :secp256k1)
+      {:ok, op} = Operation.new(rotation_keys: [dk])
+      {:ok, signed} = Signer.sign(op, kp.private_key, :secp256k1)
+      {:ok, cid} = Signer.cid(signed)
+
+      second = %{
+        "did" => g["did"],
+        "operation" => signed,
+        "cid" => cid,
+        "nullified" => false,
+        "createdAt" => "2100-01-01T00:00:00Z"
+      }
+
+      assert {:error, {:unexpected_genesis, ^cid}} = AuditLog.validate([g, second])
+    end
+  end
+
+  describe "submission" do
+    setup do
+      {:ok, keypair} = Crypto.generate_keypair(:secp256k1)
+      {:ok, did_key} = Crypto.to_did_key(keypair.public_key, :secp256k1)
+
+      {:ok, op} = Operation.new(rotation_keys: [did_key], also_known_as: ["at://a.example.com"])
+      {:ok, signed} = Signer.sign(op, keypair.private_key, :secp256k1)
+      {:ok, did} = Signer.derive_did(signed)
+
+      Process.put(:post_count, 0)
+      %{signed: signed, did: did}
+    end
+
+    test "an accepted operation returns the DID", ctx do
+      Process.put(:post_responses, [{:ok, %{status: 200, body: %{}}}])
+
+      assert {:ok, did} = PLC.submit(ctx.did, ctx.signed, http_client: SubmitHTTP)
+      assert did == ctx.did
+      assert SubmitHTTP.posts() == 1
+    end
+
+    test "a 429 retries like a 5xx rather than counting as rejected", ctx do
+      Process.put(:post_responses, [{:ok, %{status: 429}}, {:ok, %{status: 200, body: %{}}}])
+
+      assert {:ok, _} =
+               PLC.submit(ctx.did, ctx.signed, http_client: SubmitHTTP, backoff_ms: 0)
+
+      assert SubmitHTTP.posts() == 2
+    end
+
+    test "a 429 that never clears surfaces as an HTTP error, not a rejection", ctx do
+      Process.put(:post_responses, [{:ok, %{status: 429}}, {:ok, %{status: 429}}])
+
+      assert {:error, {:http_error, 429}} =
+               PLC.submit(ctx.did, ctx.signed,
+                 http_client: SubmitHTTP,
+                 backoff_ms: 0,
+                 max_attempts: 2
+               )
+
+      assert SubmitHTTP.posts() == 2
+    end
+
+    test "a 4xx is not retried", ctx do
+      Process.put(:post_responses, [{:ok, %{status: 400, body: %{"error" => "nope"}}}])
+
+      assert {:error, {:rejected, 400, _}} =
+               PLC.submit(ctx.did, ctx.signed, http_client: SubmitHTTP)
+
+      assert SubmitHTTP.posts() == 1
+    end
+
+    test "operations over the directory's 4,000-byte cap are refused locally", ctx do
+      big = Map.put(ctx.signed, "alsoKnownAs", ["at://" <> String.duplicate("a", 4_100)])
+
+      assert {:error, {:operation_too_large, size}} =
+               PLC.submit(ctx.did, big, http_client: SubmitHTTP)
+
+      assert size > 4000
+      assert SubmitHTTP.posts() == 0
     end
   end
 
