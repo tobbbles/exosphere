@@ -64,6 +64,22 @@ jobs:
           otp-version: ${{ matrix.otp }}
           version-type: loose
 
+      # The BLAKE3 NIF (native/exosphere_blake3) compiles from source, so every
+      # job that compiles the project needs a Rust toolchain. GitHub's runner
+      # images ship one, but pinning it here keeps the build reproducible when
+      # that changes.
+      - uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache Rust build
+        uses: actions/cache@v6
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            native/exosphere_blake3/target
+          key: ${{ runner.os }}-cargo-${{ hashFiles('native/exosphere_blake3/Cargo.toml', 'native/exosphere_blake3/src/**') }}
+          restore-keys: ${{ runner.os }}-cargo-
+
       - name: Install deps
         run: mix deps.get
 
@@ -91,6 +107,22 @@ jobs:
           elixir-version: "1.19"
           otp-version: "27"
           version-type: loose
+
+      # The BLAKE3 NIF (native/exosphere_blake3) compiles from source, so every
+      # job that compiles the project needs a Rust toolchain. GitHub's runner
+      # images ship one, but pinning it here keeps the build reproducible when
+      # that changes.
+      - uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache Rust build
+        uses: actions/cache@v6
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            native/exosphere_blake3/target
+          key: ${{ runner.os }}-cargo-${{ hashFiles('native/exosphere_blake3/Cargo.toml', 'native/exosphere_blake3/src/**') }}
+          restore-keys: ${{ runner.os }}-cargo-
 
       - name: Install deps
         run: mix deps.get
@@ -132,6 +164,22 @@ jobs:
         with:
           path: priv/plts
           key: ${{ runner.os }}-dialyzer-${{ env.PLT_CACHE_VERSION }}-elixir-${{ steps.toolchain.outputs.elixir }}-erts-${{ steps.toolchain.outputs.erts }}-${{ hashFiles('**/mix.lock') }}
+
+      # The BLAKE3 NIF (native/exosphere_blake3) compiles from source, so every
+      # job that compiles the project needs a Rust toolchain. GitHub's runner
+      # images ship one, but pinning it here keeps the build reproducible when
+      # that changes.
+      - uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache Rust build
+        uses: actions/cache@v6
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            native/exosphere_blake3/target
+          key: ${{ runner.os }}-cargo-${{ hashFiles('native/exosphere_blake3/Cargo.toml', 'native/exosphere_blake3/src/**') }}
+          restore-keys: ${{ runner.os }}-cargo-
 
       - name: Install deps
         run: mix deps.get

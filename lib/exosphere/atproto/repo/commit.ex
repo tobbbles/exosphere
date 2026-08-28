@@ -6,17 +6,38 @@ defmodule Exosphere.ATProto.Repo.Commit do
   ECDSA signature, in low-S form, over the SHA-256 of the *unsigned* commit
   (the same object with the `sig` field removed) encoded as canonical DAG-CBOR.
 
-  This module re-encodes the unsigned commit and verifies the signature against
-  an account's signing key, tying together `Exosphere.ATProto.CBOR`,
+  This module builds and signs commits, and verifies them against an account's
+  signing key, tying together `Exosphere.ATProto.CBOR`,
   `Exosphere.ATProto.Crypto`, and `Exosphere.ATProto.Identity`.
 
   ## Examples
+
+      # Serving: build a commit over a new MST root and sign it
+      commit =
+        Exosphere.ATProto.Repo.Commit.build(did, mst_root, rev)
+        |> Exosphere.ATProto.Repo.Commit.sign!(private_key, :secp256k1)
 
       # With an explicit public key + curve
       :ok = Exosphere.ATProto.Repo.Commit.verify(commit, public_key, :secp256k1)
 
       # Or resolve the signing key straight from a DID Document
       :ok = Exosphere.ATProto.Repo.Commit.verify_with_document(commit, did_document)
+
+  ## `sig` and the bytes asymmetry
+
+  `sign/3` puts the signature in as a tagged CBOR byte string
+  (`%CBOR.Tag{tag: :bytes}`), which is what `Exosphere.ATProto.CBOR.encode/1`
+  needs to emit major type 2 rather than a text string. Decoding goes the other
+  way: `Exosphere.ATProto.CBOR.transform_links/1` unwraps byte strings to plain
+  binaries, which are friendlier to work with but no longer distinguishable
+  from text on the way back out.
+
+  The practical consequence for a server: **keep commit blocks as bytes**. A
+  decoded commit that is re-encoded produces a different CID, because its `sig`
+  comes back as a text string. `Exosphere.ATProto.MST.Store` and
+  `Exosphere.ATProto.CAR.encode/3` both take encoded bytes and pass them
+  through untouched, so a serving path that never round-trips through a decoded
+  map never hits this.
   """
 
   # Aliased under a distinct name so `%CBOR.Tag{}` still refers to the `:cbor`
@@ -26,6 +47,76 @@ defmodule Exosphere.ATProto.Repo.Commit do
   alias Exosphere.ATProto.Identity.Document
 
   @type commit :: %{optional(String.t()) => term()}
+
+  # The current repository commit format. Version 2 is long gone; a producer
+  # emits 3 and a consumer should reject anything else.
+  @commit_version 3
+
+  @doc """
+  The commit format version this module builds (`3`).
+  """
+  @spec version() :: pos_integer()
+  def version, do: @commit_version
+
+  @doc """
+  Build an unsigned commit object.
+
+  `data` is the MST root the commit attests to and `rev` its TID revision,
+  which must increase monotonically for the repository. `prev` is a link to the
+  preceding commit; the current commit format (version 3) leaves it `null`,
+  which is the default.
+
+  The result still needs `sign/3` before it means anything.
+
+  ## Examples
+
+      iex> root = Exosphere.ATProto.CID.create!(%{"l" => nil, "e" => []})
+      iex> commit = Exosphere.ATProto.Repo.Commit.build("did:plc:abc", root, "3lbqmqtqhpk2a")
+      iex> {commit["version"], commit["prev"]}
+      {3, nil}
+  """
+  @spec build(String.t(), CID.t(), String.t(), keyword()) :: commit()
+  def build(did, %CID{} = data, rev, opts \\ []) when is_binary(did) and is_binary(rev) do
+    %{
+      "did" => did,
+      "version" => @commit_version,
+      "data" => data,
+      "rev" => rev,
+      "prev" => Keyword.get(opts, :prev)
+    }
+  end
+
+  @doc """
+  Sign a commit, returning it with its `sig` field.
+
+  The signature covers the SHA-256 of the *unsigned* commit — the same object
+  with `sig` removed — encoded as canonical DAG-CBOR, which is exactly what
+  `verify/3` recomputes. Any `sig` already present is dropped first, so
+  re-signing an existing commit does the right thing.
+
+  The signature goes in as a tagged CBOR byte string; see the note on the
+  bytes asymmetry in this module's documentation.
+  """
+  @spec sign(commit(), binary(), Crypto.curve()) :: {:ok, commit()} | {:error, term()}
+  def sign(commit, private_key, curve) when is_map(commit) do
+    unsigned = unsigned(commit)
+
+    with {:ok, bytes} <- DagCBOR.encode(unsigned),
+         {:ok, sig} <- Crypto.sign(bytes, private_key, curve) do
+      {:ok, Map.put(unsigned, "sig", %CBOR.Tag{tag: :bytes, value: sig})}
+    end
+  end
+
+  @doc """
+  Sign a commit, raising on error.
+  """
+  @spec sign!(commit(), binary(), Crypto.curve()) :: commit()
+  def sign!(commit, private_key, curve) do
+    case sign(commit, private_key, curve) do
+      {:ok, signed} -> signed
+      {:error, reason} -> raise ArgumentError, "commit signing failed: #{inspect(reason)}"
+    end
+  end
 
   @doc """
   Verify a decoded commit object against a public key.

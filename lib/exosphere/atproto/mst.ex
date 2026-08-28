@@ -16,6 +16,17 @@ defmodule Exosphere.ATProto.MST do
   - `read/2` an MST from a root CID and a block store back into a
     `path => CID` map (so you can verify and walk a repository checkout or the
     `blocks` of a firehose commit).
+  - `apply_ops/3` edit a tree in place through an
+    `Exosphere.ATProto.MST.Store`, touching only the paths the operations
+    reach, and return the blocks written (the serving path: a PDS applying a
+    write should not rebuild the repository).
+  - `proof/3` and `covering_proof/4` extract the blocks that prove what the
+    tree says about a set of keys — an inclusion or exclusion proof for
+    `getRecord`, and the covering proof a `#commit` firehose message must
+    carry.
+  - `invert/3` run a commit's operations backwards against those proof blocks
+    to recover the previous root, the consumer half of the inductive firehose.
+  - `diff/3` the blocks reachable from one root but not another.
   - `depth/1` compute the layer of a key, and `valid_key?/1` validate a key.
 
   ## Node format
@@ -43,6 +54,7 @@ defmodule Exosphere.ATProto.MST do
 
   alias Exosphere.ATProto.CAR
   alias Exosphere.ATProto.CBOR, as: DagCBOR
+  alias Exosphere.ATProto.MST.{Node, Store}
   alias Exosphere.ATProto.{CID, NSID, RecordKey}
 
   @max_key_length 1024
@@ -187,6 +199,319 @@ defmodule Exosphere.ATProto.MST do
     end
   end
 
+  # --- Incremental operations --------------------------------------------------
+
+  @doc """
+  Apply record operations to a tree, touching only the paths they reach.
+
+  `root` is the current MST root, or `nil` for a repository that has none yet.
+  `store` is anything `Exosphere.ATProto.MST.Store` accepts — a plain block map
+  for a small tree, `Exosphere.ATProto.MST.Store.ETS` for a repository.
+
+  Operations are `{:put, path, %CID{}}` (create or overwrite) and
+  `{:delete, path}`, applied in order.
+
+  Returns `{:ok, root_cid, store, blocks}`, where `blocks` holds **only the
+  nodes this call wrote**. That is the set a `#commit` firehose message needs
+  for its own changes; add `covering_proof/4` for the unchanged nodes a
+  consumer needs to invert the operations.
+
+  The result is identical, node for node, to `build/1` over the resulting key
+  set — the tree is a function of its keys, so an edited tree and a rebuilt one
+  cannot disagree. The difference is cost: this walks the operated paths, where
+  `build/1` walks everything.
+
+  ## Examples
+
+      iex> {:ok, cid} = Exosphere.ATProto.CID.create(%{"text" => "hi"})
+      iex> {:ok, root, store, _new} =
+      ...>   Exosphere.ATProto.MST.apply_ops(nil, %{}, [
+      ...>     {:put, "app.bsky.feed.post/3jqfcqzm3fx2j", cid}
+      ...>   ])
+      iex> Exosphere.ATProto.MST.read(root, store)
+      {:ok, %{"app.bsky.feed.post/3jqfcqzm3fx2j" => cid}}
+  """
+  @spec apply_ops(CID.t() | nil, Store.t(), [op()]) ::
+          {:ok, CID.t(), Store.t(), blocks()} | {:error, term()}
+  def apply_ops(root, store, ops) when is_list(ops) do
+    with {:ok, node} <- root_node(root, store),
+         {:ok, node} <- reduce_ops(node, ops, store) do
+      Node.flush(node, store)
+    end
+  end
+
+  @typedoc """
+  A tree edit: set a path to a record CID, or remove it.
+  """
+  @type op :: {:put, key(), CID.t()} | {:delete, key()}
+
+  defp root_node(nil, _store), do: {:ok, Node.empty()}
+  defp root_node(%CID{} = cid, store), do: Node.load_root(cid, store)
+  defp root_node(_, _store), do: {:error, :invalid_root}
+
+  defp reduce_ops(node, ops, store) do
+    Enum.reduce_while(ops, {:ok, node}, fn op, {:ok, node} ->
+      case apply_op(node, op, store) do
+        {:ok, node} -> {:cont, {:ok, node}}
+        {:error, _} = error -> {:halt, error}
+      end
+    end)
+  end
+
+  defp apply_op(node, {:put, key, %CID{} = value}, store) do
+    if valid_key?(key) do
+      Node.put(node, key, value, depth(key), store)
+    else
+      {:error, {:invalid_key, key}}
+    end
+  end
+
+  defp apply_op(node, {:delete, key}, store) when is_binary(key) do
+    Node.delete(node, key, depth(key), store)
+  end
+
+  defp apply_op(_node, op, _store), do: {:error, {:invalid_op, op}}
+
+  @doc """
+  The record CID stored at `key`, or `nil`.
+
+  Walks only the key's path, so this is the read a PDS serves `getRecord`
+  from — pair it with `proof/3` when the caller wants to check the answer
+  against the signed root rather than trust it.
+  """
+  @spec fetch(CID.t(), Store.t(), key()) :: {:ok, CID.t() | nil} | {:error, term()}
+  def fetch(%CID{} = root, store, key) when is_binary(key),
+    do: Node.find(root, key, store)
+
+  # --- Proofs ------------------------------------------------------------------
+
+  @doc """
+  The blocks proving what the tree says about `keys`.
+
+  For a key that is present this is an inclusion proof — the nodes from the
+  root down to the one holding it, which is enough to recompute the root CID
+  and see the key's value under it. For a key that is absent it is an exclusion
+  proof: the same walk, ending where the key would have been, which shows the
+  tree could not have contained it.
+
+  This is what `com.atproto.sync.getRecord` returns alongside a record, and the
+  raw material of `covering_proof/4`.
+
+  Returns `{:ok, %{cid => bytes}}`, or `{:error, {:missing_block, cid}}` if the
+  store cannot supply a node on the path.
+  """
+  @spec proof(CID.t(), Store.t(), key() | [key()]) :: {:ok, blocks()} | {:error, term()}
+  def proof(%CID{} = root, store, key) when is_binary(key), do: proof(root, store, [key])
+
+  def proof(%CID{} = root, store, keys) when is_list(keys) do
+    Enum.reduce_while(keys, {:ok, %{}}, fn key, {:ok, acc} ->
+      case Node.path(root, key, store) do
+        {:ok, cids} ->
+          case collect_blocks(cids, store, acc) do
+            {:ok, acc} -> {:cont, {:ok, acc}}
+            {:error, _} = error -> {:halt, error}
+          end
+
+        {:error, _} = error ->
+          {:halt, error}
+      end
+    end)
+  end
+
+  @doc """
+  The proof blocks a `#commit` firehose message must carry for `keys`.
+
+  A consumer receiving a commit has to be able to run the operations backwards
+  and land on the previous MST root (`prevData`) — the "inductive" half of the
+  sync spec, which is what lets a commit be verified on its own without the
+  consumer holding the repository. That needs more than the nodes the commit
+  changed: it needs the unchanged nodes on the operated paths in *both* trees,
+  and the paths to the keys immediately either side, because a deletion merges
+  the subtrees that sat around the removed entry.
+
+  `previous` may be `nil` for a repository's first commit. The result includes
+  the blocks from `apply_ops/3`, so it is the complete `blocks` set for the
+  message.
+
+  Round-trip this with `invert/3`, which is the consumer side of the same
+  contract.
+  """
+  @spec covering_proof(CID.t() | nil, CID.t(), Store.t(), [key()]) ::
+          {:ok, blocks()} | {:error, term()}
+  def covering_proof(previous, %CID{} = current, store, keys) when is_list(keys) do
+    with {:ok, adjacent} <- adjacent_keys(previous, current, store, keys) do
+      wanted = Enum.uniq(keys ++ adjacent)
+
+      Enum.reduce_while([previous, current], {:ok, %{}}, fn
+        nil, acc ->
+          {:cont, acc}
+
+        root, {:ok, acc} ->
+          case proof(root, store, wanted) do
+            {:ok, blocks} -> {:cont, {:ok, Map.merge(acc, blocks)}}
+            {:error, _} = error -> {:halt, error}
+          end
+      end)
+    end
+  end
+
+  # The neighbours of every operated key, in whichever trees exist. Gathered
+  # from both roots because a key created in this commit has no neighbours in
+  # the old tree, and one deleted has none in the new.
+  defp adjacent_keys(previous, current, store, keys) do
+    roots = Enum.reject([previous, current], &is_nil/1)
+
+    Enum.reduce_while(roots, {:ok, []}, fn root, {:ok, acc} ->
+      Enum.reduce_while(keys, {:ok, acc}, fn key, {:ok, acc} ->
+        case Node.neighbor_keys(root, key, store) do
+          {:ok, {prev, next}} -> {:cont, {:ok, Enum.reject([prev, next | acc], &is_nil/1)}}
+          {:error, _} = error -> {:halt, error}
+        end
+      end)
+      |> case do
+        {:ok, acc} -> {:cont, {:ok, acc}}
+        error -> {:halt, error}
+      end
+    end)
+  end
+
+  @doc """
+  Run a commit's operations backwards to recover the previous MST root.
+
+  This is the consumer half of the inductive firehose: given the commit's new
+  root, the proof blocks it carried, and its `ops`, invert each one — a create
+  becomes a delete, a delete restores the record it names in `prev`, an update
+  goes back to its `prev` — and return the root that results. A consumer
+  compares that to the commit's `prevData` (and to the root it last saw) to
+  decide whether the message is consistent.
+
+  `ops` are `Exosphere.ATProto.Firehose.Message` operations: maps with
+  `:action`, `:path`, `:cid` and `:prev`.
+
+  Returns `{:error, {:missing_block, cid}}` when the proof was not covering
+  enough to invert — which is a defect in the *producer*, and worth reporting
+  as one.
+  """
+  @spec invert(CID.t(), Store.t(), [map()]) :: {:ok, CID.t()} | {:error, term()}
+  def invert(%CID{} = root, store, ops) when is_list(ops) do
+    with {:ok, inverse} <- inverse_ops(ops),
+         {:ok, previous, _store, _blocks} <- apply_ops(root, store, inverse) do
+      {:ok, previous}
+    end
+  end
+
+  # Inverting runs the operations backwards, so the list reverses too: two
+  # operations touching the same path must undo in the opposite order.
+  defp inverse_ops(ops) do
+    ops
+    |> Enum.reverse()
+    |> Enum.reduce_while({:ok, []}, fn op, {:ok, acc} ->
+      case inverse_op(op) do
+        {:ok, inverted} -> {:cont, {:ok, [inverted | acc]}}
+        {:error, _} = error -> {:halt, error}
+      end
+    end)
+    |> case do
+      {:ok, inverted} -> {:ok, Enum.reverse(inverted)}
+      error -> error
+    end
+  end
+
+  defp inverse_op(%{action: :create, path: path}) when is_binary(path),
+    do: {:ok, {:delete, path}}
+
+  defp inverse_op(%{action: action, path: path, prev: %CID{} = prev})
+       when action in [:update, :delete] and is_binary(path),
+       do: {:ok, {:put, path, prev}}
+
+  defp inverse_op(%{action: action, path: path}) when action in [:update, :delete],
+    do: {:error, {:missing_prev, path}}
+
+  defp inverse_op(op), do: {:error, {:invalid_op, op}}
+
+  @doc """
+  The blocks reachable from `current` but not from `previous`.
+
+  The nodes a commit actually changed, computed from two roots rather than
+  from the edit that produced them — useful to check a producer's `blocks`
+  against, or to re-derive a diff after the fact.
+  """
+  @spec diff(CID.t() | nil, CID.t(), Store.t()) :: {:ok, blocks()} | {:error, term()}
+  def diff(previous, %CID{} = current, store) do
+    with {:ok, old} <- reachable(previous, store),
+         {:ok, new} <- reachable(current, store) do
+      {:ok, Map.drop(new, Map.keys(old))}
+    end
+  end
+
+  defp reachable(nil, _store), do: {:ok, %{}}
+
+  defp reachable(%CID{} = root, store), do: reachable([root], store, %{})
+
+  defp reachable([], _store, acc), do: {:ok, acc}
+
+  defp reachable([cid | rest], store, acc) do
+    if Map.has_key?(acc, cid) do
+      reachable(rest, store, acc)
+    else
+      with {:ok, block} <- Store.fetch(store, cid),
+           {:ok, bytes} <- block_bytes(block),
+           {:ok, map} <- decode_node_map(cid, block) do
+        reachable(node_links(map) ++ rest, store, Map.put(acc, cid, bytes))
+      end
+    end
+  end
+
+  # Subtree links only: an entry's "v" points at a record, which is not part of
+  # the tree.
+  defp node_links(map) do
+    left =
+      case Map.get(map, "l") do
+        %CID{} = cid -> [cid]
+        _ -> []
+      end
+
+    trees =
+      map
+      |> Map.get("e", [])
+      |> Enum.flat_map(fn
+        %{"t" => %CID{} = cid} -> [cid]
+        _ -> []
+      end)
+
+    left ++ trees
+  end
+
+  defp collect_blocks([], _store, acc), do: {:ok, acc}
+
+  defp collect_blocks([cid | rest], store, acc) do
+    if Map.has_key?(acc, cid) do
+      collect_blocks(rest, store, acc)
+    else
+      with {:ok, block} <- Store.fetch(store, cid),
+           {:ok, bytes} <- block_bytes(block) do
+        collect_blocks(rest, store, Map.put(acc, cid, bytes))
+      end
+    end
+  end
+
+  # A store may hold encoded bytes or decoded node maps; proofs are bytes.
+  # `Exosphere.ATProto.MST.Store.fetch/2` promises one or the other, so there is
+  # no third case to handle — a store returning anything else has broken its
+  # own contract, and a FunctionClauseError names the culprit better than an
+  # error tuple that surfaces three layers up.
+  defp block_bytes(block) when is_binary(block), do: {:ok, block}
+  defp block_bytes(block) when is_map(block), do: DagCBOR.encode(block)
+
+  defp decode_node_map(_cid, block) when is_map(block), do: {:ok, block}
+
+  defp decode_node_map(cid, bytes) when is_binary(bytes) do
+    case DagCBOR.decode(bytes) do
+      {:ok, map} when is_map(map) -> {:ok, map}
+      _ -> {:error, {:invalid_node, cid}}
+    end
+  end
+
   # --- Build internals ---------------------------------------------------------
 
   defp top_layer(triples) do
@@ -237,34 +562,15 @@ defmodule Exosphere.ATProto.MST do
     end
   end
 
-  defp empty_node, do: %{"l" => nil, "e" => []}
+  defp empty_node, do: Node.to_map(Node.empty())
 
-  # Build a node map with prefix-compressed entries.
+  # Build a node map with prefix-compressed entries. Shared with the
+  # incremental path (`Exosphere.ATProto.MST.Node.flush/2`) so a rebuilt tree
+  # and an edited one encode identically — the property the whole design rests
+  # on, and what `apply_ops/3`'s tests check against `build/1`.
   defp node(l_cid, entries) do
-    {e, _prev} =
-      Enum.reduce(entries, {[], <<>>}, fn %{key: key, value: value, tree: tree}, {acc, prev} ->
-        p = common_prefix_length(prev, key)
-        suffix = binary_part(key, p, byte_size(key) - p)
-
-        entry = %{
-          "p" => p,
-          "k" => %CBOR.Tag{tag: :bytes, value: suffix},
-          "v" => value,
-          "t" => tree
-        }
-
-        {[entry | acc], key}
-      end)
-
-    %{"l" => l_cid, "e" => Enum.reverse(e)}
+    Node.to_map(%Node{layer: 0, left: l_cid, entries: entries})
   end
-
-  defp common_prefix_length(a, b), do: common_prefix_length(a, b, 0)
-
-  defp common_prefix_length(<<x, a::binary>>, <<x, b::binary>>, n),
-    do: common_prefix_length(a, b, n + 1)
-
-  defp common_prefix_length(_, _, n), do: n
 
   # Encode a node to DAG-CBOR, store it by CID, return {cid, blocks}.
   # The encoder is deterministic, so the stored bytes hash to `cid`.

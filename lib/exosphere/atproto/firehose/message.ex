@@ -1,6 +1,11 @@
 defmodule Exosphere.ATProto.Firehose.Message do
   @moduledoc """
-  Parse firehose message payloads into structured events.
+  Parse firehose message payloads into structured events, and build them.
+
+  `decode/2` turns a wire payload into a structured event; `encode/1` turns one
+  back into a wire payload, so a producer describes the message it wants in the
+  same shape a consumer reads. `Exosphere.ATProto.Firehose.Emitter` sits above
+  this and assembles a `#commit` from a repository transition.
 
   Message types from `com.atproto.sync.subscribeRepos`:
   - `#commit` - Repository commit with record operations
@@ -170,6 +175,130 @@ defmodule Exosphere.ATProto.Firehose.Message do
   end
 
   def decode(type, payload), do: {:ok, Map.put(payload, :type, type)}
+
+  @doc """
+  Build the wire payload for a message, ready for
+  `Exosphere.ATProto.Firehose.Frame.encode_message/2`.
+
+  Takes the same structured shape `decode/2` produces and returns
+  `{:ok, type, payload}`, so `decode/2` and `encode/1` round-trip. Bytes fields
+  (`blocks`) are tagged as CBOR byte strings; `nil` optional fields are written
+  as CBOR null rather than omitted, matching what the reference producer emits.
+
+  ## Examples
+
+      iex> {:ok, "#account", payload} =
+      ...>   Exosphere.ATProto.Firehose.Message.encode(%{
+      ...>     type: :account, seq: 1, did: "did:plc:abc",
+      ...>     active: false, status: "takendown", time: "2026-08-28T00:00:00.000Z"
+      ...>   })
+      iex> payload["status"]
+      "takendown"
+  """
+  @spec encode(message()) :: {:ok, String.t(), map()} | {:error, term()}
+  def encode(%{type: :commit} = message) do
+    with {:ok, ops} <- encode_ops(Map.get(message, :ops, [])) do
+      payload = %{
+        "seq" => Map.get(message, :seq),
+        "repo" => Map.get(message, :repo),
+        "commit" => Map.get(message, :commit),
+        "rev" => Map.get(message, :rev),
+        "since" => Map.get(message, :since),
+        "blocks" => bytes(Map.get(message, :blocks, <<>>)),
+        "ops" => ops,
+        "prevData" => Map.get(message, :prev_data),
+        # Both deprecated: a producer sets tooBig false and blobs empty.
+        "tooBig" => false,
+        "blobs" => [],
+        "time" => Map.get(message, :time)
+      }
+
+      {:ok, "#commit", payload}
+    end
+  end
+
+  def encode(%{type: :sync} = message) do
+    {:ok, "#sync",
+     %{
+       "seq" => Map.get(message, :seq),
+       "did" => Map.get(message, :did),
+       "blocks" => bytes(Map.get(message, :blocks, <<>>)),
+       "rev" => Map.get(message, :rev),
+       "time" => Map.get(message, :time)
+     }}
+  end
+
+  def encode(%{type: :identity} = message) do
+    {:ok, "#identity",
+     %{
+       "seq" => Map.get(message, :seq),
+       "did" => Map.get(message, :did),
+       "handle" => Map.get(message, :handle),
+       "time" => Map.get(message, :time)
+     }}
+  end
+
+  def encode(%{type: :account} = message) do
+    {:ok, "#account",
+     %{
+       "seq" => Map.get(message, :seq),
+       "did" => Map.get(message, :did),
+       "active" => Map.get(message, :active),
+       "status" => Map.get(message, :status),
+       "time" => Map.get(message, :time)
+     }}
+  end
+
+  def encode(%{type: :info} = message) do
+    {:ok, "#info",
+     %{
+       "name" => Map.get(message, :name),
+       "message" => Map.get(message, :message)
+     }}
+  end
+
+  def encode(%{type: type}), do: {:error, {:unencodable_message, type}}
+  def encode(_), do: {:error, :not_a_message}
+
+  defp encode_ops(ops) when is_list(ops) do
+    Enum.reduce_while(ops, {:ok, []}, fn op, {:ok, acc} ->
+      case encode_op(op) do
+        {:ok, encoded} -> {:cont, {:ok, [encoded | acc]}}
+        {:error, _} = error -> {:halt, error}
+      end
+    end)
+    |> case do
+      {:ok, encoded} -> {:ok, Enum.reverse(encoded)}
+      error -> error
+    end
+  end
+
+  defp encode_ops(_), do: {:error, :invalid_ops}
+
+  # `prev` is written only for update and delete, where it names the record
+  # version being replaced — a create has nothing to point at.
+  defp encode_op(%{action: action, path: path} = op)
+       when action in [:create, :update, :delete] and is_binary(path) do
+    base = %{
+      "action" => Atom.to_string(action),
+      "path" => path,
+      "cid" => Map.get(op, :cid)
+    }
+
+    encoded =
+      case {action, Map.get(op, :prev)} do
+        {:create, _} -> base
+        {_, %CID{} = prev} -> Map.put(base, "prev", prev)
+        {_, _} -> base
+      end
+
+    {:ok, encoded}
+  end
+
+  defp encode_op(op), do: {:error, {:invalid_op, op}}
+
+  defp bytes(value) when is_binary(value), do: %CBOR.Tag{tag: :bytes, value: value}
+  defp bytes(%CBOR.Tag{tag: :bytes} = tagged), do: tagged
 
   defp decode_commit(payload) do
     ops =

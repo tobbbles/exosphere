@@ -17,6 +17,7 @@ defmodule Exosphere.ATProto.Spaces.Repo do
   blocks; the index still authenticates against the commit.
   """
 
+  alias Exosphere.ATProto.CAR
   alias Exosphere.ATProto.CBOR
   alias Exosphere.ATProto.CID
   alias Exosphere.ATProto.Spaces.Commit
@@ -101,25 +102,22 @@ defmodule Exosphere.ATProto.Spaces.Repo do
     commit_cid = raw_cid(commit_bytes)
     index_cid = raw_cid(index_bytes)
 
-    record_frames =
+    record_blocks =
       if opts[:exclude_values] do
         []
       else
         for {_path, record} <- sorted do
           bytes = CBOR.encode!(record)
-          block_frame(raw_cid(bytes), bytes)
+          {raw_cid(bytes), bytes}
         end
       end
 
-    header_bytes = CBOR.encode!(%{"version" => @car_version, "roots" => [commit_cid, index_cid]})
-
-    IO.iodata_to_binary([
-      varint(byte_size(header_bytes)),
-      header_bytes,
-      block_frame(commit_cid, commit_bytes),
-      block_frame(index_cid, index_bytes),
-      record_frames
-    ])
+    # Block order is load-bearing here — the commit must lead and the index
+    # follow, with records in index order — so the blocks go in as a list.
+    CAR.encode!(
+      [commit_cid, index_cid],
+      [{commit_cid, commit_bytes}, {index_cid, index_bytes} | record_blocks]
+    )
   end
 
   @doc """
@@ -366,11 +364,6 @@ defmodule Exosphere.ATProto.Spaces.Repo do
 
   defp decode_block(_), do: {:error, :invalid_block}
 
-  defp block_frame(%CID{} = cid, bytes) do
-    cid_bytes = CID.to_bytes(cid)
-    varint(byte_size(cid_bytes) + byte_size(bytes)) <> cid_bytes <> bytes
-  end
-
   defp raw_cid(bytes), do: %CID{version: 1, codec: :dag_cbor, hash: :crypto.hash(:sha256, bytes)}
 
   defp record_path(collection, rkey), do: collection <> "/" <> rkey
@@ -381,9 +374,6 @@ defmodule Exosphere.ATProto.Spaces.Repo do
       _ -> {:error, :invalid_record_path}
     end
   end
-
-  defp varint(n) when n < 128, do: <<n>>
-  defp varint(n), do: <<1::1, Integer.mod(n, 128)::7>> <> varint(div(n, 128))
 
   defp read_varint(data) do
     {value, rest} = Varint.LEB128.decode(data)

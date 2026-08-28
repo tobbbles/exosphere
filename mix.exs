@@ -47,6 +47,7 @@ defmodule Exosphere.MixProject do
       {:cbor, "~> 1.0"},
       {:varint, "~> 1.5"},
       {:jose, "~> 1.11"},
+      {:rustler, "~> 0.38"},
       {:ex_secp256k1, "~> 0.7"},
       {:credo, "~> 1.7", only: [:dev, :test], runtime: false},
       {:dialyxir, "~> 1.4", only: [:dev, :test], runtime: false},
@@ -59,14 +60,42 @@ defmodule Exosphere.MixProject do
     [
       main: "readme",
       logo: "docs/static/logo.png",
-      extras: ["README.md", "docs/firehose.md", "docs/lexicons.md", "docs/oauth.md"]
+      extras: [
+        "README.md",
+        "docs/firehose.md",
+        "docs/lexicons.md",
+        "docs/oauth.md",
+        "docs/spaces.md"
+      ],
+      groups_for_modules: [
+        "Repository & serving": [
+          Exosphere.ATProto.CAR,
+          Exosphere.ATProto.MST,
+          Exosphere.ATProto.MST.Node,
+          Exosphere.ATProto.MST.Store,
+          Exosphere.ATProto.MST.Store.ETS,
+          Exosphere.ATProto.Repo,
+          Exosphere.ATProto.Repo.Commit,
+          Exosphere.ATProto.Firehose.Emitter
+        ]
+      ]
     ]
   end
 
   defp package do
     [
       name: "exosphere",
-      files: ["lib", "mix.exs", "README.md", "LICENSE", "CHANGELOG.md", "docs"],
+      files: [
+        "lib",
+        "native/exosphere_blake3/src",
+        "native/exosphere_blake3/Cargo.toml",
+        "native/exosphere_blake3/Cargo.lock",
+        "mix.exs",
+        "README.md",
+        "LICENSE",
+        "CHANGELOG.md",
+        "docs"
+      ],
       maintainers: ["Toby Archer"],
       licenses: ["MIT"],
       links: %{"GitHub" => "https://github.com/tobbbles/exosphere"}

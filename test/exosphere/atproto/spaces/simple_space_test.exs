@@ -157,9 +157,9 @@ defmodule Exosphere.ATProto.Spaces.SimpleSpaceTest do
   end
 
   test "check_user_access is the managing-app call" do
-    Process.put(:get_response, {:ok, %{status: 200, headers: [], body: %{"access" => "Allow"}}})
+    Process.put(:get_response, {:ok, %{status: 200, headers: [], body: %{"authorized" => true}}})
 
-    assert {:ok, _} =
+    assert {:ok, %{"authorized" => true}} =
              SimpleSpace.check_user_access(
                "https://app.example.com",
                @space,
@@ -170,6 +170,26 @@ defmodule Exosphere.ATProto.Spaces.SimpleSpaceTest do
 
     {url, _} = Process.get({:get, self()})
     assert url =~ "com.atproto.simplespace.checkUserAccess?"
-    assert url =~ "did=did%3Aplc%3Auser"
+    # The lexicon names this parameter `user`, not `did` — the managing app
+    # rejects the request without it.
+    assert url =~ "user=did%3Aplc%3Auser"
+    refute url =~ "did=did%3Aplc%3Auser"
+  end
+
+  test "check_user_access passes an attested client_id through" do
+    Process.put(:get_response, {:ok, %{status: 200, headers: [], body: %{"authorized" => false}}})
+
+    assert {:ok, _} =
+             SimpleSpace.check_user_access(
+               "https://app.example.com",
+               @space,
+               "did:plc:user",
+               @headers,
+               http: SpaceHTTP,
+               client_id: "https://app.example.com/client-metadata.json"
+             )
+
+    {url, _} = Process.get({:get, self()})
+    assert url =~ "clientId=https%3A%2F%2Fapp.example.com%2Fclient-metadata.json"
   end
 end
