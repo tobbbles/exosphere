@@ -1,17 +1,33 @@
 defmodule Exosphere.ATProto.Identity.DID.PLC do
   @moduledoc """
-  DID:PLC resolution.
+  DID:PLC resolution and operation submission.
 
   DID:PLC is Bluesky's novel DID method with key rotation and recovery support.
   DIDs are resolved via the PLC directory at `https://plc.directory`.
+
+  Reads live here; the write side is split across three modules:
+
+  - `Exosphere.ATProto.Identity.DID.PLC.Operation` — build and validate operations
+  - `Exosphere.ATProto.Identity.DID.PLC.Signer` — sign, verify, derive the DID
+  - `Exosphere.ATProto.Identity.DID.PLC.AuditLog` — validate a whole operation log
 
   ## Examples
 
       iex> Exosphere.ATProto.Identity.DID.PLC.resolve("did:plc:z72i7hdynmk6r22z27h6tvur")
       {:ok, %Document{...}}
+
+  Creating an identity — the DID falls out of the signed genesis operation
+  rather than being allocated:
+
+      {:ok, op} = Operation.new(rotation_keys: [key], also_known_as: ["at://alice.example.com"])
+      {:ok, signed} = Signer.sign(op, private_key, :secp256k1)
+      {:ok, did} = Signer.derive_did(signed)
+      {:ok, ^did} = PLC.submit(did, signed)
   """
 
   alias Exosphere.ATProto.HTTP
+  alias Exosphere.ATProto.Identity.DID.PLC.AuditLog
+  alias Exosphere.ATProto.Identity.DID.PLC.Operation
   alias Exosphere.ATProto.Identity.Document
 
   require Logger
@@ -23,6 +39,20 @@ defmodule Exosphere.ATProto.Identity.DID.PLC do
           plc_directory: String.t(),
           http_client: module()
         ]
+
+  @type submit_opts :: [
+          timeout: pos_integer(),
+          plc_directory: String.t(),
+          http_client: module(),
+          max_attempts: pos_integer(),
+          backoff_ms: pos_integer()
+        ]
+
+  # The production directory caps an operation at 4,000 bytes of DAG-CBOR
+  # (MAX_OP_BYTES in did-method-plc/did-method-plc packages/server/src/
+  # constraints.ts), tightened from the spec text's 7,500; refusing locally
+  # beats a rejected round trip.
+  @max_operation_bytes 4000
 
   @doc """
   Resolve a did:plc to its DID Document.
@@ -147,6 +177,135 @@ defmodule Exosphere.ATProto.Identity.DID.PLC do
 
       {:error, reason} ->
         {:error, reason}
+    end
+  end
+
+  @doc """
+  Submit a signed operation to the directory (`POST /:did`).
+
+  Retries on transport failures and 5xx responses with linear backoff. A 4xx
+  is **not** retried — the directory has judged the operation invalid, and
+  resending it unchanged cannot help. The exception is **429**: it comes from
+  infrastructure rate limiting (the directory's own limits answer 400), not a
+  judgment on the operation, so it retries like a 5xx.
+
+  Note that the directory rate-limits *per DID* — 10 operations an hour, 30 a
+  day, 100 a week — and retries count against those limits.
+
+  Submission is idempotent at the directory: resubmitting an operation the
+  directory already holds is accepted rather than duplicated, so a retry
+  after an ambiguous timeout is safe.
+
+  ## Options
+
+  - `:max_attempts` - total attempts including the first (default: 3)
+  - `:backoff_ms` - base backoff, multiplied by attempt number (default: 500)
+  - `:timeout`, `:plc_directory`, `:http_client` - as `resolve/2`
+  """
+  @spec submit(String.t(), Operation.t(), submit_opts()) ::
+          {:ok, String.t()} | {:error, term()}
+  def submit("did:plc:" <> _ = did, op, opts \\ []) when is_map(op) do
+    with :ok <- Operation.validate(op),
+         :ok <- check_size(op) do
+      do_submit(did, op, opts, 1)
+    end
+  end
+
+  defp do_submit(did, op, opts, attempt) do
+    timeout = Keyword.get(opts, :timeout, 10_000)
+    directory = Keyword.get(opts, :plc_directory, @plc_directory)
+    http = Keyword.get(opts, :http_client, HTTP)
+    max_attempts = Keyword.get(opts, :max_attempts, 3)
+    backoff = Keyword.get(opts, :backoff_ms, 500)
+    url = "#{directory}/#{did}"
+
+    Logger.debug("[DID.PLC] Submitting operation for #{did} (attempt #{attempt})")
+
+    case http.post(url, json: op, timeout: timeout) do
+      {:ok, %{status: status}} when status in 200..299 ->
+        Logger.debug("[DID.PLC] Operation accepted for #{did}")
+        {:ok, did}
+
+      {:ok, %{status: 429}} when attempt < max_attempts ->
+        Logger.warning("[DID.PLC] HTTP 429 (rate limited) for #{did}, retrying")
+        Process.sleep(backoff * attempt)
+        do_submit(did, op, opts, attempt + 1)
+
+      {:ok, %{status: 429}} ->
+        {:error, {:http_error, 429}}
+
+      {:ok, %{status: status, body: body}} when status in 400..499 ->
+        Logger.error("[DID.PLC] Operation rejected for #{did}: #{inspect(body, limit: 200)}")
+        {:error, {:rejected, status, body}}
+
+      {:ok, %{status: status}} when attempt < max_attempts ->
+        Logger.warning("[DID.PLC] HTTP #{status} for #{did}, retrying")
+        Process.sleep(backoff * attempt)
+        do_submit(did, op, opts, attempt + 1)
+
+      {:ok, %{status: status}} ->
+        {:error, {:http_error, status}}
+
+      {:error, reason} when attempt < max_attempts ->
+        Logger.warning("[DID.PLC] Submit failed for #{did}: #{inspect(reason)}, retrying")
+        Process.sleep(backoff * attempt)
+        do_submit(did, op, opts, attempt + 1)
+
+      {:error, reason} ->
+        {:error, reason}
+    end
+  end
+
+  @doc """
+  The CID of the current head of a DID's operation log.
+
+  This is what a new operation's `prev` must point at. Fetch it rather than
+  reusing a locally cached value: an operation chained from a stale head is
+  a fork, not an update, and the directory will judge it as one.
+  """
+  @spec head(String.t(), resolve_opts()) :: {:ok, String.t()} | {:error, term()}
+  def head("did:plc:" <> _ = did, opts \\ []) do
+    case get_audit_log(did, opts) do
+      {:ok, entries} ->
+        entries
+        |> Enum.reject(&Map.get(&1, "nullified", false))
+        |> List.last()
+        |> case do
+          nil -> {:error, :empty_log}
+          %{"cid" => cid} -> {:ok, cid}
+          _ -> {:error, {:invalid_response, :missing_cid}}
+        end
+
+      error ->
+        error
+    end
+  end
+
+  @doc """
+  Fetch and validate a DID's full audit log.
+
+  Verifies every signature, the chain, nullification and the 72-hour recovery
+  window, and cross-checks the computed nullification against the flags the
+  directory reported.
+  """
+  @spec verify_audit_log(String.t(), resolve_opts()) :: :ok | {:error, term()}
+  def verify_audit_log("did:plc:" <> _ = did, opts \\ []) do
+    case get_audit_log(did, opts) do
+      {:ok, entries} -> AuditLog.validate_against_flags(entries)
+      error -> error
+    end
+  end
+
+  defp check_size(op) do
+    case Operation.signed_bytes(op) do
+      {:ok, bytes} when byte_size(bytes) > @max_operation_bytes ->
+        {:error, {:operation_too_large, byte_size(bytes)}}
+
+      {:ok, _} ->
+        :ok
+
+      error ->
+        error
     end
   end
 end
