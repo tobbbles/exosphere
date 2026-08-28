@@ -1,6 +1,8 @@
 defmodule Exosphere.ATProto.CARTest do
   use ExUnit.Case, async: true
 
+  doctest Exosphere.ATProto.CAR
+
   import Bitwise
 
   alias Exosphere.ATProto.{CAR, CBOR, CID}

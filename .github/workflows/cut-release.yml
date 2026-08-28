@@ -43,6 +43,10 @@ jobs:
           otp-version: "27"
           version-type: loose
 
+      # The BLAKE3 NIF compiles from source, so any job that compiles the
+      # project needs a Rust toolchain.
+      - uses: dtolnay/rust-toolchain@stable
+
       - name: Install deps
         run: mix deps.get
 

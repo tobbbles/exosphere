@@ -125,7 +125,9 @@ defmodule Exosphere.ATProto.Spaces.WritesTest do
                @repo,
                "com.example.groupPost",
                %{},
-               [headers: []], http: WritesHTTP)
+               [headers: []],
+               http: WritesHTTP
+             )
   end
 
   test "create/put accept rkey and validate options" do

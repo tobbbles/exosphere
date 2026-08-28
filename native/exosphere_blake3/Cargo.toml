@@ -1,0 +1,20 @@
+[package]
+name = "exosphere_blake3"
+version = "0.1.0"
+authors = ["Toby Archer"]
+edition = "2021"
+license = "MIT"
+description = "BLAKE3 XOF and LtHash lane folding for Exosphere, over the upstream blake3 crate"
+
+[lib]
+name = "exosphere_blake3"
+path = "src/lib.rs"
+crate-type = ["cdylib"]
+
+[dependencies]
+rustler = "0.38"
+blake3 = "1"
+
+[profile.release]
+lto = true
+opt-level = 3
