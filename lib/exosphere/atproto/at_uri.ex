@@ -144,7 +144,7 @@ defmodule Exosphere.ATProto.AtUri do
   @spec make_space(String.t(), String.t(), String.t(), String.t(), String.t(), String.t()) ::
           {:ok, t()} | {:error, error()}
   def make_space(space_did, space_type, skey, author, collection, rkey) do
-    with {:ok, ref} <- make_space(space_did, space_type, skey),
+    with {:ok, %__MODULE__{} = ref} <- make_space(space_did, space_type, skey),
          :ok <- validate_author(author),
          :ok <- validate_collection(collection),
          :ok <- validate_rkey(collection, rkey) do
