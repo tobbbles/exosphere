@@ -25,7 +25,7 @@ Add `exosphere` to your dependencies:
 ```elixir
 def deps do
   [
-    {:exosphere, "~> 0.5"}
+    {:exosphere, "~> 0.6"}
   ]
 end
 ```
