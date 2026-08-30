@@ -10,6 +10,23 @@ defmodule Exosphere.ATProto.HTTP do
 
       {:ok, response} = Exosphere.ATProto.HTTP.get("https://plc.directory/did:plc:abc")
       {:ok, response} = Exosphere.ATProto.HTTP.post("https://pds.example.com/xrpc/...", json: %{})
+
+  ## Timeouts
+
+  `:timeout` bounds each *step* of a request, not the call as a whole. One
+  request spends it at least twice — once connecting, once waiting for the
+  response — and the receive loop re-arms it after every batch of socket
+  messages it drains, so a server that drips bytes renews the budget
+  indefinitely. Redirects compound it further: each of the up-to-five hops is
+  a fresh request with a fresh budget.
+
+  So `timeout: 1_500` is not a 1.5s ceiling. Callers sizing a retry ladder
+  against these numbers should assume a multiple, and impose a real deadline
+  themselves (`Task.await/2`, or their own supervision) if they need one.
+
+  Splitting this into separate connect and receive budgets would name the
+  first factor while leaving the other two, which is worse than saying
+  plainly what the option does.
   """
 
   require Logger
@@ -27,12 +44,37 @@ defmodule Exosphere.ATProto.HTTP do
   @type response :: Behaviour.response()
   @type request_opts :: Behaviour.request_opts()
 
+  # The request options a *caller* of a higher-level client may set, as
+  # opposed to the ones a transport builds for itself (`:headers`, `:json`,
+  # `:body`, `:content_type` — forwarding those would let a caller clobber
+  # the Authorization header or the request body).
+  @forwarded_opts [:timeout, :follow_redirects]
+
+  @doc """
+  Pick the request options a caller may set out of a larger option list.
+
+  The higher-level clients take one keyword list that mixes options meant for
+  them (`:http`, `:dpop_key`, `:client_attestation`, …) with request options
+  meant for this module. Their transports build their own headers and body and
+  forward the rest through here, so a caller who configures a `:timeout` gets
+  it instead of silently falling back to the 30s default.
+
+  ## Examples
+
+      iex> Exosphere.ATProto.HTTP.take_request_opts(http: SomeMock, timeout: 1_500)
+      [timeout: 1500]
+  """
+  @spec take_request_opts(keyword()) :: request_opts()
+  def take_request_opts(opts) when is_list(opts), do: Keyword.take(opts, @forwarded_opts)
+
   @doc """
   Make an HTTP GET request.
 
   ## Options
 
-  - `:timeout` - Request timeout in milliseconds (default: 30_000)
+  - `:timeout` - Per-step timeout in milliseconds (default: 30_000); see
+    "Timeouts" in the module documentation — it is not a wall-clock budget
+    for the whole call
   - `:headers` - Additional headers to send
   """
   @spec get(String.t(), request_opts()) :: {:ok, response()} | {:error, term()}
@@ -45,7 +87,8 @@ defmodule Exosphere.ATProto.HTTP do
 
   ## Options
 
-  - `:timeout` - Request timeout in milliseconds (default: 30_000)
+  - `:timeout` - Per-step timeout in milliseconds (default: 30_000); see
+    "Timeouts" in the module documentation
   - `:headers` - Additional headers to send
   - `:json` - Map to encode as JSON body
   - `:body` - Raw binary body

@@ -7,8 +7,29 @@ defmodule Exosphere.ATProto.Spaces.Token do
   | Class | typ | signed by | TTL | aud | binding |
   |-------|-----|-----------|-----|-----|---------|
   | `:delegation` | `atproto-space-delegation+jwt` | the user's PDS (`#atproto` key) | 60s, single-use | required (the space host) | — |
-  | `:credential` | `atproto-space-credential+jwt` | the space authority (`#atproto_space`, falling back to `#atproto`) | 2h, multi-use | none (it is presented to every repo host in the space) | DPoP key via `cnf.jkt` |
+  | `:credential` | `atproto-space-credential+jwt` | the space authority (`#atproto` by default — see below) | 2h, multi-use | none (it is presented to every repo host in the space) | DPoP key via `cnf.jkt` |
   | `:client_attestation` | `atproto-client-attestation+jwt` | the app's client-authentication key | 60s, single-use | required (the space host) | — |
+
+  ## The `kid` is a default, not a constant
+
+  The key ids above are what `sign/3` stamps when the caller says nothing.
+  They are not a property of the token class, and `sign/3` does not inspect
+  the key it was handed: **a header's `kid` must name the fragment its signing
+  key was actually published under**, because a verifier that honours `kid`
+  resolves that verification method and nothing else.
+
+  `#atproto` is the credential default because a space authority's signing key
+  usually *is* the account's `#atproto` key — the case for any authority
+  hosted on a PDS, and what the reference implementation does. `#atproto_space`
+  is an optional, space-tokens-only verification method; an authority that
+  publishes one and signs with it must say so:
+
+      Token.sign(:credential, [iss: authority, sub: space, dpop_jkt: jkt,
+                               kid: "#atproto_space"], space_jwk)
+
+  Getting this wrong is invisible against a verifier that ignores `kid` (as
+  passing `fn _iss, _kid, _refresh -> ... end` does) and fails against one
+  that does not.
 
   Signing and verification go through the OAuth client's JWS machinery
   (`Exosphere.ATProto.OAuth.JWS`, built for `private_key_jwt` client
@@ -62,6 +83,9 @@ defmodule Exosphere.ATProto.Spaces.Token do
       require_cnf: false,
       single_use: true
     },
+    # An authority that publishes a dedicated `#atproto_space` key signs with
+    # it and passes that `kid`. Absent one, the space signing key is the
+    # account's `#atproto` key — the case for any authority on a PDS.
     credential: %{
       typ: "atproto-space-credential+jwt",
       kid: "#atproto",
@@ -95,6 +119,10 @@ defmodule Exosphere.ATProto.Spaces.Token do
   a space host; `:dpop_jkt` is required for credentials (the RFC 7638
   thumbprint of the DPoP key the credential binds to). `:iat`, `:jti`, and
   `:expires_in` may be pinned for tests.
+
+  `:kid` overrides the class default, and must be passed whenever
+  `private_jwk` was published under some other fragment — see "The `kid` is a
+  default, not a constant" above. `kid: nil` omits the header entirely.
   """
   @spec sign(class(), sign_opts(), private_jwk()) :: {:ok, binary()} | {:error, term()}
   def sign(class, opts, private_jwk) when is_map_key(@classes, class) do

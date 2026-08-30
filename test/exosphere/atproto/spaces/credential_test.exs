@@ -242,6 +242,178 @@ defmodule Exosphere.ATProto.Spaces.CredentialTest do
              )
   end
 
+  # -- the credential's `kid` -----------------------------------------------
+  #
+  # `kid` is the class *default*, not a constant: the header must name the
+  # fragment the signing key was published under, because a verifier that
+  # honours `kid` resolves that verification method and nothing else. The
+  # authority in these tests publishes both, which is the only configuration
+  # where guessing and honouring differ.
+
+  test "a credential signed with a published space key names #atproto_space", ctx do
+    {:ok, space_jwk} = JWK.generate(:secp256k1)
+    credential = signed_credential(space_jwk, ctx.dpop_key, kid: "#atproto_space")
+
+    assert {:ok, %{header: header}} = Token.parse(:credential, credential)
+    assert header["kid"] == "#atproto_space"
+
+    doc = did_document(@authority, ctx.authority, [{"#atproto_space", space_jwk}])
+    assert {:ok, %{payload: payload}} = Credential.verify(credential, doc)
+    assert payload["sub"] == @space
+  end
+
+  test "verify resolves #atproto when that is the key the credential names", ctx do
+    # An authority whose space signing key *is* its account key — every
+    # authority hosted on a PDS, and what the reference does — signs with
+    # `#atproto` even where a space key is also published. Preferring the
+    # space key would fail a perfectly good signature.
+    {:ok, space_jwk} = JWK.generate(:secp256k1)
+    credential = credential_jwt(ctx, ctx.dpop_key)
+    doc = did_document(@authority, ctx.authority, [{"#atproto_space", space_jwk}])
+
+    assert {:ok, %{payload: %{"iss" => @authority}}} = Credential.verify(credential, doc)
+  end
+
+  test "verify rejects a credential whose kid names a key it was not signed with", ctx do
+    # Signed with the space key, stamped `#atproto`: the mismatch a verifier
+    # that ignores `kid` never notices.
+    {:ok, space_jwk} = JWK.generate(:secp256k1)
+    credential = signed_credential(space_jwk, ctx.dpop_key, [])
+    doc = did_document(@authority, ctx.authority, [{"#atproto_space", space_jwk}])
+
+    assert {:error, :invalid_signature} = Credential.verify(credential, doc)
+  end
+
+  test "verify refuses a kid naming an unrelated verification method", ctx do
+    credential = signed_credential(ctx.authority, ctx.dpop_key, kid: "#atproto_labeler")
+
+    assert {:error, :unsupported_space_kid} =
+             Credential.verify(credential, did_document(@authority, ctx.authority))
+  end
+
+  test "verify reports a kid the authority never published", ctx do
+    {:ok, space_jwk} = JWK.generate(:secp256k1)
+    credential = signed_credential(space_jwk, ctx.dpop_key, kid: "#atproto_space")
+
+    assert {:error, :not_found} =
+             Credential.verify(credential, did_document(@authority, ctx.authority))
+  end
+
+  test "verify accepts an absolute kid, not only a bare fragment", ctx do
+    {:ok, space_jwk} = JWK.generate(:secp256k1)
+
+    credential =
+      signed_credential(space_jwk, ctx.dpop_key, kid: @authority <> "#atproto_space")
+
+    doc = did_document(@authority, ctx.authority, [{"#atproto_space", space_jwk}])
+    assert {:ok, _} = Credential.verify(credential, doc)
+  end
+
+  # -- request options reach the transport ----------------------------------
+
+  test "get_delegation_token hands the caller's timeout to the transport", ctx do
+    delegation = delegation_jwt(ctx)
+    Process.put(:get_response, {:ok, %{status: 200, headers: [], body: %{"token" => delegation}}})
+
+    assert {:ok, ^delegation} =
+             Credential.get_delegation_token(@pds, @space,
+               headers: [{"authorization", "Bearer tok"}],
+               timeout: 1_500,
+               http: RecordingHTTP
+             )
+
+    {_url, opts} = Process.get(:last_get)
+    assert opts[:timeout] == 1_500
+    assert {"authorization", "Bearer tok"} in opts[:headers]
+  end
+
+  test "mint hands the caller's timeout to the transport", ctx do
+    delegation = delegation_jwt(ctx)
+    credential = credential_jwt(ctx, ctx.dpop_key)
+
+    Process.put(
+      :post_response,
+      {:ok, %{status: 200, headers: [], body: %{"credential" => credential}}}
+    )
+
+    assert {:ok, _} =
+             Credential.mint(@space_host, @space, delegation,
+               dpop_key: ctx.dpop_key,
+               timeout: 1_500,
+               follow_redirects: false,
+               http: RecordingHTTP
+             )
+
+    {_url, opts} = Process.get(:last_post)
+    assert opts[:timeout] == 1_500
+    assert opts[:follow_redirects] == false
+
+    # The exchange's own options are not the caller's to displace.
+    assert opts[:json]["space"] == @space
+
+    assert {"authorization", "DPoP " <> ^delegation} =
+             List.keyfind(opts[:headers], "authorization", 0)
+  end
+
+  test "mint keeps its authorization when the caller passes headers of their own", ctx do
+    delegation = delegation_jwt(ctx)
+    credential = credential_jwt(ctx, ctx.dpop_key)
+
+    Process.put(
+      :post_response,
+      {:ok, %{status: 200, headers: [], body: %{"credential" => credential}}}
+    )
+
+    assert {:ok, _} =
+             Credential.mint(@space_host, @space, delegation,
+               dpop_key: ctx.dpop_key,
+               headers: [{"authorization", "Bearer not-this-one"}],
+               http: RecordingHTTP
+             )
+
+    {_url, opts} = Process.get(:last_post)
+
+    assert {"authorization", "DPoP " <> ^delegation} =
+             List.keyfind(opts[:headers], "authorization", 0)
+  end
+
+  # The mocks above prove the option is in the list; this proves it reaches
+  # the socket. Against a server that accepts and never answers, a dropped
+  # `:timeout` waits out the 30s default instead of the 100ms asked for.
+  @tag timeout: 5_000
+  test "a configured timeout reaches the transport, not just the option list" do
+    {:ok, listen} = :gen_tcp.listen(0, [:inet, :binary, {:active, false}])
+    {:ok, port} = :inet.port(listen)
+
+    {:ok, _server} =
+      Task.start_link(fn ->
+        {:ok, sock} = :gen_tcp.accept(listen, 4_000)
+        :gen_tcp.recv(sock, 0, 4_000)
+        Process.sleep(4_000)
+      end)
+
+    started = System.monotonic_time(:millisecond)
+
+    assert {:error, :timeout} =
+             Credential.get_delegation_token("http://127.0.0.1:#{port}", @space, timeout: 100)
+
+    assert System.monotonic_time(:millisecond) - started < 2_000
+    :gen_tcp.close(listen)
+  end
+
+  defp signed_credential(jwk, dpop_key, opts) do
+    {:ok, jkt} = JWK.thumbprint(JWK.to_public(dpop_key))
+
+    {:ok, jwt} =
+      Token.sign(
+        :credential,
+        [iss: @authority, sub: @space, dpop_jkt: jkt, iat: @now] ++ opts,
+        jwk
+      )
+
+    jwt
+  end
+
   defp dp_key do
     {:ok, key} = DPoP.generate_key()
     key
@@ -254,21 +426,17 @@ defmodule Exosphere.ATProto.Spaces.CredentialTest do
     end
   end
 
-  defp did_document(did, jwk) do
-    {:ok, public_key, :secp256k1} = JWK.to_public_key(JWK.to_public(jwk))
-    multibase = "z" <> Base58.encode(<<0xE7, 0x01, public_key::binary>>)
+  # The account key under `#atproto`, plus any `{fragment, jwk}` the test
+  # wants the authority to publish alongside it.
+  defp did_document(did, jwk, extra \\ []) do
+    methods =
+      [verification_method(did, "#atproto", jwk)] ++
+        Enum.map(extra, fn {fragment, key} -> verification_method(did, fragment, key) end)
 
     {:ok, doc} =
       Document.parse(%{
         "id" => did,
-        "verificationMethod" => [
-          %{
-            "id" => did <> "#atproto",
-            "type" => "Multikey",
-            "controller" => did,
-            "publicKeyMultibase" => multibase
-          }
-        ],
+        "verificationMethod" => methods,
         "service" => [
           %{
             "id" => did <> "#atproto_pds",
@@ -279,5 +447,16 @@ defmodule Exosphere.ATProto.Spaces.CredentialTest do
       })
 
     doc
+  end
+
+  defp verification_method(did, fragment, jwk) do
+    {:ok, public_key, :secp256k1} = JWK.to_public_key(JWK.to_public(jwk))
+
+    %{
+      "id" => did <> fragment,
+      "type" => "Multikey",
+      "controller" => did,
+      "publicKeyMultibase" => "z" <> Base58.encode(<<0xE7, 0x01, public_key::binary>>)
+    }
   end
 end
