@@ -76,6 +76,12 @@ defmodule Exosphere.ATProto.Spaces.SyncTest do
     }
   end
 
+  # The lexicon `bytes` wire form, exactly as a conforming host emits it: the
+  # $bytes wrapper over standard-alphabet base64 with padding. The old doubles
+  # encoded bare url-safe strings — what the client believed, not what the
+  # data model specifies — which is how the decoding bug survived them.
+  defp bytes(bin), do: %{"$bytes" => Base.encode64(bin)}
+
   test "list_repo_ops decodes the head commit's bytes", ctx do
     Process.put(:get, fn _url ->
       {:ok,
@@ -86,7 +92,7 @@ defmodule Exosphere.ATProto.Spaces.SyncTest do
            "ops" => [],
            "commit" => %{
              "ver" => 1,
-             "hash" => Base.url_encode64(<<7::256>>, padding: false),
+             "hash" => bytes(<<7::256>>),
              "rev" => "head"
            }
          }
@@ -95,6 +101,77 @@ defmodule Exosphere.ATProto.Spaces.SyncTest do
 
     assert {:ok, %{commit: %{"hash" => <<7::256>>}}} =
              Sync.list_repo_ops(@repo_host, @space, @author, ctx.cred, http: SyncHTTP)
+  end
+
+  test "bytes use the standard alphabet, padding optional, url-safe rejected", ctx do
+    # Encodes to "Fb7+/w0=" — `+`, `/` and `=` are legal in the data model's
+    # base64 and illegal in base64url.
+    hash = <<21, 190, 254, 255, 13>>
+    unpadded = %{"$bytes" => String.trim_trailing(Base.encode64(hash), "=")}
+
+    for wire <- [bytes(hash), unpadded] do
+      Process.put(:get, fn _url ->
+        {:ok,
+         %{
+           status: 200,
+           headers: [],
+           body: %{"repos" => [%{"did" => @author, "rev" => "r", "hash" => wire}]}
+         }}
+      end)
+
+      assert {:ok, %{repos: [%{hash: ^hash}]}} =
+               Sync.list_repos(@space_host, @space, ctx.cred, http: SyncHTTP)
+    end
+
+    # The same bytes in the url-safe alphabet are not the data model's base64.
+    urlsafe = Base.url_encode64(hash)
+
+    Process.put(:get, fn _url ->
+      {:ok,
+       %{
+         status: 200,
+         headers: [],
+         body: %{"repos" => [%{"did" => @author, "rev" => "r", "hash" => %{"$bytes" => urlsafe}}]}
+       }}
+    end)
+
+    assert {:error, {:invalid_bytes, "hash"}} =
+             Sync.list_repos(@space_host, @space, ctx.cred, http: SyncHTTP)
+  end
+
+  test "malformed bytes are an error, not a silent pass-through", ctx do
+    Process.put(:get, fn _url ->
+      {:ok,
+       %{
+         status: 200,
+         headers: [],
+         body: %{
+           "ops" => [],
+           "commit" => %{"ver" => 1, "rev" => "head", "hash" => %{"$bytes" => "not*base64!"}}
+         }
+       }}
+    end)
+
+    assert {:error, {:invalid_bytes, "hash"}} =
+             Sync.list_repo_ops(@repo_host, @space, @author, ctx.cred, http: SyncHTTP)
+  end
+
+  test "get_latest_commit returns the commit with its bytes decoded", ctx do
+    sig = :crypto.strong_rand_bytes(64)
+
+    Process.put(:get, fn url ->
+      assert String.contains?(url, "/xrpc/com.atproto.space.getLatestCommit?")
+
+      {:ok,
+       %{
+         status: 200,
+         headers: [],
+         body: %{"commit" => %{"rev" => "head", "hash" => bytes(<<7::256>>), "sig" => bytes(sig)}}
+       }}
+    end)
+
+    assert {:ok, %{"rev" => "head", "hash" => <<7::256>>, "sig" => ^sig}} =
+             Sync.get_latest_commit(@repo_host, @space, @author, ctx.cred, http: SyncHTTP)
   end
 
   test "list_repos returns the writer set with decoded commit hashes", ctx do
@@ -115,7 +192,7 @@ defmodule Exosphere.ATProto.Spaces.SyncTest do
                %{
                  "did" => @author,
                  "rev" => "3kbcq3p7ad400",
-                 "hash" => Base.url_encode64(hash, padding: false)
+                 "hash" => bytes(hash)
                }
              ],
              "cursor" => "next"
@@ -170,7 +247,7 @@ defmodule Exosphere.ATProto.Spaces.SyncTest do
            "ops" => ops,
            "commit" => %{
              "ver" => 1,
-             "hash" => Base.url_encode64(:crypto.hash(:sha256, "head-state"), padding: false),
+             "hash" => bytes(:crypto.hash(:sha256, "head-state")),
              "rev" => "head"
            }
          }

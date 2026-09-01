@@ -42,7 +42,8 @@ defmodule Exosphere.ATProto.Spaces.Sync do
   truth.
 
   Returns `{:ok, %{repos: [%{did:, rev:, hash:}], cursor: cursor | nil}}`.
-  The `hash` values are CBOR-decoded from the lexicon's `bytes` format.
+  The `hash` values are base64-decoded from the lexicon `bytes` wire form
+  (`{"$bytes": …}`).
   """
   @spec list_repos(String.t(), String.t(), credential(), keyword()) ::
           {:ok, %{repos: [map()], cursor: String.t() | nil}} | {:error, term()}
@@ -52,13 +53,8 @@ defmodule Exosphere.ATProto.Spaces.Sync do
       |> maybe_put("limit", Keyword.get(opts, :limit))
       |> maybe_put("cursor", Keyword.get(opts, :cursor))
 
-    with {:ok, body} <- get(space_host, "com.atproto.space.listRepos", params, cred, opts) do
-      repos =
-        body["repos"]
-        |> Enum.map(fn repo ->
-          repo |> Map.update("hash", nil, &decode_bytes/1) |> atomize()
-        end)
-
+    with {:ok, body} <- get(space_host, "com.atproto.space.listRepos", params, cred, opts),
+         {:ok, repos} <- decode_repos(body["repos"]) do
       {:ok, %{repos: repos, cursor: body["cursor"]}}
     end
   end
@@ -66,7 +62,8 @@ defmodule Exosphere.ATProto.Spaces.Sync do
   @doc """
   A repo's current signed commit (`com.atproto.space.getLatestCommit`), from
   its repo host. The commit's `hash` is the digest a fully-synced running
-  set hash must equal.
+  set hash must equal. Its `bytes` fields (`hash`, `ikm`, `mac`, `sig`) are
+  returned decoded.
   """
   @spec get_latest_commit(String.t(), String.t(), String.t(), credential(), keyword()) ::
           {:ok, map() | nil} | {:error, term()}
@@ -79,7 +76,7 @@ defmodule Exosphere.ATProto.Spaces.Sync do
              cred,
              opts
            ) do
-      {:ok, body["commit"]}
+      decode_commit(body["commit"])
     end
   end
 
@@ -90,7 +87,8 @@ defmodule Exosphere.ATProto.Spaces.Sync do
 
   Returns `{:ok, %{ops: [map()], commit: map() | nil, cursor: String.t() | nil}}`
   — the head `commit` is present when the response reaches the oplog head,
-  and `cursor` is present when it does not (page until it disappears).
+  and `cursor` is present when it does not (page until it disappears). The
+  commit's `bytes` fields arrive decoded, like `get_latest_commit/5`.
   """
   @spec list_repo_ops(String.t(), String.t(), String.t(), credential(), keyword()) ::
           {:ok, %{ops: [map()], commit: map() | nil, cursor: String.t() | nil}}
@@ -103,9 +101,9 @@ defmodule Exosphere.ATProto.Spaces.Sync do
       |> maybe_put("limit", Keyword.get(opts, :limit))
       |> maybe_put("excludeValues", Keyword.get(opts, :exclude_values))
 
-    with {:ok, body} <- get(repo_host, "com.atproto.space.listRepoOps", params, cred, opts) do
-      {:ok,
-       %{ops: body["ops"] || [], commit: decode_commit(body["commit"]), cursor: body["cursor"]}}
+    with {:ok, body} <- get(repo_host, "com.atproto.space.listRepoOps", params, cred, opts),
+         {:ok, commit} <- decode_commit(body["commit"]) do
+      {:ok, %{ops: body["ops"] || [], commit: commit, cursor: body["cursor"]}}
     end
   end
 
@@ -242,15 +240,13 @@ defmodule Exosphere.ATProto.Spaces.Sync do
     end
   end
 
-  # Lexicon `bytes` travel base64url in JSON; the signedCommit carries four.
-  defp decode_commit(nil), do: nil
+  # The signedCommit carries four lexicon `bytes` fields.
+  defp decode_commit(nil), do: {:ok, nil}
 
   defp decode_commit(%{} = commit) do
-    commit
-    |> Map.update("hash", nil, &decode_bytes/1)
-    |> Map.update("ikm", nil, &decode_bytes/1)
-    |> Map.update("mac", nil, &decode_bytes/1)
-    |> Map.update("sig", nil, &decode_bytes/1)
+    with {:ok, decoded} <- decode_fields(commit, ~w(hash ikm mac sig)) do
+      {:ok, Map.merge(commit, decoded)}
+    end
   end
 
   defp notify_procedure(space_host, method, space_ref, service, cred, opts) do
@@ -281,15 +277,52 @@ defmodule Exosphere.ATProto.Spaces.Sync do
     "#{String.trim_trailing(host, "/")}/xrpc/#{nsid}?#{query}"
   end
 
-  # Lexicon `bytes` travel as base64url in JSON.
-  defp decode_bytes(b64) when is_binary(b64) do
-    case Base.url_decode64(b64, padding: false) do
-      {:ok, bin} -> bin
-      :error -> b64
+  # Lexicon `bytes` travel in JSON as {"$bytes": b64} — the standard RFC 4648
+  # §4 alphabet (not URL-safe), `=` padding optional (atproto data model
+  # spec). A bare string stays readable for hosts predating the wrapper;
+  # anything else is an error rather than a silent pass-through, so a
+  # malformed value can never pose as a decoded one.
+  defp decode_bytes(%{"$bytes" => b64}) when is_binary(b64), do: decode_bytes(b64)
+
+  defp decode_bytes(b64) when is_binary(b64), do: Base.decode64(b64, padding: false)
+
+  defp decode_bytes(_other), do: :error
+
+  defp decode_fields(map, fields) do
+    Enum.reduce_while(fields, {:ok, %{}}, fn field, {:ok, acc} ->
+      case decode_field(map, field) do
+        {:ok, decoded} -> {:cont, {:ok, Map.put(acc, field, decoded)}}
+        {:error, _} = error -> {:halt, error}
+      end
+    end)
+  end
+
+  # An absent field decodes to nil; a present-but-undecodable one is an error.
+  defp decode_field(map, field) do
+    case Map.fetch(map, field) do
+      :error ->
+        {:ok, nil}
+
+      {:ok, wire} ->
+        case decode_bytes(wire) do
+          {:ok, bin} -> {:ok, bin}
+          :error -> {:error, {:invalid_bytes, field}}
+        end
     end
   end
 
-  defp atomize(repo), do: %{did: repo["did"], rev: repo["rev"], hash: repo["hash"]}
+  defp decode_repos(repos) when is_list(repos) do
+    Enum.reduce_while(repos, {:ok, []}, fn repo, {:ok, acc} ->
+      case decode_field(repo, "hash") do
+        {:ok, hash} -> {:cont, {:ok, [%{did: repo["did"], rev: repo["rev"], hash: hash} | acc]}}
+        {:error, _} = error -> {:halt, error}
+      end
+    end)
+    |> case do
+      {:ok, decoded} -> {:ok, Enum.reverse(decoded)}
+      {:error, _} = error -> error
+    end
+  end
 
   defp maybe_put(map, _key, nil), do: map
   defp maybe_put(map, key, value), do: Map.put(map, key, value)

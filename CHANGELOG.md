@@ -7,6 +7,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+- **the Spaces sync client could not read a conforming space host.** Lexicon
+  `bytes` in JSON travel as `{"$bytes": b64}` in the standard RFC 4648 §4
+  alphabet with optional `=` padding (atproto data model spec), but the client
+  assumed a bare base64url string: a conforming value raised (the wrapper map
+  never matched the string clause), and the alphabet mismatch silently passed
+  values through undecoded whenever the url-safe decode failed. `list_repos/4`,
+  `list_repo_ops/5` and — previously not decoded at all — `get_latest_commit/5`
+  now decode `bytes` fields per the data model; malformed values surface as
+  `{:error, {:invalid_bytes, field}}` instead of a raise or a silent
+  pass-through. A bare standard-alphabet string stays readable for hosts
+  predating the wrapper; test doubles now emit the conforming wire form.
+
 ### Internal
 - BLAKE3 NIF now ships as precompiled, checksummed artifacts (rustler_precompiled) for Linux, macOS, and Windows targets; a Rust toolchain is only needed to build from source
 
