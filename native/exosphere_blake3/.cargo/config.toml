@@ -1,0 +1,21 @@
+# Build flags for the precompiled-NIF targets (and for macOS source builds).
+# NIFs are dlopen'd by the BEAM, so they must leave symbols like the enif_*
+# API unresolved at link time on macOS, and must not statically link musl's
+# libc or they cannot be loaded into a dynamically-linked (Alpine) VM.
+
+[target.'cfg(target_os = "macos")']
+rustflags = [
+  "-C", "link-arg=-undefined",
+  "-C", "link-arg=dynamic_lookup",
+]
+
+# See https://github.com/rust-lang/rust/issues/59302
+[target.x86_64-unknown-linux-musl]
+rustflags = [
+  "-C", "target-feature=-crt-static"
+]
+
+[target.aarch64-unknown-linux-musl]
+rustflags = [
+  "-C", "target-feature=-crt-static"
+]

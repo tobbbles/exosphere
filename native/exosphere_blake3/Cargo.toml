@@ -1,0 +1,27 @@
+[package]
+name = "exosphere_blake3"
+version = "0.1.0"
+authors = ["Toby Archer"]
+edition = "2021"
+license = "MIT"
+description = "BLAKE3 XOF and LtHash lane folding for Exosphere, over the upstream blake3 crate"
+
+[lib]
+name = "exosphere_blake3"
+path = "src/lib.rs"
+crate-type = ["cdylib"]
+
+[dependencies]
+rustler = "0.38"
+blake3 = "1"
+
+# Passthrough so the release build (philss/rustler-precompiled-action) can
+# pick the NIF API version with `--features nif_version_2_16`, matching the
+# `:nif_versions` configured in Exosphere.ATProto.Spaces.Blake3.Native.
+[features]
+default = ["nif_version_2_16"]
+nif_version_2_16 = ["rustler/nif_version_2_16"]
+
+[profile.release]
+lto = true
+opt-level = 3

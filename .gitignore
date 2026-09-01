@@ -26,3 +26,9 @@ priv/plts/
 # Local agent tool config
 /.claude/
 /.zcode/
+
+# Rust build artifacts for the BLAKE3 NIF
+native/*/target/
+
+# Compiled NIF artifact (built from native/ by rustler)
+priv/native/
