@@ -78,6 +78,98 @@ defmodule Exosphere.ATProto.OAuth.DPoP do
     "#{base(parsed)}#{path(parsed)}"
   end
 
+  @proof_typ "dpop+jwt"
+  @proof_alg "ES256"
+  @proof_max_age_sec 60
+  @clock_skew_sec 5
+
+  @doc """
+  Verify a DPoP proof against the request it accompanied — the
+  resource-server side of RFC 9449 (an ATProto resource host, or a space host
+  serving credential-authed requests). Checks everything but replay: the
+  caller records the returned `jti` itself.
+
+  Verifies the proof's signature against its own embedded `jwk` header, its
+  age (issued within the last 60s, ±5s clock skew), and that `htm`/`htu`
+  match the request (`htu` compared after normalization, so query strings
+  don't count).
+
+  ## Options
+
+  - `:credential` - the access token / space credential being presented; its
+    hash must be bound into the proof as `ath`, and `ath` must be *absent*
+    when no credential is given (e.g. the token-endpoint leg)
+  - `:jkt` - an RFC 7638 thumbprint the presenting key must match (a space
+    credential's `cnf.jkt` binding)
+  - `:now` - pin the clock for tests
+
+  Returns `{:ok, %{jti: ..., jkt: ...}}`, where `jkt` is the proof key's own
+  thumbprint — equal to the bound key's whenever verification succeeds.
+  """
+  @spec verify_proof(binary(), String.t(), String.t(), keyword()) ::
+          {:ok, %{jti: String.t(), jkt: String.t()}} | {:error, term()}
+  def verify_proof(proof, htm, htu, opts \\ []) when is_binary(proof) do
+    now = Keyword.get(opts, :now) || System.system_time(:second)
+
+    with {:ok, header, claims} <- JWS.decode(proof),
+         :ok <- check_proof_header(header),
+         {:ok, _claims} <- JWS.verify(header["jwk"], proof, [@proof_alg]),
+         :ok <- check_proof_age(claims, now),
+         {:ok, jti} <- check_proof_request(claims, htm, htu),
+         :ok <- check_proof_ath(claims, Keyword.get(opts, :credential)),
+         {:ok, jkt} <- JWK.thumbprint(header["jwk"]),
+         :ok <- check_bound_jkt(jkt, Keyword.get(opts, :jkt)) do
+      {:ok, %{jti: jti, jkt: jkt}}
+    else
+      {:error, _} = error -> error
+    end
+  end
+
+  defp check_proof_header(%{"typ" => @proof_typ, "alg" => @proof_alg, "jwk" => jwk})
+       when is_map(jwk),
+       do: :ok
+
+  defp check_proof_header(_), do: {:error, :invalid_proof_header}
+
+  defp check_proof_age(%{"iat" => iat}, now) when is_integer(iat) do
+    cond do
+      iat > now + @clock_skew_sec -> {:error, :proof_issued_in_future}
+      now - iat > @proof_max_age_sec + @clock_skew_sec -> {:error, :proof_expired}
+      true -> :ok
+    end
+  end
+
+  defp check_proof_age(_, _), do: {:error, :invalid_proof}
+
+  defp check_proof_request(
+         %{"jti" => jti, "htm" => htm, "htu" => htu},
+         expected_htm,
+         expected_htu
+       )
+       when is_binary(jti) and jti != "" do
+    if htm == expected_htm and htu == normalize_htu(expected_htu) do
+      {:ok, jti}
+    else
+      {:error, :proof_request_mismatch}
+    end
+  end
+
+  defp check_proof_request(_, _, _), do: {:error, :invalid_proof}
+
+  defp check_proof_ath(%{"ath" => ath}, nil) when is_binary(ath), do: {:error, :unexpected_ath}
+
+  defp check_proof_ath(claims, credential) when is_binary(credential) do
+    if claims["ath"] == ath(credential), do: :ok, else: {:error, :ath_mismatch}
+  end
+
+  defp check_proof_ath(_, nil), do: :ok
+
+  defp check_bound_jkt(jkt, expected) when is_binary(expected) do
+    if jkt == expected, do: :ok, else: {:error, :key_mismatch}
+  end
+
+  defp check_bound_jkt(_, nil), do: :ok
+
   @doc """
   The origin (`scheme://host[:port]`, default ports dropped) of a URL.
 

@@ -1,7 +1,7 @@
 defmodule Exosphere.ATProto.OAuth.DPoPTest do
   use ExUnit.Case, async: true
 
-  alias Exosphere.ATProto.OAuth.{DPoP, JWS}
+  alias Exosphere.ATProto.OAuth.{DPoP, JWK, JWS}
 
   test "proof/4 builds a verifiable dpop+jwt with all claims" do
     {:ok, key} = DPoP.generate_key()
@@ -210,5 +210,111 @@ defmodule Exosphere.ATProto.OAuth.RequestTest do
 
     assert {:error, :nxdomain} =
              Request.authorized(ErrorHTTP, :post, "https://x.example.com/a", [], key, nil)
+  end
+end
+
+defmodule Exosphere.ATProto.OAuth.DPoPVerifyTest do
+  @moduledoc false
+  use ExUnit.Case, async: true
+
+  alias Exosphere.ATProto.OAuth.{DPoP, JWK, JWS}
+
+  @credential "eyJ0eXAiOiJhdHByb3RvLXNwYWNlLWNyZWRlbnRpYWwrand0"
+  @htu "https://pds.example.com/xrpc/com.atproto.space.getRepo"
+  @now 1_800_000_000
+
+  test "round-trips a proof for the request it was minted for" do
+    {:ok, key} = DPoP.generate_key()
+    {:ok, jkt} = JWK.thumbprint(JWK.to_public(key))
+    {:ok, proof} = DPoP.proof(key, "GET", @htu <> "?did=did:plc:abc", ath: @credential, iat: @now)
+
+    assert {:ok, %{jti: jti, jkt: ^jkt}} =
+             DPoP.verify_proof(proof, "GET", @htu, credential: @credential, jkt: jkt, now: @now)
+
+    assert is_binary(jti) and jti != ""
+  end
+
+  test "the request must match (htm and normalized htu)" do
+    {:ok, key} = DPoP.generate_key()
+    {:ok, proof} = DPoP.proof(key, "GET", @htu, ath: @credential, iat: @now)
+
+    assert {:error, :proof_request_mismatch} =
+             DPoP.verify_proof(proof, "POST", @htu, credential: @credential, now: @now)
+
+    assert {:error, :proof_request_mismatch} =
+             DPoP.verify_proof(proof, "GET", "https://pds.example.com/other",
+               credential: @credential,
+               now: @now
+             )
+
+    # Query strings don't count: the same proof covers any query on the path.
+    assert {:ok, _} =
+             DPoP.verify_proof(proof, "GET", @htu <> "?cursor=2",
+               credential: @credential,
+               now: @now
+             )
+  end
+
+  test "ath must match the presented credential, and be absent on the token leg" do
+    {:ok, key} = DPoP.generate_key()
+    {:ok, bound} = DPoP.proof(key, "GET", @htu, ath: @credential, iat: @now)
+    {:ok, plain} = DPoP.proof(key, "GET", @htu, iat: @now)
+
+    assert {:ok, _} = DPoP.verify_proof(bound, "GET", @htu, credential: @credential, now: @now)
+
+    assert {:error, :ath_mismatch} =
+             DPoP.verify_proof(bound, "GET", @htu, credential: "other", now: @now)
+
+    # On the token leg (no credential expected), a proof must omit ath...
+    assert {:ok, _} = DPoP.verify_proof(plain, "GET", @htu, now: @now)
+    assert {:error, :unexpected_ath} = DPoP.verify_proof(bound, "GET", @htu, now: @now)
+
+    # ...and a proof without ath never matches a presented credential.
+    assert {:error, :ath_mismatch} =
+             DPoP.verify_proof(plain, "GET", @htu, credential: @credential, now: @now)
+  end
+
+  test "proofs age out (60s + skew)" do
+    {:ok, key} = DPoP.generate_key()
+
+    build = fn iat ->
+      {:ok, proof} = DPoP.proof(key, "GET", @htu, iat: iat)
+      proof
+    end
+
+    assert {:error, :proof_issued_in_future} =
+             DPoP.verify_proof(build.(@now + 30), "GET", @htu, now: @now)
+
+    assert {:error, :proof_expired} = DPoP.verify_proof(build.(@now - 90), "GET", @htu, now: @now)
+    assert {:ok, _} = DPoP.verify_proof(build.(@now - 50), "GET", @htu, now: @now)
+  end
+
+  test "the signature must come from the embedded jwk, and match the binding" do
+    {:ok, key} = DPoP.generate_key()
+    {:ok, other} = DPoP.generate_key()
+    {:ok, jkt} = JWK.thumbprint(JWK.to_public(key))
+    {:ok, proof} = DPoP.proof(key, "GET", @htu, iat: @now)
+
+    assert {:ok, %{jkt: ^jkt}} = DPoP.verify_proof(proof, "GET", @htu, now: @now)
+
+    # A proof from the wrong key doesn't match the credential's binding.
+    {:ok, other_proof} = DPoP.proof(other, "GET", @htu, iat: @now)
+
+    assert {:error, :key_mismatch} =
+             DPoP.verify_proof(other_proof, "GET", @htu, jkt: jkt, now: @now)
+
+    # A forged signature over the same signing input fails verification.
+    [h, p, _s] = String.split(proof, ".")
+    forged = Enum.join([h, p, forged_sig(other, h <> "." <> p)], ".")
+    assert {:error, _} = DPoP.verify_proof(forged, "GET", @htu, now: @now)
+  end
+
+  defp forged_sig(private_jwk, signing_input) do
+    signer = JOSE.JWK.from_map(private_jwk)
+
+    {_, %{"signature" => sig}} =
+      JOSE.JWS.sign(signer, signing_input, %{"alg" => "ES256"})
+
+    sig
   end
 end

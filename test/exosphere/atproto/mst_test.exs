@@ -1,6 +1,8 @@
 defmodule Exosphere.ATProto.MSTTest do
   use ExUnit.Case, async: true
 
+  doctest Exosphere.ATProto.MST
+
   alias Exosphere.ATProto.{CAR, CBOR, CID, MST}
   alias Exosphere.ATProto.TestRepoCar
 
