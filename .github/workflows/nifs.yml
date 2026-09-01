@@ -128,10 +128,12 @@ jobs:
           merge-multiple: true
 
       # --clobber so a manual re-dispatch can replace partial/older assets.
+      # -R because this job never checks out, so gh cannot resolve the
+      # repository from a git remote.
       - name: Upload to the GitHub release
         env:
           GH_TOKEN: ${{ github.token }}
-        run: gh release upload "v${{ inputs.version }}" nifs/*.tar.gz --clobber
+        run: gh release upload "v${{ inputs.version }}" nifs/*.tar.gz --clobber -R "${{ github.repository }}"
 
   checksums:
     name: Commit the checksum file
