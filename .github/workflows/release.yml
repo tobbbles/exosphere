@@ -2,8 +2,11 @@ name: Release
 
 # Reusable publish job, invoked by "Cut release" in the same workflow run —
 # a GITHUB_TOKEN-created release would not trigger an `on: release` workflow,
-# hence the in-run call. Releases created by a user (e.g. a manual cut) do
-# fire the trigger below.
+# hence the in-run call. Manually dispatchable (defaults to main) for
+# republishing; an `on: release` trigger is deliberately absent because a
+# manually-created GitHub release has no precompiled NIF assets or checksum
+# file yet, so auto-publishing from it would ship a broken package — run
+# "Cut release" or the "Precompiled NIFs" workflow first.
 on:
   workflow_call:
     inputs:
@@ -11,8 +14,13 @@ on:
         description: The git ref to publish (the release commit on main)
         required: true
         type: string
-  release:
-    types: [published]
+  workflow_dispatch:
+    inputs:
+      ref:
+        description: The git ref to publish (defaults to the default branch)
+        required: false
+        type: string
+        default: main
 
 permissions:
   contents: read
@@ -29,8 +37,8 @@ jobs:
     steps:
       - uses: actions/checkout@v7
         with:
-          # Via workflow_call: the release commit passed by "Cut release".
-          # Via on: release: github.ref is the tag, which is that same commit.
+          # Via workflow_call: the checksum commit passed by "Cut release".
+          # Via dispatch: the given ref (default main).
           ref: ${{ inputs.ref || github.ref }}
           fetch-depth: 0
 
@@ -39,6 +47,9 @@ jobs:
           elixir-version: "1.19"
           otp-version: "27"
           version-type: loose
+
+      # No Rust toolchain needed: this ref has NIF release assets and the
+      # committed checksum file, so compiling downloads the precompiled NIF.
 
       - name: Install deps
         run: mix deps.get

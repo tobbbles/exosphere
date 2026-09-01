@@ -54,6 +54,10 @@ jobs:
 
     env:
       MIX_ENV: test
+      # CI compiles the BLAKE3 NIF from source: no precompiled assets exist
+      # for the version under development, and the source may have diverged
+      # from the released binaries.
+      EXOSPHERE_BUILD_BLAKE3: "1"
 
     steps:
       - uses: actions/checkout@v7
@@ -63,6 +67,23 @@ jobs:
           elixir-version: ${{ matrix.elixir }}
           otp-version: ${{ matrix.otp }}
           version-type: loose
+
+      # Forced by EXOSPHERE_BUILD_BLAKE3 above, the BLAKE3 NIF
+      # (native/exosphere_blake3) compiles from source, so every job that
+      # compiles the project needs a Rust toolchain. GitHub's runner
+      # images ship one, but pinning it here keeps the build reproducible
+      # when that changes.
+      - uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache Rust build
+        uses: actions/cache@v6
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            native/exosphere_blake3/target
+          key: ${{ runner.os }}-cargo-${{ hashFiles('native/exosphere_blake3/Cargo.toml', 'native/exosphere_blake3/src/**') }}
+          restore-keys: ${{ runner.os }}-cargo-
 
       - name: Install deps
         run: mix deps.get
@@ -82,6 +103,10 @@ jobs:
 
     env:
       MIX_ENV: test
+      # CI compiles the BLAKE3 NIF from source: no precompiled assets exist
+      # for the version under development, and the source may have diverged
+      # from the released binaries.
+      EXOSPHERE_BUILD_BLAKE3: "1"
 
     steps:
       - uses: actions/checkout@v7
@@ -91,6 +116,23 @@ jobs:
           elixir-version: "1.19"
           otp-version: "27"
           version-type: loose
+
+      # Forced by EXOSPHERE_BUILD_BLAKE3 above, the BLAKE3 NIF
+      # (native/exosphere_blake3) compiles from source, so every job that
+      # compiles the project needs a Rust toolchain. GitHub's runner
+      # images ship one, but pinning it here keeps the build reproducible
+      # when that changes.
+      - uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache Rust build
+        uses: actions/cache@v6
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            native/exosphere_blake3/target
+          key: ${{ runner.os }}-cargo-${{ hashFiles('native/exosphere_blake3/Cargo.toml', 'native/exosphere_blake3/src/**') }}
+          restore-keys: ${{ runner.os }}-cargo-
 
       - name: Install deps
         run: mix deps.get
@@ -109,6 +151,10 @@ jobs:
       MIX_ENV: test
       # v3: rebuilt with :mix in the PLT (plt_add_apps) for the tasks/ modules
       PLT_CACHE_VERSION: v3
+      # CI compiles the BLAKE3 NIF from source: no precompiled assets exist
+      # for the version under development, and the source may have diverged
+      # from the released binaries.
+      EXOSPHERE_BUILD_BLAKE3: "1"
 
     steps:
       - uses: actions/checkout@v7
@@ -132,6 +178,23 @@ jobs:
         with:
           path: priv/plts
           key: ${{ runner.os }}-dialyzer-${{ env.PLT_CACHE_VERSION }}-elixir-${{ steps.toolchain.outputs.elixir }}-erts-${{ steps.toolchain.outputs.erts }}-${{ hashFiles('**/mix.lock') }}
+
+      # Forced by EXOSPHERE_BUILD_BLAKE3 above, the BLAKE3 NIF
+      # (native/exosphere_blake3) compiles from source, so every job that
+      # compiles the project needs a Rust toolchain. GitHub's runner
+      # images ship one, but pinning it here keeps the build reproducible
+      # when that changes.
+      - uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache Rust build
+        uses: actions/cache@v6
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            native/exosphere_blake3/target
+          key: ${{ runner.os }}-cargo-${{ hashFiles('native/exosphere_blake3/Cargo.toml', 'native/exosphere_blake3/src/**') }}
+          restore-keys: ${{ runner.os }}-cargo-
 
       - name: Install deps
         run: mix deps.get
