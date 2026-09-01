@@ -37,12 +37,19 @@ end
 
 #### Build requirements
 
-Exosphere compiles a small Rust NIF (`native/exosphere_blake3`) for BLAKE3 with
+Exosphere ships a small Rust NIF (`native/exosphere_blake3`) for BLAKE3 with
 extendable output, which `Exosphere.ATProto.Spaces.Lthash` needs and no
-published Elixir binding provides. Building it needs a **Rust toolchain**
-([rustup](https://rustup.rs/)) on the machine that compiles the project. The
-`ex_secp256k1` dependency already ships a NIF, but as a precompiled artifact;
-this one builds from source.
+published Elixir binding provides. Released versions download it as a
+precompiled, checksummed artifact (via
+[`rustler_precompiled`](https://hexdocs.pm/rustler_precompiled)) for Linux
+(amd64/arm64, glibc and musl), macOS (Intel and Apple Silicon), Windows, and
+more — no Rust toolchain required. A **Rust toolchain**
+([rustup](https://rustup.rs/)) is only needed to compile the crate from
+source: set `EXOSPHERE_BUILD_BLAKE3=1` for unsupported targets, air-gapped
+builds, or unreleased changes. That always applies to work on `native/` in
+this repository — precompiled artifacts only exist for released versions, so
+without it you would silently compile against the last release's (stale)
+binary.
 
 ### Quickstart: XRPC client
 
@@ -288,10 +295,10 @@ tree nodes on the operated paths rather than rebuilding the repository.
 
 This project uses GitHub Actions:
 
-- **CI**: runs `mix format --check-formatted`, `mix credo --strict`, `mix test`, and `mix dialyzer` on pushes + PRs. Jobs install a Rust toolchain for the BLAKE3 NIF and cache its build.
+- **CI**: runs `mix format --check-formatted`, `mix credo --strict`, `mix test`, and `mix dialyzer` on pushes + PRs. Jobs install a Rust toolchain and compile the BLAKE3 NIF from source (precompiled artifacts only exist for released versions).
 - **Network-backed suites**: `mix test` excludes them. `mix test --only live` runs discovery against real Bluesky infrastructure; `mix test --only external` re-verifies the Spaces spec pins against the current alpha lexicons and runs the serving primitives over a real repository.
 - **Auto-versioning on merge**: when a PR is merged into `main`, a workflow requires exactly one label: `major`, `minor`, or `patch`. It bumps `mix.exs`, commits, tags `vX.Y.Z`, and pushes (which triggers the Hex release workflow).
-- **Release**: pushing a tag like `v0.1.0` publishes the package + docs to Hex.
+- **Release**: "Cut release" promotes the changelog, tags, builds precompiled BLAKE3 NIFs for every target (attaching them and a checksum file to the release), and then publishes the package + docs to Hex.
 
 To enable publishing, add a repository secret named `HEX_API_KEY` (generate one via `mix hex.user key generate`).
 

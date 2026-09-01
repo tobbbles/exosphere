@@ -27,6 +27,7 @@ jobs:
       # Job outputs are plain expressions (no description/value mapping —
       # that syntax is step-outputs only and makes the workflow unparseable).
       sha: ${{ steps.release.outputs.sha }}
+      version: ${{ steps.version.outputs.version }}
 
     env:
       MIX_ENV: test
@@ -136,15 +137,31 @@ jobs:
             --notes-file release_notes.md
           echo "sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
 
+  # Builds the precompiled BLAKE3 NIF tarballs for every target, attaches
+  # them to the release, and commits the checksum file to main. Publish
+  # depends on it: the Hex package ships that checksum file, and users
+  # compiling the fresh version need the release assets live.
+  nifs:
+    name: Precompiled NIFs
+    needs: cut
+    uses: ./.github/workflows/nifs.yml
+    permissions:
+      contents: write
+    secrets: inherit
+    with:
+      ref: ${{ needs.cut.outputs.sha }}
+      version: ${{ needs.cut.outputs.version }}
+
   # Runs in this same workflow because a GITHUB_TOKEN-created release does
-  # not trigger `on: release` workflows. Publishes the pushed release
-  # commit, not this run's dispatch-time HEAD.
+  # not trigger `on: release` workflows. Publishes the checksum commit (not
+  # this run's dispatch-time HEAD, and not the bare release commit — the
+  # package must include the checksum file).
   publish:
     name: Publish to Hex.pm
-    needs: cut
+    needs: [cut, nifs]
     uses: ./.github/workflows/release.yml
     permissions:
       contents: read
     secrets: inherit
     with:
-      ref: ${{ needs.cut.outputs.sha }}
+      ref: ${{ needs.nifs.outputs.sha }}

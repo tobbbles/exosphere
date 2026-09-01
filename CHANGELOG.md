@@ -7,6 +7,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Internal
+- BLAKE3 NIF now ships as precompiled, checksummed artifacts (rustler_precompiled) for Linux, macOS, and Windows targets; a Rust toolchain is only needed to build from source
+
 ## [0.6.0] - 2026-08-30
 
 ### Added

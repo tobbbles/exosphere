@@ -1,0 +1,237 @@
+name: Precompiled NIFs
+
+# Builds the BLAKE3 NIF (native/exosphere_blake3) for every target that
+# Exosphere.ATProto.Spaces.Blake3.Native declares, attaches the tarballs to
+# the release that "Cut release" just created, and then generates and commits
+# the checksum file that rustler_precompiled verifies downloads against.
+#
+# Called between "cut" and "publish" in cut-release.yml so the Hex package
+# always ships with the checksum file and users compiling the freshly
+# published version find live release assets. Also dispatchable by hand to
+# rebuild/re-attach the artifacts (e.g. after a partial failure or when a
+# target is added) — the checksum job no-ops if nothing changed.
+#
+# The NIF API version is 2.16 (OTP 26+); newer OTPs load 2.16 NIFs unchanged,
+# so one build per target covers every OTP the package supports. This must
+# stay in sync with `:nif_versions` in Blake3.Native.
+
+on:
+  workflow_call:
+    inputs:
+      ref:
+        description: The release commit (mix.exs there carries the version)
+        required: true
+        type: string
+      version:
+        description: The version being released (names the tarballs and locates the GitHub release)
+        required: true
+        type: string
+    # HEAD of main after the checksum commit; "publish" must ship this ref so
+    # the Hex package contains the checksum file.
+    outputs:
+      sha:
+        description: HEAD of main after the checksum commit
+        value: ${{ jobs.checksums.outputs.sha }}
+  workflow_dispatch:
+    inputs:
+      ref:
+        description: The release commit to build NIFs for
+        required: true
+        type: string
+      version:
+        description: The released version (e.g. 0.6.0)
+        required: true
+        type: string
+
+permissions:
+  contents: write
+
+env:
+  NIF_VERSION: "2.16"
+
+jobs:
+  build:
+    name: BLAKE3 NIF (${{ matrix.target }})
+    runs-on: ${{ matrix.os }}
+
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # Keep in sync with the default `:targets` list in
+          # RustlerPrecompiled.Config — every configured target needs an
+          # asset, or users on it fall back to a source build.
+          - target: aarch64-apple-darwin
+            os: macos-26
+          - target: x86_64-apple-darwin
+            os: macos-26-intel
+          - target: x86_64-unknown-linux-gnu
+            os: ubuntu-24.04
+          - target: x86_64-unknown-linux-musl
+            os: ubuntu-24.04
+            use-cross: true
+          - target: aarch64-unknown-linux-gnu
+            os: ubuntu-24.04
+            use-cross: true
+          - target: aarch64-unknown-linux-musl
+            os: ubuntu-24.04
+            use-cross: true
+          - target: arm-unknown-linux-gnueabihf
+            os: ubuntu-24.04
+            use-cross: true
+          - target: riscv64gc-unknown-linux-gnu
+            os: ubuntu-24.04
+            use-cross: true
+          - target: x86_64-pc-windows-msvc
+            os: windows-2022
+          - target: x86_64-pc-windows-gnu
+            os: windows-2022
+
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ inputs.ref }}
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+
+      # Names and packs the tarball exactly as rustler_precompiled expects
+      # (lib<crate>-v<version>-nif-<nif>-<target>.so.tar.gz) and activates
+      # the crate's nif_version_2_16 feature.
+      - name: Build precompiled NIF
+        id: build
+        uses: philss/rustler-precompiled-action@v1.1.5
+        with:
+          project-name: exosphere_blake3
+          project-version: ${{ inputs.version }}
+          project-dir: native/exosphere_blake3
+          target: ${{ matrix.target }}
+          nif-version: ${{ env.NIF_VERSION }}
+          use-cross: ${{ matrix.use-cross }}
+
+      - uses: actions/upload-artifact@v7
+        with:
+          name: ${{ steps.build.outputs.file-name }}
+          path: ${{ steps.build.outputs.file-path }}
+
+  attach:
+    name: Attach NIFs to the release
+    needs: build
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Download NIF tarballs
+        uses: actions/download-artifact@v8
+        with:
+          path: nifs
+          merge-multiple: true
+
+      # --clobber so a manual re-dispatch can replace partial/older assets.
+      - name: Upload to the GitHub release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release upload "v${{ inputs.version }}" nifs/*.tar.gz --clobber
+
+  checksums:
+    name: Commit the checksum file
+    needs: attach
+    runs-on: ubuntu-latest
+
+    outputs:
+      sha: ${{ steps.push.outputs.sha }}
+
+    env:
+      MIX_ENV: dev
+
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ inputs.ref }}
+
+      - uses: erlef/setup-beam@v1
+        with:
+          elixir-version: "1.19"
+          otp-version: "27"
+          version-type: loose
+
+      # The download task needs the NIF module compiled (it reads the
+      # metadata its `use RustlerPrecompiled` writes), and compiling would
+      # try to download the artifact we are checksumming — so force a source
+      # build for that one module.
+      - uses: dtolnay/rust-toolchain@stable
+
+      - name: Install deps
+        run: mix deps.get
+
+      - name: Compile (BLAKE3 from source)
+        env:
+          EXOSPHERE_BUILD_BLAKE3: "1"
+        run: mix compile
+
+      # Downloads every target's tarball from the release and writes
+      # checksum-Elixir.Exosphere.ATProto.Spaces.Blake3.Native.exs in the
+      # repo root. The file ships in the Hex package; without it the package
+      # cannot verify downloads and is broken.
+      - name: Generate the checksum file
+        run: mix rustler_precompiled.download Exosphere.ATProto.Spaces.Blake3.Native --all
+
+      - name: Configure deploy key
+        env:
+          EXOSPHERE_DEPLOY_KEY: ${{ secrets.EXOSPHERE_DEPLOY_KEY }}
+        run: |
+          set -euo pipefail
+          mkdir -p ~/.ssh
+          # Secrets pasted as a single line keep literal \n (and sometimes
+          # \r\n) sequences; convert them back and strip CR / stray quotes so
+          # libcrypto can parse the key (OpenSSH or PKCS#8/PEM).
+          printf '%s' "$EXOSPHERE_DEPLOY_KEY" \
+            | sed -e 's/^"//' -e 's/"$//' -e 's/\\r//g' -e 's/\\n/\n/g' \
+            | tr -d '\r' > ~/.ssh/id_ed25519
+          # Key parsers reject files without a final newline.
+          if [ -n "$(tail -c 1 ~/.ssh/id_ed25519)" ]; then
+            echo >> ~/.ssh/id_ed25519
+          fi
+          chmod 600 ~/.ssh/id_ed25519
+          if ! ssh-keygen -y -f ~/.ssh/id_ed25519 >/dev/null 2>~/key_err.txt </dev/null; then
+            echo "::error::EXOSPHERE_DEPLOY_KEY is not a parsable private key."
+            echo "Diagnostics (no secret material): $(wc -c < ~/.ssh/id_ed25519) bytes, $(wc -l < ~/.ssh/id_ed25519) lines, header: $(head -1 ~/.ssh/id_ed25519)"
+            head -1 ~/key_err.txt
+            if head -1 ~/.ssh/id_ed25519 | grep -qE '^(ssh-|ecdsa-|sk-)'; then
+              echo "Hint: this looks like a PUBLIC key — the secret must hold the private half of the deploy key pair."
+            elif grep -qi 'passphrase' ~/key_err.txt; then
+              echo "Hint: the key appears to be passphrase-protected — deploy keys must be generated without a passphrase."
+            fi
+            exit 1
+          fi
+          ssh-keyscan -t ed25519 github.com >> ~/.ssh/known_hosts 2>/dev/null
+          # Pushes authenticate as the deploy key (ruleset bypass); reads and
+          # other git operations keep using the GITHUB_TOKEN https remote.
+          git remote set-url --push origin "git@github.com:${GITHUB_REPOSITORY}.git"
+
+      - name: Commit and push (retry on race)
+        id: push
+        run: |
+          set -euo pipefail
+          version="${{ inputs.version }}"
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add checksum-*.exs
+          if git diff --cached --quiet; then
+            echo "Checksum file unchanged; nothing to commit."
+            echo "sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          git commit -m "chore: precompiled NIF checksums for v${version} [skip ci]"
+          pushed=0
+          for _ in 1 2 3; do
+            if git push origin HEAD:main; then pushed=1; break; fi
+            echo "Push rejected; rebasing on latest main and retrying."
+            git fetch origin main
+            git rebase origin/main
+          done
+          if [ "$pushed" -ne 1 ]; then
+            echo "Could not push the checksum commit after 3 attempts." >&2
+            exit 1
+          fi
+          echo "sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
