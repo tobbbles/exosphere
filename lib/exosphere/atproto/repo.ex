@@ -132,7 +132,7 @@ defmodule Exosphere.ATProto.Repo do
   def verify_checkout(pds_url, did, opts \\ []) do
     http = Keyword.get(opts, :http, HTTP)
 
-    with {:ok, car} <- fetch_repo_car(http, pds_url, did),
+    with {:ok, car} <- fetch_repo_car(http, pds_url, did, opts),
          {:ok, commit_cid, commit, blocks} <- root_commit(car),
          {:ok, records} <- Commit.verify_checkout(commit, blocks),
          :ok <- maybe_verify_signature(commit, did, opts) do
@@ -140,10 +140,12 @@ defmodule Exosphere.ATProto.Repo do
     end
   end
 
-  defp fetch_repo_car(http, pds_url, did) do
+  defp fetch_repo_car(http, pds_url, did, opts) do
     url = "#{pds_url}/xrpc/com.atproto.sync.getRepo?" <> URI.encode_query(%{"did" => did})
 
-    case http.get(url) do
+    # A whole repo is the one call in this library most likely to need a
+    # timeout other than the default, in either direction.
+    case http.get(url, HTTP.take_request_opts(opts)) do
       {:ok, %{status: 200, body: body}} when is_binary(body) ->
         {:ok, body}
 

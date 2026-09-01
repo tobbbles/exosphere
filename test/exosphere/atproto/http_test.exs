@@ -1,11 +1,41 @@
 defmodule Exosphere.ATProto.HTTPTest do
   @moduledoc """
-  Socket hygiene: error paths must close their connection.
+  Socket hygiene: error paths must close their connection, and the request
+  options a caller sets must survive the trip to it.
   """
 
   use ExUnit.Case, async: true
 
   alias Exosphere.ATProto.HTTP
+
+  doctest Exosphere.ATProto.HTTP
+
+  test "take_request_opts forwards what a caller may set and nothing else" do
+    opts = [
+      timeout: 1_500,
+      follow_redirects: false,
+      http: __MODULE__,
+      dpop_key: %{},
+      headers: [{"authorization", "Bearer caller"}],
+      json: %{"caller" => true}
+    ]
+
+    forwarded = HTTP.take_request_opts(opts)
+
+    assert forwarded[:timeout] == 1_500
+    assert forwarded[:follow_redirects] == false
+
+    # A transport builds its own auth headers and body; a caller must not be
+    # able to displace them through the same keyword list.
+    refute Keyword.has_key?(forwarded, :headers)
+    refute Keyword.has_key?(forwarded, :json)
+    refute Keyword.has_key?(forwarded, :http)
+    refute Keyword.has_key?(forwarded, :dpop_key)
+  end
+
+  test "take_request_opts leaves an unset timeout unset, so the default stands" do
+    assert HTTP.take_request_opts(http: __MODULE__) == []
+  end
 
   test "closes the connection when the response times out" do
     parent = self()

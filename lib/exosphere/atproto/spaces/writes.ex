@@ -12,6 +12,10 @@ defmodule Exosphere.ATProto.Spaces.Writes do
   The authorization is the caller's: pass the session's
   `headers: [{"authorization", "Bearer " <> session.access_token}]`, or pass
   `session: session` and the DPoP proof is derived per request.
+
+  Request options (`:timeout`, `:follow_redirects`) travel in the same
+  keyword list as everything else and reach the transport; see
+  `Exosphere.ATProto.HTTP` on what a `:timeout` actually bounds.
   """
 
   alias Exosphere.ATProto.HTTP
@@ -144,7 +148,7 @@ defmodule Exosphere.ATProto.Spaces.Writes do
     http = Keyword.get(opts, :http, HTTP)
     url = "#{String.trim_trailing(pds, "/")}/xrpc/#{@nsid}.#{method}"
 
-    case request(http, :post, url, [json: body], auth) do
+    case request(http, :post, url, Keyword.put(HTTP.take_request_opts(opts), :json, body), auth) do
       {:ok, %{status: 200, body: resp}} when is_map(resp) ->
         {:ok, resp}
 

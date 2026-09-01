@@ -22,6 +22,10 @@ defmodule Exosphere.ATProto.Spaces.SimpleSpace do
   `managing_app` policy — the call the authority makes to the managing app,
   which exosphere consumers implementing one can serve from this client's
   shapes. A plug/behaviour helper for hosts is a later ask.
+
+  Request options (`:timeout`, `:follow_redirects`) travel in the same
+  keyword list as everything else and reach the transport; see
+  `Exosphere.ATProto.HTTP` on what a `:timeout` actually bounds.
   """
 
   alias Exosphere.ATProto.HTTP
@@ -176,7 +180,7 @@ defmodule Exosphere.ATProto.Spaces.SimpleSpace do
     qs = URI.encode_query(params)
     url = "#{String.trim_trailing(host, "/")}/xrpc/#{@nsid}.#{method}?#{qs}"
 
-    case request(http, :get, url, [], auth) do
+    case request(http, :get, url, HTTP.take_request_opts(opts), auth) do
       {:ok, %{status: 200, body: body}} when is_map(body) ->
         {:ok, body}
 
@@ -195,7 +199,7 @@ defmodule Exosphere.ATProto.Spaces.SimpleSpace do
     http = Keyword.get(opts, :http, HTTP)
     url = "#{String.trim_trailing(host, "/")}/xrpc/#{@nsid}.#{method}"
 
-    case request(http, :post, url, [json: body], auth) do
+    case request(http, :post, url, Keyword.put(HTTP.take_request_opts(opts), :json, body), auth) do
       {:ok, %{status: 200, body: resp}} when is_map(resp) ->
         {:ok, resp}
 

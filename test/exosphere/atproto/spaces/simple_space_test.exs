@@ -192,4 +192,30 @@ defmodule Exosphere.ATProto.Spaces.SimpleSpaceTest do
     {url, _} = Process.get({:get, self()})
     assert url =~ "clientId=https%3A%2F%2Fapp.example.com%2Fclient-metadata.json"
   end
+
+  test "a query hands the caller's timeout to the transport" do
+    Process.put(:get_response, {:ok, %{status: 200, headers: [], body: %{"space" => %{}}}})
+
+    assert {:ok, _} =
+             SimpleSpace.get_space(@pds, @space, @headers, http: SpaceHTTP, timeout: 1_500)
+
+    {_url, opts} = Process.get({:get, self()})
+    assert opts[:timeout] == 1_500
+    assert {"authorization", "Bearer tok"} in opts[:headers]
+  end
+
+  test "a procedure hands the caller's timeout to the transport" do
+    Process.put(:post_response, {:ok, %{status: 200, headers: [], body: %{"uri" => @space}}})
+
+    assert {:ok, _} =
+             SimpleSpace.create_space(@pds, "com.example.group", @headers,
+               http: SpaceHTTP,
+               timeout: 1_500
+             )
+
+    {_url, opts} = Process.get({:post, self()})
+    assert opts[:timeout] == 1_500
+    # The call's own body survives the forwarding.
+    assert opts[:json]["type"] == "com.example.group"
+  end
 end

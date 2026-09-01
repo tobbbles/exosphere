@@ -173,6 +173,10 @@ defmodule Exosphere.ATProto.Identity.Document do
 
   Note that the fallback keys off the exact `#atproto` fragment — a published
   `#atproto_space` entry is never picked up by `get_signing_key/1`.
+
+  This guesses, which is only safe for an authority that publishes one of the
+  two. Prefer `get_space_signing_key/2` wherever a token's `kid` says which
+  key signed it.
   """
   @spec get_space_signing_key(t()) :: {:ok, binary(), atom()} | {:error, term()}
   def get_space_signing_key(%__MODULE__{verification_method: methods} = doc)
@@ -187,6 +191,59 @@ defmodule Exosphere.ATProto.Identity.Document do
   end
 
   def get_space_signing_key(_), do: {:error, :not_found}
+
+  @doc """
+  Resolve the verification method a space token's `kid` names.
+
+  A space token's header names the fragment its signing key was published
+  under, so a verifier honours it rather than guessing: an authority that
+  publishes both keys signs some tokens with each, and picking the wrong one
+  fails a perfectly good signature.
+
+  Only `#atproto` and `#atproto_space` are addressable — a token may not point
+  the verifier at an unrelated verification method (a rotation key, say).
+  Anything else is `{:error, :unsupported_space_kid}`; a fragment that is
+  addressable but absent from the document is `{:error, :not_found}`. Both
+  bare (`"#atproto_space"`) and absolute (`"did:plc:abc#atproto_space"`) key
+  ids are accepted.
+
+  A `nil` `kid` has nothing to honour and falls back to
+  `get_space_signing_key/1`.
+  """
+  @spec get_space_signing_key(t(), String.t() | nil) ::
+          {:ok, binary(), atom()} | {:error, term()}
+  def get_space_signing_key(doc, nil), do: get_space_signing_key(doc)
+
+  def get_space_signing_key(%__MODULE__{verification_method: methods}, kid)
+      when is_binary(kid) and is_list(methods) do
+    with {:ok, fragment} <- space_key_fragment(kid) do
+      case Enum.find(methods, &fragment?(&1, fragment)) do
+        %{public_key_multibase: multibase, type: type} when is_binary(multibase) ->
+          parse_multibase_key(multibase, type)
+
+        _ ->
+          {:error, :not_found}
+      end
+    end
+  end
+
+  def get_space_signing_key(_, kid) when is_binary(kid) do
+    with {:ok, _fragment} <- space_key_fragment(kid), do: {:error, :not_found}
+  end
+
+  @space_key_fragments ["atproto", "atproto_space"]
+
+  defp space_key_fragment(kid) do
+    case kid |> String.split("#") |> List.last() do
+      fragment when fragment in @space_key_fragments -> {:ok, fragment}
+      _ -> {:error, :unsupported_space_kid}
+    end
+  end
+
+  defp fragment?(%{id: id}, fragment) when is_binary(id),
+    do: String.ends_with?(id, "#" <> fragment)
+
+  defp fragment?(_, _), do: false
 
   defp space_key?(%{id: id}) do
     String.ends_with?(id || "", "#atproto_space") or id == "#atproto_space"

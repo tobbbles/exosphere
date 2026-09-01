@@ -39,7 +39,10 @@ defmodule Exosphere.ATProto.Spaces.Credential do
   so credential verification ships in the client library.
 
   All HTTP goes through `Exosphere.ATProto.HTTP.Behaviour` (pass `:http` to
-  substitute a mock), so the whole flow tests offline.
+  substitute a mock), so the whole flow tests offline. Request options
+  (`:timeout`, `:follow_redirects`) travel in the same keyword list and are
+  forwarded to the transport — see `Exosphere.ATProto.HTTP` on what a
+  `:timeout` actually bounds.
   """
 
   alias Exosphere.ATProto.{Crypto, HTTP}
@@ -67,7 +70,12 @@ defmodule Exosphere.ATProto.Spaces.Credential do
       "#{String.trim_trailing(pds_url, "/")}/xrpc/#{@delegation_nsid}?space=" <>
         URI.encode_www_form(space_ref)
 
-    case http.get(url, headers: Keyword.get(opts, :headers, [])) do
+    request_opts =
+      opts
+      |> HTTP.take_request_opts()
+      |> Keyword.put(:headers, Keyword.get(opts, :headers, []))
+
+    case http.get(url, request_opts) do
       {:ok, %{status: 200, body: %{"token" => token}}} when is_binary(token) ->
         {:ok, token}
 
@@ -134,17 +142,23 @@ defmodule Exosphere.ATProto.Spaces.Credential do
   Two key sources:
 
   - `verify(jwt, %Identity.Document{})` — resolve through the authority's DID
-    document: the `#atproto_space` verification method, falling back to
-    `#atproto` (both via `Document.get_space_signing_key/1`)
+    document, honouring the credential's `kid`: the verification method the
+    header names, and only `#atproto` or `#atproto_space` (via
+    `Document.get_space_signing_key/2`). A credential carrying no `kid` at all
+    falls back to guessing — space key, then `#atproto`.
   - `verify(jwt, get_signing_key: fun)` — an `(iss, kid, force_refresh)`
     callback for hosts with their own (cached) key source; see
-    `Token.verify/3`
+    `Token.verify/3`. Honour the `kid` there too.
 
   Options: `:sub` (the expected space URI), `:now`.
   """
   @spec verify(String.t(), Document.t() | keyword()) :: {:ok, map()} | {:error, term()}
   def verify(jwt, %Document{} = doc) do
-    with {:ok, public_key, curve} <- Document.get_space_signing_key(doc),
+    # Resolved up front rather than inside the callback so an unresolvable
+    # `kid` surfaces as itself; `Token.verify/3` flattens a failed key fetch
+    # into `:signing_key_unavailable`.
+    with {:ok, %{header: header}} <- Token.parse(:credential, jwt),
+         {:ok, public_key, curve} <- Document.get_space_signing_key(doc, header["kid"]),
          {:ok, public_jwk} <- public_jwk(public_key, curve) do
       Token.verify(:credential, jwt,
         get_signing_key: fn _iss, _kid, _refresh -> {:ok, public_jwk} end
@@ -157,13 +171,7 @@ defmodule Exosphere.ATProto.Spaces.Credential do
   defp post_exchange(http, url, delegation_jwt, proof, space_ref, opts) do
     with {:ok, attestation} <- client_attestation(opts),
          {:ok, %{status: 200, body: %{"credential" => jwt}}} when is_binary(jwt) <-
-           http.post(url,
-             headers: [
-               {"authorization", "DPoP " <> delegation_jwt},
-               {"dpop", proof}
-             ],
-             json: Map.merge(%{"space" => space_ref}, attestation_body(attestation))
-           ) do
+           http.post(url, exchange_opts(delegation_jwt, proof, space_ref, attestation, opts)) do
       {:ok, jwt}
     else
       {:ok, %{status: status, body: body}} when is_map(body) ->
@@ -175,6 +183,20 @@ defmodule Exosphere.ATProto.Spaces.Credential do
       {:error, _} = error ->
         error
     end
+  end
+
+  # The caller's request options ride along with the flow's own; the headers
+  # and body are ours and are not the caller's to override.
+  defp exchange_opts(delegation_jwt, proof, space_ref, attestation, opts) do
+    opts
+    |> HTTP.take_request_opts()
+    |> Keyword.merge(
+      headers: [
+        {"authorization", "DPoP " <> delegation_jwt},
+        {"dpop", proof}
+      ],
+      json: Map.merge(%{"space" => space_ref}, attestation_body(attestation))
+    )
   end
 
   defp check_binding(%{payload: %{"cnf" => %{"jkt" => jkt}}}, dpop_key) do
