@@ -41,7 +41,8 @@ defmodule Exosphere.ATProto.Spaces.SimpleSpaceTest do
              SimpleSpace.create_space(@pds, "com.example.group", @headers,
                http: SpaceHTTP,
                skey: "default",
-               policy: {:managing_app, "did:web:app.example.com#forum"},
+               read_policy: :public,
+               write_policy: {:managing_app, "did:web:app.example.com#forum"},
                app_access: {:allow_list, ["https://app.example.com/client-metadata.json"]}
              )
 
@@ -51,7 +52,8 @@ defmodule Exosphere.ATProto.Spaces.SimpleSpaceTest do
     assert opts[:json] == %{
              "type" => "com.example.group",
              "skey" => "default",
-             "policy" => %{
+             "readPolicy" => %{"$type" => "com.atproto.simplespace.defs#publicPolicy"},
+             "writePolicy" => %{
                "$type" => "com.atproto.simplespace.defs#managingAppPolicy",
                "managingApp" => "did:web:app.example.com#forum"
              },
@@ -64,7 +66,7 @@ defmodule Exosphere.ATProto.Spaces.SimpleSpaceTest do
     assert {"authorization", "Bearer tok"} in (opts[:headers] || [])
   end
 
-  test "create_space defaults: member-list policy, open app access" do
+  test "create_space defaults: member-list policies, open app access" do
     Process.put(:post_response, {:ok, %{status: 200, headers: [], body: %{}}})
 
     assert {:ok, _} =
@@ -72,7 +74,14 @@ defmodule Exosphere.ATProto.Spaces.SimpleSpaceTest do
 
     {_url, opts} = Process.get({:post, self()})
 
-    assert opts[:json]["policy"] == %{"$type" => "com.atproto.simplespace.defs#memberListPolicy"}
+    assert opts[:json]["readPolicy"] == %{
+             "$type" => "com.atproto.simplespace.defs#memberListPolicy"
+           }
+
+    assert opts[:json]["writePolicy"] == %{
+             "$type" => "com.atproto.simplespace.defs#memberListPolicy"
+           }
+
     assert opts[:json]["appAccess"] == %{"$type" => "com.atproto.simplespace.defs#open"}
     refute Map.has_key?(opts[:json], "skey")
   end
@@ -83,15 +92,22 @@ defmodule Exosphere.ATProto.Spaces.SimpleSpaceTest do
     assert {:ok, _} =
              SimpleSpace.update_space(@pds, @space, @headers,
                http: SpaceHTTP,
-               policy: :public
+               read_policy: :public,
+               app_access: {:allow_list, ["https://app.example.com/client-metadata.json"]}
              )
 
     {_url, opts} = Process.get({:post, self()})
 
     assert opts[:json] == %{
              "space" => @space,
-             "policy" => %{"$type" => "com.atproto.simplespace.defs#publicPolicy"}
+             "readPolicy" => %{"$type" => "com.atproto.simplespace.defs#publicPolicy"},
+             "appAccess" => %{
+               "$type" => "com.atproto.simplespace.defs#allowList",
+               "allowed" => ["https://app.example.com/client-metadata.json"]
+             }
            }
+
+    refute Map.has_key?(opts[:json], "writePolicy")
   end
 
   test "delete_space returns :ok" do
@@ -121,14 +137,41 @@ defmodule Exosphere.ATProto.Spaces.SimpleSpaceTest do
     assert url =~ "limit=50"
   end
 
-  test "add and remove members" do
+  test "put_member defaults to full read and write access" do
     Process.put(:post_response, {:ok, %{status: 200, headers: [], body: %{}}})
 
     assert {:ok, _} =
-             SimpleSpace.add_member(@pds, @space, "did:plc:friend", @headers, http: SpaceHTTP)
+             SimpleSpace.put_member(@pds, @space, "did:plc:friend", @headers, http: SpaceHTTP)
+
+    {url, opts} = Process.get({:post, self()})
+    assert url == @pds <> "/xrpc/com.atproto.simplespace.putMember"
+
+    assert opts[:json] == %{
+             "space" => @space,
+             "did" => "did:plc:friend",
+             "read" => true,
+             "write" => true
+           }
+  end
+
+  test "put_member replaces a member's access with the axes given" do
+    Process.put(:post_response, {:ok, %{status: 200, headers: [], body: %{}}})
+
+    assert {:ok, _} =
+             SimpleSpace.put_member(@pds, @space, "did:plc:friend", @headers,
+               http: SpaceHTTP,
+               read: true,
+               write: false
+             )
 
     {_url, opts} = Process.get({:post, self()})
-    assert opts[:json] == %{"space" => @space, "did" => "did:plc:friend"}
+
+    assert opts[:json] == %{
+             "space" => @space,
+             "did" => "did:plc:friend",
+             "read" => true,
+             "write" => false
+           }
 
     assert {:ok, _} =
              SimpleSpace.remove_member(@pds, @space, "did:plc:friend", @headers, http: SpaceHTTP)

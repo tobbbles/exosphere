@@ -30,7 +30,7 @@ defmodule Exosphere.SpecPinsTest do
   @raw "https://raw.githubusercontent.com/bluesky-social/atproto/#{@branch}/lexicons"
 
   # What `spaces/alpha` pinned against, recorded so drift is legible.
-  @pinned_commit "5fbc9a0"
+  @pinned_commit "787a730"
 
   # Every space method this library calls, with the parameters it sends. Kept
   # here by hand rather than derived from the source: the point is to state
@@ -51,11 +51,13 @@ defmodule Exosphere.SpecPinsTest do
     {"com.atproto.space.putRecord", :procedure, ["space", "collection", "rkey", "record"]},
     {"com.atproto.space.deleteRecord", :procedure, ["space", "collection", "rkey"]},
     {"com.atproto.space.applyWrites", :procedure, ["space", "writes"]},
-    {"com.atproto.simplespace.createSpace", :procedure, ["type", "skey", "policy", "appAccess"]},
-    {"com.atproto.simplespace.updateSpace", :procedure, ["space", "policy", "appAccess"]},
+    {"com.atproto.simplespace.createSpace", :procedure,
+     ["type", "skey", "readPolicy", "writePolicy", "appAccess"]},
+    {"com.atproto.simplespace.updateSpace", :procedure,
+     ["space", "readPolicy", "writePolicy", "appAccess"]},
     {"com.atproto.simplespace.deleteSpace", :procedure, ["space"]},
     {"com.atproto.simplespace.getSpace", :query, ["space"]},
-    {"com.atproto.simplespace.addMember", :procedure, ["space", "did"]},
+    {"com.atproto.simplespace.putMember", :procedure, ["space", "did", "read", "write"]},
     {"com.atproto.simplespace.removeMember", :procedure, ["space", "did"]},
     {"com.atproto.simplespace.listMembers", :query, ["space", "limit", "cursor"]},
     {"com.atproto.simplespace.checkUserAccess", :query, ["space", "user", "clientId"]}
