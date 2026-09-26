@@ -1,0 +1,95 @@
+{
+  "generator": {
+    "repository": "https://github.com/bluesky-social/atproto",
+    "branch": "permissioned-data",
+    "commit": "787a730fcd22ed7791e2636beb509a943017ba1c",
+    "package": "@atproto/space@0.0.1 (MIT)",
+    "generatedAt": "2026-09-26"
+  },
+  "key": {
+    "curve": "secp256k1",
+    "privateKey": "d1a92a44ff780b5f9e2f3e94a06fbcbcb31a1f5a4df8e3d9c2d1a5a1c9d3aab1",
+    "publicKeyCompressed": "033d9893e589e316e2f06f443569e58ecbc931dac94a5a00f34add10fa0fbbf6ee",
+    "didKey": "did:key:zQ3shinYwKboZPmphEn4GwNQoozga4ZiTFddzU1aJRfpzr7gh",
+    "jwk": {
+      "kty": "EC",
+      "crv": "secp256k1",
+      "x": "PZiT5YnjFuLwb0Q1aeWOy8kx2slKWgDzSt0Q-g-79u4",
+      "y": "j1sRH5D7HRNdO3BEn0fewUr5Nom5OwQ9MkKbYTe3fqM"
+    }
+  },
+  "variants": [
+    {
+      "name": "basic",
+      "ctx": {
+        "space": "at://did:plc:spaceauthority/space/com.example.group/default",
+        "author": "did:plc:author",
+        "rev": "3kbcq3p7ad2c2"
+      },
+      "ikm": "2f9a1b77c11e4f0fde13b8a29d1c47e56a33f2ac1d0e7b44c9a2f6b3d5e8f701",
+      "ctxBytes": "617470726f746f2d73706163652d7631003b61743a2f2f6469643a706c633a7370616365617574686f726974792f73706163652f636f6d2e6578616d706c652e67726f75702f64656661756c74000e6469643a706c633a617574686f72000d336b626371337037616432633200202f9a1b77c11e4f0fde13b8a29d1c47e56a33f2ac1d0e7b44c9a2f6b3d5e8f701",
+      "commit": {
+        "ver": 1,
+        "hash": "f7605f8f8dc850f18c2a5282c2098bdacee7a215964793957dbba8a8e23c14eb",
+        "ikm": "2f9a1b77c11e4f0fde13b8a29d1c47e56a33f2ac1d0e7b44c9a2f6b3d5e8f701",
+        "sig": "723051b071a34f46ed151104bed73ffa9a4bfae6c59df4a29d2209ac4cab9c4e399b3838bb8f042d2f46195459a17dbd25328e23a7dba0a66deaf7683a33a05a",
+        "mac": "bd0f382d85d678c3e1135992db2c47715f35c5662522aafc166c673923e7e09f",
+        "rev": "3kbcq3p7ad2c2"
+      }
+    },
+    {
+      "name": "next-rev",
+      "ctx": {
+        "space": "at://did:plc:spaceauthority/space/com.example.group/default",
+        "author": "did:plc:author",
+        "rev": "3kbcq3p7ad2k4"
+      },
+      "ikm": "101112131415161718191a1b1c1d1e1f202122232425262728292a2b2c2d2e2f",
+      "ctxBytes": "617470726f746f2d73706163652d7631003b61743a2f2f6469643a706c633a7370616365617574686f726974792f73706163652f636f6d2e6578616d706c652e67726f75702f64656661756c74000e6469643a706c633a617574686f72000d336b6263713370376164326b340020101112131415161718191a1b1c1d1e1f202122232425262728292a2b2c2d2e2f",
+      "commit": {
+        "ver": 1,
+        "hash": "f7605f8f8dc850f18c2a5282c2098bdacee7a215964793957dbba8a8e23c14eb",
+        "ikm": "101112131415161718191a1b1c1d1e1f202122232425262728292a2b2c2d2e2f",
+        "sig": "5c43bdb195d967fb165bd71c435df9c759ea0da44be914ac4f3c73a19719ccf67338d0b3a81b8a49d3d213e1508afa1916061a9dcaba25ce79368408140c7f61",
+        "mac": "767874d0ae985985d2d80dfa2e0e7944523648693870040cc72c9f3b3e5394d3",
+        "rev": "3kbcq3p7ad2k4"
+      }
+    },
+    {
+      "name": "empty-repo",
+      "ctx": {
+        "space": "at://did:plc:spaceauthority/space/com.example.group/default",
+        "author": "did:plc:author",
+        "rev": "3kbcq3p7ad2c2"
+      },
+      "ikm": "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f20",
+      "ctxBytes": "617470726f746f2d73706163652d7631003b61743a2f2f6469643a706c633a7370616365617574686f726974792f73706163652f636f6d2e6578616d706c652e67726f75702f64656661756c74000e6469643a706c633a617574686f72000d336b62637133703761643263320021000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f20",
+      "commit": {
+        "ver": 1,
+        "hash": "e5a00aa9991ac8a5ee3109844d84a55583bd20572ad3ffcd42792f3c36b183ad",
+        "ikm": "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f20",
+        "sig": "1c56fd816a058cbf4c61ddc62229938e95a541fbf8c0aa38784ca8842ec9d782093f9fcb00b633b18f5fa8eea2f430f7c925a427ef7a38a530ee06b50bcb1722",
+        "mac": "cb1abf3548e9a41174e7af17a936f314a8aa5838e7b57fc7f8b1c5fdb8796dd0",
+        "rev": "3kbcq3p7ad2c2"
+      }
+    },
+    {
+      "name": "edge-length-space-uri",
+      "ctx": {
+        "space": "at://did:plc:spaceauthority/space/com.example.group/kkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkk",
+        "author": "did:plc:author",
+        "rev": "3kbcq3p7ad2c2"
+      },
+      "ikm": "f0e0d0c0b0a09080706050403020100112233445566778899aabbccddeeff0",
+      "ctxBytes": "617470726f746f2d73706163652d7631023461743a2f2f6469643a706c633a7370616365617574686f726974792f73706163652f636f6d2e6578616d706c652e67726f75702f6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b000e6469643a706c633a617574686f72000d336b6263713370376164326332001ff0e0d0c0b0a09080706050403020100112233445566778899aabbccddeeff0",
+      "commit": {
+        "ver": 1,
+        "hash": "935aef96cbae20a466af8ee9fb6dc01376815850f5b8ea9fe937d7468e6b8db4",
+        "ikm": "f0e0d0c0b0a09080706050403020100112233445566778899aabbccddeeff0",
+        "sig": "6e7958312eb736f0e38b39e975297b2e397eb76508310a8e0aa17c83f494af0a628d79c33e3af6e54b5e4ab7bf9920d0816ab655b0682a0caa367b5a46169c16",
+        "mac": "de2d9d7d9f73db907861023708c52f0c27ac6cbff11aac7422e2c82ac4cd50e2",
+        "rev": "3kbcq3p7ad2c2"
+      }
+    }
+  ]
+}

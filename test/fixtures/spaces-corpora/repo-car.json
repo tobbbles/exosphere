@@ -1,0 +1,130 @@
+{
+  "generator": {
+    "repository": "https://github.com/bluesky-social/atproto",
+    "branch": "permissioned-data",
+    "commit": "787a730fcd22ed7791e2636beb509a943017ba1c",
+    "package": "@atproto/space@0.0.1 (MIT)",
+    "generatedAt": "2026-09-26"
+  },
+  "key": {
+    "curve": "secp256k1",
+    "privateKey": "d1a92a44ff780b5f9e2f3e94a06fbcbcb31a1f5a4df8e3d9c2d1a5a1c9d3aab1",
+    "publicKeyCompressed": "033d9893e589e316e2f06f443569e58ecbc931dac94a5a00f34add10fa0fbbf6ee",
+    "didKey": "did:key:zQ3shinYwKboZPmphEn4GwNQoozga4ZiTFddzU1aJRfpzr7gh",
+    "jwk": {
+      "kty": "EC",
+      "crv": "secp256k1",
+      "x": "PZiT5YnjFuLwb0Q1aeWOy8kx2slKWgDzSt0Q-g-79u4",
+      "y": "j1sRH5D7HRNdO3BEn0fewUr5Nom5OwQ9MkKbYTe3fqM"
+    }
+  },
+  "ctx": {
+    "space": "at://did:plc:spaceauthority/space/com.example.group/default",
+    "author": "did:plc:author",
+    "rev": "3kbcq3p7ad2c2"
+  },
+  "commit": {
+    "ver": 1,
+    "hash": "f7605f8f8dc850f18c2a5282c2098bdacee7a215964793957dbba8a8e23c14eb",
+    "ikm": "2f9a1b77c11e4f0fde13b8a29d1c47e56a33f2ac1d0e7b44c9a2f6b3d5e8f701",
+    "sig": "723051b071a34f46ed151104bed73ffa9a4bfae6c59df4a29d2209ac4cab9c4e399b3838bb8f042d2f46195459a17dbd25328e23a7dba0a66deaf7683a33a05a",
+    "mac": "bd0f382d85d678c3e1135992db2c47715f35c5662522aafc166c673923e7e09f",
+    "rev": "3kbcq3p7ad2c2"
+  },
+  "recordsInputOrder": [
+    "com.example.thread/3jzfcgty2a2h",
+    "z.foo.bar/a",
+    "a.foo.bar/abcdefgh"
+  ],
+  "records": [
+    {
+      "collection": "com.example.thread",
+      "rkey": "3jzfcgty2a2h",
+      "record": {
+        "$type": "com.example.thread",
+        "text": "spaces interop corpus",
+        "createdAt": "2026-09-22T00:00:00.000Z",
+        "counts": {
+          "likes": 3,
+          "shares": 0
+        },
+        "tags": [
+          "interop",
+          "lthash"
+        ],
+        "pinned": true
+      }
+    },
+    {
+      "collection": "z.foo.bar",
+      "rkey": "a",
+      "record": {
+        "$type": "z.foo.bar",
+        "note": "short path, sorts first by length"
+      }
+    },
+    {
+      "collection": "a.foo.bar",
+      "rkey": "abcdefgh",
+      "record": {
+        "$type": "a.foo.bar",
+        "note": "longer path, sorts second by length"
+      }
+    }
+  ],
+  "setHashElements": [
+    "com.example.thread/3jzfcgty2a2h/bafyreiflapakfrz5hta7l7lejy6gj2xeclhh24jsqq7umfy7rhixdkfusu",
+    "z.foo.bar/a/bafyreiftrcmdaijfmjimhrtbozythvgva7zte64x3qikopspbh6kjyapx4",
+    "a.foo.bar/abcdefgh/bafyreihkcy3m4ccqgklg5qx5koor3fybwzrebcdbytdrjglzdthj3rhcjm"
+  ],
+  "indexEntries": [
+    [
+      "z.foo.bar/a",
+      "bafyreiftrcmdaijfmjimhrtbozythvgva7zte64x3qikopspbh6kjyapx4"
+    ],
+    [
+      "a.foo.bar/abcdefgh",
+      "bafyreihkcy3m4ccqgklg5qx5koor3fybwzrebcdbytdrjglzdthj3rhcjm"
+    ],
+    [
+      "com.example.thread/3jzfcgty2a2h",
+      "bafyreiflapakfrz5hta7l7lejy6gj2xeclhh24jsqq7umfy7rhixdkfusu"
+    ]
+  ],
+  "roots": {
+    "commit": "bafyreibgqmz6c5th46rkn6ssbld3eg4kg3ftmqbgttvwyygxxn3fc7btmy",
+    "index": "bafyreiddduq6p7gn5rs7tlqsnoxhsobylxxuxo22txavatc2ljuu6cjtam"
+  },
+  "blocks": [
+    {
+      "role": "commit",
+      "cid": "bafyreibgqmz6c5th46rkn6ssbld3eg4kg3ftmqbgttvwyygxxn3fc7btmy",
+      "bytes": "a663696b6d58202f9a1b77c11e4f0fde13b8a29d1c47e56a33f2ac1d0e7b44c9a2f6b3d5e8f701636d61635820bd0f382d85d678c3e1135992db2c47715f35c5662522aafc166c673923e7e09f637265766d336b6263713370376164326332637369675840723051b071a34f46ed151104bed73ffa9a4bfae6c59df4a29d2209ac4cab9c4e399b3838bb8f042d2f46195459a17dbd25328e23a7dba0a66deaf7683a33a05a637665720164686173685820f7605f8f8dc850f18c2a5282c2098bdacee7a215964793957dbba8a8e23c14eb"
+    },
+    {
+      "role": "index",
+      "cid": "bafyreiddduq6p7gn5rs7tlqsnoxhsobylxxuxo22txavatc2ljuu6cjtam",
+      "bytes": "a36b7a2e666f6f2e6261722f61d82a58250001711220b388983021256250c3c661767133d4d507f3327b97dc10a73e4f09fca4e00fbf72612e666f6f2e6261722f6162636465666768d82a58250001711220ea1636ce085032966ec2fd539d1d9701b662408861c4c71499791cce9dc4e24b781f636f6d2e6578616d706c652e7468726561642f336a7a666367747932613268d82a58250001711220ab03c0a2c73d3cc1f5fd644e3c64eae412ce7d7132843f46171f89d171a8b495"
+    },
+    {
+      "role": "record",
+      "path": "z.foo.bar/a",
+      "cid": "bafyreiftrcmdaijfmjimhrtbozythvgva7zte64x3qikopspbh6kjyapx4",
+      "bytes": "a2646e6f7465782173686f727420706174682c20736f727473206669727374206279206c656e677468652474797065697a2e666f6f2e626172"
+    },
+    {
+      "role": "record",
+      "path": "a.foo.bar/abcdefgh",
+      "cid": "bafyreihkcy3m4ccqgklg5qx5koor3fybwzrebcdbytdrjglzdthj3rhcjm",
+      "bytes": "a2646e6f746578236c6f6e67657220706174682c20736f727473207365636f6e64206279206c656e67746865247479706569612e666f6f2e626172"
+    },
+    {
+      "role": "record",
+      "path": "com.example.thread/3jzfcgty2a2h",
+      "cid": "bafyreiflapakfrz5hta7l7lejy6gj2xeclhh24jsqq7umfy7rhixdkfusu",
+      "bytes": "a664746167738267696e7465726f70666c746861736864746578747573706163657320696e7465726f7020636f7270757365247479706572636f6d2e6578616d706c652e74687265616466636f756e7473a2656c696b65730366736861726573006670696e6e6564f5696372656174656441747818323032362d30392d32325430303a30303a30302e3030305a"
+    }
+  ],
+  "car": "Y6Jlcm9vdHOC2CpYJQABcRIgJoMz4XZn56Km+lIKx7IbijbLNkAmnOtsYNe7dlF8M2bYKlglAAFxEiBjHSHn/M3sZfmuEmuueTg4Xe9Lu1qdwVBMWlppTwkzA2d2ZXJzaW9uAfUBAXESICaDM+F2Z+eipvpSCseyG4o2yzZAJpzrbGDXu3ZRfDNmpmNpa21YIC+aG3fBHk8P3hO4op0cR+VqM/KsHQ57RMmi9rPV6PcBY21hY1ggvQ84LYXWeMPhE1mS2yxHcV81xWYlIqr8FmxnOSPn4J9jcmV2bTNrYmNxM3A3YWQyYzJjc2lnWEByMFGwcaNPRu0VEQS+1z/6mkv65sWd9KKdIgmsTKucTjmbODi7jwQtL0YZVFmhfb0lMo4jp9ugpm3q92g6M6BaY3ZlcgFkaGFzaFgg92Bfj43IUPGMKlKCwgmL2s7nohWWR5OVfbuoqOI8FOvgAQFxEiBjHSHn/M3sZfmuEmuueTg4Xe9Lu1qdwVBMWlppTwkzA6Nrei5mb28uYmFyL2HYKlglAAFxEiCziJgwISViUMPGYXZxM9TVB/Mye5fcEKc+Twn8pOAPv3JhLmZvby5iYXIvYWJjZGVmZ2jYKlglAAFxEiDqFjbOCFAylm7C/VOdHZcBtmJAiGHExxSZeRzOncTiS3gfY29tLmV4YW1wbGUudGhyZWFkLzNqemZjZ3R5MmEyaNgqWCUAAXESIKsDwKLHPTzB9f1kTjxk6uQSzn1xMoQ/RhcfidFxqLSVXQFxEiCziJgwISViUMPGYXZxM9TVB/Mye5fcEKc+Twn8pOAPv6Jkbm90ZXghc2hvcnQgcGF0aCwgc29ydHMgZmlyc3QgYnkgbGVuZ3RoZSR0eXBlaXouZm9vLmJhcl8BcRIg6hY2zghQMpZuwv1TnR2XAbZiQIhhxMcUmXkczp3E4kuiZG5vdGV4I2xvbmdlciBwYXRoLCBzb3J0cyBzZWNvbmQgYnkgbGVuZ3RoZSR0eXBlaWEuZm9vLmJhcrEBAXESIKsDwKLHPTzB9f1kTjxk6uQSzn1xMoQ/RhcfidFxqLSVpmR0YWdzgmdpbnRlcm9wZmx0aGFzaGR0ZXh0dXNwYWNlcyBpbnRlcm9wIGNvcnB1c2UkdHlwZXJjb20uZXhhbXBsZS50aHJlYWRmY291bnRzomVsaWtlcwNmc2hhcmVzAGZwaW5uZWT1aWNyZWF0ZWRBdHgYMjAyNi0wOS0yMlQwMDowMDowMC4wMDBa",
+  "carIndexOnly": "Y6Jlcm9vdHOC2CpYJQABcRIgJoMz4XZn56Km+lIKx7IbijbLNkAmnOtsYNe7dlF8M2bYKlglAAFxEiBjHSHn/M3sZfmuEmuueTg4Xe9Lu1qdwVBMWlppTwkzA2d2ZXJzaW9uAfUBAXESICaDM+F2Z+eipvpSCseyG4o2yzZAJpzrbGDXu3ZRfDNmpmNpa21YIC+aG3fBHk8P3hO4op0cR+VqM/KsHQ57RMmi9rPV6PcBY21hY1ggvQ84LYXWeMPhE1mS2yxHcV81xWYlIqr8FmxnOSPn4J9jcmV2bTNrYmNxM3A3YWQyYzJjc2lnWEByMFGwcaNPRu0VEQS+1z/6mkv65sWd9KKdIgmsTKucTjmbODi7jwQtL0YZVFmhfb0lMo4jp9ugpm3q92g6M6BaY3ZlcgFkaGFzaFgg92Bfj43IUPGMKlKCwgmL2s7nohWWR5OVfbuoqOI8FOvgAQFxEiBjHSHn/M3sZfmuEmuueTg4Xe9Lu1qdwVBMWlppTwkzA6Nrei5mb28uYmFyL2HYKlglAAFxEiCziJgwISViUMPGYXZxM9TVB/Mye5fcEKc+Twn8pOAPv3JhLmZvby5iYXIvYWJjZGVmZ2jYKlglAAFxEiDqFjbOCFAylm7C/VOdHZcBtmJAiGHExxSZeRzOncTiS3gfY29tLmV4YW1wbGUudGhyZWFkLzNqemZjZ3R5MmEyaNgqWCUAAXESIKsDwKLHPTzB9f1kTjxk6uQSzn1xMoQ/RhcfidFxqLSV"
+}
