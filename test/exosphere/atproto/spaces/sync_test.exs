@@ -82,6 +82,75 @@ defmodule Exosphere.ATProto.Spaces.SyncTest do
   # data model specifies — which is how the decoding bug survived them.
   defp bytes(bin), do: %{"$bytes" => Base.encode64(bin)}
 
+  test "SinceOutOfBounds is typed, with the floor parsed from the message", ctx do
+    # The wire shape a host emits when `since` predates (or falls outside) the
+    # retained oplog window — the cue to recover via the full CAR.
+    Process.put(:get, fn _url ->
+      {:ok,
+       %{
+         status: 400,
+         headers: [],
+         body: %{
+           "error" => "SinceOutOfBounds",
+           "message" =>
+             "since predates the retained oplog window; the oldest retained rev is 3kbcq3p7ad2c2 — recover with a full getRepo"
+         }
+       }}
+    end)
+
+    assert {:error, {:since_out_of_bounds, "3kbcq3p7ad2c2"}} =
+             Sync.list_repo_ops(@repo_host, @space, @author, ctx.cred,
+               http: SyncHTTP,
+               since: "3kbcq3p7ad400"
+             )
+
+    # A host that words the refusal differently still gets the typed error,
+    # just without a floor (the message is prose, not a lexicon field).
+    Process.put(:get, fn _url ->
+      {:ok,
+       %{
+         status: 400,
+         headers: [],
+         body: %{"error" => "SinceOutOfBounds", "message" => "no ops are retained"}
+       }}
+    end)
+
+    assert {:error, {:since_out_of_bounds, nil}} =
+             Sync.list_repo_ops(@repo_host, @space, @author, ctx.cred, http: SyncHTTP)
+
+    # Anything that merely looks like a floor is not one: the candidate must
+    # be a valid TID.
+    Process.put(:get, fn _url ->
+      {:ok,
+       %{
+         status: 400,
+         headers: [],
+         body: %{
+           "error" => "SinceOutOfBounds",
+           "message" => "oldest retained rev is notarealtid0"
+         }
+       }}
+    end)
+
+    assert {:error, {:since_out_of_bounds, nil}} =
+             Sync.list_repo_ops(@repo_host, @space, @author, ctx.cred, http: SyncHTTP)
+  end
+
+  test "other 400s keep the generic http_error shape", ctx do
+    Process.put(:get, fn _url ->
+      {:ok, %{status: 400, headers: [], body: %{"error" => "SpaceNotFound", "message" => "..."}}}
+    end)
+
+    assert {:error, {:http_error, 400}} =
+             Sync.list_repo_ops(@repo_host, @space, @author, ctx.cred, http: SyncHTTP)
+
+    # And a body-less 400 (e.g. a proxy) stays generic too.
+    Process.put(:get, fn _url -> {:ok, %{status: 400, headers: [], body: ""}} end)
+
+    assert {:error, {:http_error, 400}} =
+             Sync.list_repo_ops(@repo_host, @space, @author, ctx.cred, http: SyncHTTP)
+  end
+
   test "list_repo_ops decodes the head commit's bytes", ctx do
     Process.put(:get, fn _url ->
       {:ok,

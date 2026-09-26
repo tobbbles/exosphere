@@ -25,6 +25,16 @@ defmodule Exosphere.ATProto.Spaces.Sync do
   DPoP-scheme access token with a per-request proof carrying its `ath`
   (through `Exosphere.ATProto.OAuth.Request.authorized/6`, including nonce
   retries). Pass `:http` to substitute an `HTTP.Behaviour` mock.
+
+  ## Error surface
+
+  Failures come back typed: transport errors as-is, and HTTP errors as
+  `{:error, {:http_error, status}}` — except the sync-recovery signal. When a
+  host answers `listRepoOps`'s `since` with `400 SinceOutOfBounds` (the `since`
+  predates the retained oplog window, or names a position the oplog never
+  covered), the client returns `{:error, {:since_out_of_bounds, floor}}` with
+  the window's oldest retained rev parsed out of the message when the host
+  carries it — the position a full `get_repo/8` recovery starts from.
   """
 
   alias Exosphere.ATProto.HTTP
@@ -32,6 +42,7 @@ defmodule Exosphere.ATProto.Spaces.Sync do
   alias Exosphere.ATProto.Spaces.Commit
   alias Exosphere.ATProto.Spaces.Lthash
   alias Exosphere.ATProto.Spaces.Repo, as: SpaceRepo
+  alias Exosphere.ATProto.TID
 
   @type credential :: %{credential: String.t(), dpop_key: map()}
 
@@ -89,6 +100,10 @@ defmodule Exosphere.ATProto.Spaces.Sync do
   — the head `commit` is present when the response reaches the oplog head,
   and `cursor` is present when it does not (page until it disappears). The
   commit's `bytes` fields arrive decoded, like `get_latest_commit/5`.
+
+  When the host answers that `since` predates (or falls outside) its retained
+  window, the error is `{:error, {:since_out_of_bounds, floor}}` with the
+  window floor when the host names one — the cue to recover via `get_repo/8`.
   """
   @spec list_repo_ops(String.t(), String.t(), String.t(), credential(), keyword()) ::
           {:ok, %{ops: [map()], commit: map() | nil, cursor: String.t() | nil}}
@@ -170,8 +185,8 @@ defmodule Exosphere.ATProto.Spaces.Sync do
       {:ok, %{status: 200, body: car}} when is_binary(car) ->
         SpaceRepo.verify_car(car, ctx, public_key, curve, Keyword.take(opts, [:expect_values]))
 
-      {:ok, %{status: status}} ->
-        {:error, {:http_error, status}}
+      {:ok, response} ->
+        classify_error(response)
 
       error ->
         error
@@ -235,10 +250,40 @@ defmodule Exosphere.ATProto.Spaces.Sync do
 
     case Request.authorized(http, :get, url, [], cred.dpop_key, cred.credential) do
       {:ok, %{status: 200, body: body}} when is_map(body) -> {:ok, body}
-      {:ok, %{status: status}} -> {:error, {:http_error, status}}
+      {:ok, response} -> classify_error(response)
       error -> error
     end
   end
+
+  # XRPC error bodies are {"error": code, "message": msg}. The sync-recovery
+  # signal is typed rather than left as a bare 400: a caller of list_repo_ops/5
+  # gets a named match to route to the full-CAR recovery, not a string-match.
+  # Note the reference PDS (permissioned-data @ 787a730) does not emit this
+  # code — its lexicon declares no such error and its reader serves the
+  # retained window silently — so this classifies hosts that follow the
+  # proposal's "cannot find its since revision" guidance with an explicit
+  # signal (as the yakka PDS does).
+  defp classify_error(%{status: 400, body: %{"error" => "SinceOutOfBounds"} = body}) do
+    {:error, {:since_out_of_bounds, floor_from_message(body["message"])}}
+  end
+
+  defp classify_error(%{status: status}), do: {:error, {:http_error, status}}
+
+  # "...the oldest retained rev is 3kbcq3p7ad2c2 — recover with a full getRepo":
+  # pull the floor out when the host words it that way; nil otherwise (the
+  # message is host prose, not a lexicon field).
+  @floor_pattern ~r/oldest retained rev is ([0-9a-z]{13})/
+
+  defp floor_from_message(message) when is_binary(message) do
+    with [_, candidate] <- Regex.run(@floor_pattern, message),
+         true <- TID.valid?(candidate) do
+      candidate
+    else
+      _ -> nil
+    end
+  end
+
+  defp floor_from_message(_), do: nil
 
   # The signedCommit carries four lexicon `bytes` fields.
   defp decode_commit(nil), do: {:ok, nil}
@@ -264,8 +309,8 @@ defmodule Exosphere.ATProto.Spaces.Sync do
       {:ok, %{status: 200, body: body}} when is_map(body) ->
         {:ok, body}
 
-      {:ok, %{status: status}} ->
-        {:error, {:http_error, status}}
+      {:ok, response} ->
+        classify_error(response)
 
       error ->
         error
