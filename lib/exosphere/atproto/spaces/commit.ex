@@ -79,6 +79,29 @@ defmodule Exosphere.ATProto.Spaces.Commit do
     do: collection <> "/" <> rkey <> "/" <> cid
 
   @doc """
+  The commit as a DAG-CBOR-encodable map.
+
+  The four `bytes` fields (`hash`, `ikm`, `sig`, `mac`) are raw binaries on the
+  wire shape, and in DAG-CBOR they must encode as *byte* strings (major type 2)
+  — the data model's `bytes`. An Elixir binary alone cannot say which it is
+  (record values with the same in-memory shape are *text* strings), so they are
+  wrapped in the `:cbor` library's byte-string tag here. Encoding a commit
+  block without this produces text-string fields whose CIDs no other DAG-CBOR
+  implementation (and no reference consumer) will agree with — the corpus test
+  pins the bytes.
+  """
+  @spec to_dag_cbor(t()) :: map()
+  def to_dag_cbor(%{} = commit) do
+    Map.new(commit, fn
+      {key, binary} when key in ~w(hash ikm sig mac) and is_binary(binary) ->
+        {key, %CBOR.Tag{tag: :bytes, value: binary}}
+
+      {key, value} ->
+        {key, value}
+    end)
+  end
+
+  @doc """
   Fold a record into a set hash (adding for a new record).
   """
   @spec add_record(Lthash.t(), String.t(), String.t(), String.t()) :: Lthash.t()
@@ -113,13 +136,20 @@ defmodule Exosphere.ATProto.Spaces.Commit do
   generated per call, so every reader receives a distinct commit and no two
   commits share MAC or signature.
 
+  ## Options
+
+  - `:ikm` — pin the per-signature nonce instead of drawing a fresh one, for
+    reproducible (test/vector) signing. Passing it in production would defeat
+    the commit's deniability property — every reader of a repo must receive a
+    distinct `ikm` — which is why it is an opt, never a default.
+
   Returns the `signedCommit` object as a DAG-CBOR-ready map.
   """
-  @spec sign(Lthash.t(), ctx(), binary(), Crypto.curve()) ::
+  @spec sign(Lthash.t(), ctx(), binary(), Crypto.curve(), keyword()) ::
           {:ok, t()} | {:error, term()}
-  def sign(%Lthash{} = hash, %{} = ctx, private_key, curve) do
+  def sign(%Lthash{} = hash, %{} = ctx, private_key, curve, opts \\ []) do
     digest = Lthash.digest(hash)
-    ikm = :crypto.strong_rand_bytes(32)
+    ikm = Keyword.get(opts, :ikm) || :crypto.strong_rand_bytes(32)
     ctx_bytes = encode_ctx(ctx, ikm)
 
     with {:ok, sig} <- Crypto.sign(ctx_bytes, private_key, curve) do

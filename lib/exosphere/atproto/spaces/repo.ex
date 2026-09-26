@@ -96,7 +96,7 @@ defmodule Exosphere.ATProto.Spaces.Repo do
 
     index = Map.new(sorted, fn {path, record} -> {path, CID.create!(record)} end)
 
-    commit_bytes = CBOR.encode!(commit)
+    commit_bytes = CBOR.encode!(Commit.to_dag_cbor(commit))
     index_bytes = CBOR.encode!(index)
 
     commit_cid = raw_cid(commit_bytes)
