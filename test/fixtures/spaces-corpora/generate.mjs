@@ -241,6 +241,9 @@ const buildCommit = async (name, ctx, ikm, elements) => {
     ctx,
     ikm: hex(ikm),
     ctxBytes: hex(ctxBytes),
+    // The set-hash elements folded into this commit's hash, so consumers can
+    // rebuild the exact LtHash input.
+    elements,
     commit: {
       ver: 1,
       hash: hex(hash),
@@ -271,13 +274,13 @@ const signedCommit = {
     await buildCommit(
       'empty-repo',
       { space: SPACE, author: AUTHOR, rev: '3kbcq3p7ad2c2' },
-      unhex('000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f20'),
+      unhex('000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f'),
       [],
     ),
     await buildCommit(
       'edge-length-space-uri',
       { space: LONG_SPACE, author: AUTHOR, rev: '3kbcq3p7ad2c2' },
-      unhex('f0e0d0c0b0a09080706050403020100112233445566778899aabbccddeeff00'),
+      unhex('f0e0d0c0b0a09080706050403020100112233445566778899aabbccddeeff0f0e'),
       [CAR_ELEMENTS[1]],
     ),
   ],
