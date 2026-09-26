@@ -11,10 +11,12 @@ defmodule Exosphere.ATProto.Spaces.SimpleSpace do
   `list_members/3` requires OAuth — the host-internal member list is not
   readable with a space credential.
 
-  The user-access policy and app-access axes are options, not strings:
+  The user-access policies (one for reads, one for writes) and the
+  app-access axis are options, not strings:
 
       SimpleSpace.create_space(pds, "com.example.group",
-        policy: :member_list,
+        read_policy: :member_list,
+        write_policy: {:managing_app, "did:web:app.example.com#forum"},
         app_access: {:allow_list, ["https://app.example.com/client-metadata.json"]}
       )
 
@@ -44,8 +46,9 @@ defmodule Exosphere.ATProto.Spaces.SimpleSpace do
   Create a space (`com.atproto.simplespace.createSpace`). The space anchors
   on the authenticated user's DID, who becomes its owner.
 
-  Options: `:skey` (auto-generated TID when omitted), `:policy`
-  (default `:member_list`), `:app_access` (default `:open`).
+  Options: `:skey` (auto-generated TID when omitted), `:read_policy`
+  (default `:member_list`), `:write_policy` (default `:member_list`),
+  `:app_access` (default `:open`).
   """
   @spec create_space(String.t(), String.t(), auth(), keyword()) ::
           {:ok, map()} | {:error, term()}
@@ -53,32 +56,27 @@ defmodule Exosphere.ATProto.Spaces.SimpleSpace do
     body =
       %{"type" => type}
       |> maybe_put("skey", Keyword.get(opts, :skey))
-      |> Map.put("policy", policy(Keyword.get(opts, :policy, :member_list)))
+      |> Map.put("readPolicy", policy(Keyword.get(opts, :read_policy, :member_list)))
+      |> Map.put("writePolicy", policy(Keyword.get(opts, :write_policy, :member_list)))
       |> Map.put("appAccess", app_access(Keyword.get(opts, :app_access, :open)))
 
     procedure(pds, "createSpace", body, auth, opts)
   end
 
   @doc """
-  Update a space (`com.atproto.simplespace.updateSpace`) — its policy and
-  app-access configuration. `manage=update` in the session's scope.
+  Update a space (`com.atproto.simplespace.updateSpace`) — its read/write
+  policies and app-access configuration. Supplied axes replace the current
+  ones wholesale; omitted ones are left unchanged. `manage=update` in the
+  session's scope.
   """
   @spec update_space(String.t(), String.t(), auth(), keyword()) ::
           {:ok, map()} | {:error, term()}
   def update_space(pds, space_ref, auth, opts \\ []) do
-    body = %{"space" => space_ref}
-
     body =
-      case Keyword.get(opts, :policy) do
-        nil -> body
-        p -> Map.put(body, "policy", policy(p))
-      end
-
-    body =
-      case Keyword.get(opts, :app_access) do
-        nil -> body
-        a -> Map.put(body, "appAccess", app_access(a))
-      end
+      %{"space" => space_ref}
+      |> maybe_put("readPolicy", axis(opts, :read_policy, &policy/1))
+      |> maybe_put("writePolicy", axis(opts, :write_policy, &policy/1))
+      |> maybe_put("appAccess", axis(opts, :app_access, &app_access/1))
 
     procedure(pds, "updateSpace", body, auth, opts)
   end
@@ -107,12 +105,25 @@ defmodule Exosphere.ATProto.Spaces.SimpleSpace do
   end
 
   @doc """
-  Add a member (`com.atproto.simplespace.addMember`). `manage=update`.
+  Put a member (`com.atproto.simplespace.putMember`): add them to the
+  space's host-internal member list, or replace the read and write access
+  of one already on it. `manage=update`.
+
+  `:read` and `:write` (both default `true`) carry the member's access —
+  the grant the member-list policies consult. `false`/`false` is how a
+  member is parked on the list without access rather than removed.
   """
-  @spec add_member(String.t(), String.t(), String.t(), auth(), keyword()) ::
+  @spec put_member(String.t(), String.t(), String.t(), auth(), keyword()) ::
           {:ok, map()} | {:error, term()}
-  def add_member(pds, space_ref, did, auth, opts \\ []) do
-    procedure(pds, "addMember", %{"space" => space_ref, "did" => did}, auth, opts)
+  def put_member(pds, space_ref, did, auth, opts \\ []) do
+    body = %{
+      "space" => space_ref,
+      "did" => did,
+      "read" => Keyword.get(opts, :read, true),
+      "write" => Keyword.get(opts, :write, true)
+    }
+
+    procedure(pds, "putMember", body, auth, opts)
   end
 
   @doc """
@@ -161,6 +172,15 @@ defmodule Exosphere.ATProto.Spaces.SimpleSpace do
   end
 
   # -- wire shapes ---------------------------------------------------------------
+
+  # An optional axis: nil (absent from the keyword list) stays absent from
+  # the body, so updateSpace leaves that axis unchanged.
+  defp axis(opts, key, encode) do
+    case Keyword.get(opts, key) do
+      nil -> nil
+      value -> encode.(value)
+    end
+  end
 
   defp policy(:public), do: %{"$type" => "#{@nsid}.defs#publicPolicy"}
   defp policy(:member_list), do: %{"$type" => "#{@nsid}.defs#memberListPolicy"}
