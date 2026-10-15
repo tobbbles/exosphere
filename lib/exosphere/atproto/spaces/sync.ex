@@ -48,13 +48,39 @@ defmodule Exosphere.ATProto.Spaces.Sync do
 
   @doc """
   The space host's writer set (`com.atproto.space.listRepos`): each member
-  repo with its current `rev` and commit `hash` as last reported to the
-  authority. The authority may lag the repo hosts, which are the source of
-  truth.
+  repo with its current `repo_rev` and commit `hash` as last reported to the
+  authority, and the `space_rev` at which the host last saw it move. The
+  authority may lag the repo hosts, which are the source of truth.
 
-  Returns `{:ok, %{repos: [%{did:, rev:, hash:}], cursor: cursor | nil}}`.
-  The `hash` values are base64-decoded from the lexicon `bytes` wire form
-  (`{"$bytes": …}`).
+  Returns `{:ok, %{repos: [%{did:, repo_rev:, space_rev:, hash:}], cursor:
+  cursor | nil}}`. The `hash` values are base64-decoded from the lexicon
+  `bytes` wire form (`{"$bytes": …}`).
+
+  ## Two revisions, and why they are not the same thing
+
+  Until atproto `357c4cee9` (2026-09-30) a repo entry carried one `rev`. It
+  now carries two, and they answer different questions:
+
+    * `repo_rev` (wire `repoRev`) is **the repo's** revision — the TID of the
+      author's latest commit, the same number `list_repo_ops/5`'s `since:`
+      takes. It is per-repo and only ever compared within one repo.
+    * `space_rev` (wire `spaceRev`) is **the space host's** sequence number
+      for the update: every accepted `notifyWrite` advances one per-space
+      sequence, and the repo's entry is stamped with where it landed. It is
+      what the listing is *ordered by*, ascending, and what the cursor is.
+
+  The second is what makes the writer set resumable rather than merely
+  pageable: `cursor:` is "repos updated after this space revision
+  (exclusive)", so a syncer that remembers the last `space_rev` it processed
+  — from a page, or from a forwarded `notifyWrite`'s `spaceRev` — can ask for
+  only what moved since, and a gap in a forwarded notification's
+  `prevSpaceRev` chain is recovered by exactly that call. A repo can appear
+  twice across pages if it moved while you paged; that is the lexicon's
+  stated behaviour, not a host bug.
+
+  The cursor rule changed with it: a **non-empty** page carries a cursor
+  (its last entry's `spaceRev`), and an empty page omits it. So the end of
+  the walk is an empty page, one round trip later than "a short page" was.
   """
   @spec list_repos(String.t(), String.t(), credential(), keyword()) ::
           {:ok, %{repos: [map()], cursor: String.t() | nil}} | {:error, term()}
@@ -359,7 +385,7 @@ defmodule Exosphere.ATProto.Spaces.Sync do
   defp decode_repos(repos) when is_list(repos) do
     Enum.reduce_while(repos, {:ok, []}, fn repo, {:ok, acc} ->
       case decode_field(repo, "hash") do
-        {:ok, hash} -> {:cont, {:ok, [%{did: repo["did"], rev: repo["rev"], hash: hash} | acc]}}
+        {:ok, hash} -> {:cont, {:ok, [decode_repo(repo, hash) | acc]}}
         {:error, _} = error -> {:halt, error}
       end
     end)
@@ -367,6 +393,17 @@ defmodule Exosphere.ATProto.Spaces.Sync do
       {:ok, decoded} -> {:ok, Enum.reverse(decoded)}
       {:error, _} = error -> error
     end
+  end
+
+  # The current field names only. A host still on the pre-`357c4cee9` lexicon
+  # sends `rev` and no `spaceRev`, and both decode to `nil` here rather than
+  # being read across: `rev` *was* the repo revision, but guessing that a
+  # field means what its successor means is how a client ends up agreeing with
+  # one stale host and nobody else. A `nil` `repo_rev` is a value every caller
+  # already has to handle (the lexicon says the entry may lag), and "I do not
+  # know, go and look" is the safe reading of it.
+  defp decode_repo(repo, hash) do
+    %{did: repo["did"], repo_rev: repo["repoRev"], space_rev: repo["spaceRev"], hash: hash}
   end
 
   defp maybe_put(map, _key, nil), do: map

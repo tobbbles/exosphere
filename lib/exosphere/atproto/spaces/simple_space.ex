@@ -46,15 +46,20 @@ defmodule Exosphere.ATProto.Spaces.SimpleSpace do
   Create a space (`com.atproto.simplespace.createSpace`). The space anchors
   on the authenticated user's DID, who becomes its owner.
 
+  `space_type` is the space type's NSID, sent as `spaceType`. The field was
+  `type` until atproto `e2b4a282f` (2026-09-29) renamed it on this method and
+  on `com.atproto.space.listSpaces`'s filter in the same pass; a host still on
+  the old lexicon answers this body with a missing-field `InvalidRequest`.
+
   Options: `:skey` (auto-generated TID when omitted), `:read_policy`
   (default `:member_list`), `:write_policy` (default `:member_list`),
   `:app_access` (default `:open`).
   """
   @spec create_space(String.t(), String.t(), auth(), keyword()) ::
           {:ok, map()} | {:error, term()}
-  def create_space(pds, type, auth, opts \\ []) do
+  def create_space(pds, space_type, auth, opts \\ []) do
     body =
-      %{"type" => type}
+      %{"spaceType" => space_type}
       |> maybe_put("skey", Keyword.get(opts, :skey))
       |> Map.put("readPolicy", policy(Keyword.get(opts, :read_policy, :member_list)))
       |> Map.put("writePolicy", policy(Keyword.get(opts, :write_policy, :member_list)))

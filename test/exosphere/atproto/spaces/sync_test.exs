@@ -184,7 +184,9 @@ defmodule Exosphere.ATProto.Spaces.SyncTest do
          %{
            status: 200,
            headers: [],
-           body: %{"repos" => [%{"did" => @author, "rev" => "r", "hash" => wire}]}
+           body: %{
+             "repos" => [%{"did" => @author, "repoRev" => "r", "spaceRev" => "s", "hash" => wire}]
+           }
          }}
       end)
 
@@ -200,7 +202,16 @@ defmodule Exosphere.ATProto.Spaces.SyncTest do
        %{
          status: 200,
          headers: [],
-         body: %{"repos" => [%{"did" => @author, "rev" => "r", "hash" => %{"$bytes" => urlsafe}}]}
+         body: %{
+           "repos" => [
+             %{
+               "did" => @author,
+               "repoRev" => "r",
+               "spaceRev" => "s",
+               "hash" => %{"$bytes" => urlsafe}
+             }
+           ]
+         }
        }}
     end)
 
@@ -260,20 +271,29 @@ defmodule Exosphere.ATProto.Spaces.SyncTest do
              "repos" => [
                %{
                  "did" => @author,
-                 "rev" => "3kbcq3p7ad400",
+                 "repoRev" => "3kbcq3p7ad400",
+                 "spaceRev" => "3kbcq3p7ad4zz",
                  "hash" => bytes(hash)
                }
              ],
-             "cursor" => "next"
+             "cursor" => "3kbcq3p7ad4zz"
            }
          }}
       end
     )
 
-    assert {:ok, %{repos: [repo], cursor: "next"}} =
+    assert {:ok, %{repos: [repo], cursor: "3kbcq3p7ad4zz"}} =
              Sync.list_repos(@space_host, @space, ctx.cred, http: SyncHTTP)
 
-    assert repo == %{did: @author, rev: "3kbcq3p7ad400", hash: hash}
+    # The repo's own revision and the host's sequence position are separate
+    # fields with separate jobs (see `list_repos/4`), and neither is read as
+    # the other.
+    assert repo == %{
+             did: @author,
+             repo_rev: "3kbcq3p7ad400",
+             space_rev: "3kbcq3p7ad4zz",
+             hash: hash
+           }
 
     # limit/cursor reach the wire
     assert {:ok, _} =
@@ -285,6 +305,23 @@ defmodule Exosphere.ATProto.Spaces.SyncTest do
 
     assert Process.get(:last_url) =~ "limit=500"
     assert Process.get(:last_url) =~ "cursor=next"
+  end
+
+  test "list_repos does not read a pre-rename host's `rev` as `repoRev`", ctx do
+    # A host on the lexicon before atproto 357c4cee9 still says `rev`. The
+    # client answers "unknown" rather than guessing the old field means the new
+    # one — `nil` is a value every caller already handles, a wrong guess is not.
+    Process.put(:get, fn _url ->
+      {:ok,
+       %{
+         status: 200,
+         headers: [],
+         body: %{"repos" => [%{"did" => @author, "rev" => "3kbcq3p7ad400", "hash" => bytes("h")}]}
+       }}
+    end)
+
+    assert {:ok, %{repos: [%{repo_rev: nil, space_rev: nil, hash: "h"}], cursor: nil}} =
+             Sync.list_repos(@space_host, @space, ctx.cred, http: SyncHTTP)
   end
 
   test "list_repo_ops pages ops with the head commit", ctx do

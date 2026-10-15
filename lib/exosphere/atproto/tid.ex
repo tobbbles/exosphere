@@ -69,6 +69,45 @@ defmodule Exosphere.ATProto.TID do
   end
 
   @doc """
+  A new TID that sorts strictly after `prev` — `TID.nextStr(prev)` in the
+  reference implementation.
+
+  This is what a *sequence* of TIDs needs and `generate/0` alone does not
+  give: the wall clock can step backwards (NTP, a VM migration, a different
+  node with a different clock), and a sequence whose next value can sort
+  before its last is not a sequence. When the clock is ahead of `prev` this is
+  `generate/0`; when it is not, the result is `prev`'s timestamp plus one
+  microsecond, with this process's clock identifier.
+
+  `nil` means "no previous value" and is `generate/0`. An unparseable `prev`
+  raises: a caller sequencing after garbage has a bug upstream of here, and a
+  silently fresh TID would hide it.
+
+  The atproto Spaces alpha uses this for a space host's `spaceRev` sequence
+  (`com.atproto.space.listRepos`, `notifyWrite`), where every accepted update
+  is stamped `next(previous spaceRev)`.
+
+      iex> prev = Exosphere.ATProto.TID.generate()
+      iex> Exosphere.ATProto.TID.next(prev) > prev
+      true
+  """
+  @spec next(String.t() | nil) :: String.t()
+  def next(nil), do: generate()
+
+  def next(prev) when is_binary(prev) do
+    {:ok, prev_value} = if valid?(prev), do: decode(prev), else: {:error, prev}
+    candidate = generate()
+    {:ok, candidate_value} = decode(candidate)
+
+    if candidate_value > prev_value do
+      candidate
+    else
+      prev_micros = bsr(prev_value, @clock_id_bits)
+      encode(bor(bsl(prev_micros + 1, @clock_id_bits), get_clock_id()))
+    end
+  end
+
+  @doc """
   Parse a TID and extract its timestamp.
 
   ## Examples
