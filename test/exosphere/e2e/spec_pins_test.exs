@@ -30,7 +30,7 @@ defmodule Exosphere.SpecPinsTest do
   @raw "https://raw.githubusercontent.com/bluesky-social/atproto/#{@branch}/lexicons"
 
   # What `spaces/alpha` pinned against, recorded so drift is legible.
-  @pinned_commit "787a730"
+  @pinned_commit "679724a"
 
   # Every space method this library calls, with the parameters it sends. Kept
   # here by hand rather than derived from the source: the point is to state
@@ -52,7 +52,7 @@ defmodule Exosphere.SpecPinsTest do
     {"com.atproto.space.deleteRecord", :procedure, ["space", "collection", "rkey"]},
     {"com.atproto.space.applyWrites", :procedure, ["space", "writes"]},
     {"com.atproto.simplespace.createSpace", :procedure,
-     ["type", "skey", "readPolicy", "writePolicy", "appAccess"]},
+     ["spaceType", "skey", "readPolicy", "writePolicy", "appAccess"]},
     {"com.atproto.simplespace.updateSpace", :procedure,
      ["space", "readPolicy", "writePolicy", "appAccess"]},
     {"com.atproto.simplespace.deleteSpace", :procedure, ["space"]},
@@ -80,6 +80,22 @@ defmodule Exosphere.SpecPinsTest do
 
            #{Enum.map_join(drift, "\n", &("  - " <> &1))}
            """
+  end
+
+  test "the listRepos fields this library reads are still the ones the lexicon returns" do
+    # The parameter check above only sees what we *send*. `Sync.list_repos/4`
+    # also *reads* named fields off each entry, and a rename there is silent on
+    # our side — the old name simply decodes to nil. It has happened once
+    # (`rev` → `repoRev` + `spaceRev`, atproto 357c4cee9), so it is checked.
+    assert {:ok, lexicon} = fetch_lexicon("com.atproto.space.listRepos")
+    repo = get_in(lexicon, ["defs", "repo"])
+
+    for field <- ["did", "repoRev", "spaceRev", "hash"] do
+      assert field in repo["required"],
+             "com.atproto.space.listRepos#repo no longer requires `#{field}`, which list_repos/4 reads"
+    end
+
+    assert repo["properties"]["hash"]["type"] == "bytes"
   end
 
   test "the LtHash parameters in the proposal still match the implementation" do

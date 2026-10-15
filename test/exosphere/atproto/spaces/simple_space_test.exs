@@ -50,7 +50,7 @@ defmodule Exosphere.ATProto.Spaces.SimpleSpaceTest do
     assert url == @pds <> "/xrpc/com.atproto.simplespace.createSpace"
 
     assert opts[:json] == %{
-             "type" => "com.example.group",
+             "spaceType" => "com.example.group",
              "skey" => "default",
              "readPolicy" => %{"$type" => "com.atproto.simplespace.defs#publicPolicy"},
              "writePolicy" => %{
@@ -259,6 +259,6 @@ defmodule Exosphere.ATProto.Spaces.SimpleSpaceTest do
     {_url, opts} = Process.get({:post, self()})
     assert opts[:timeout] == 1_500
     # The call's own body survives the forwarding.
-    assert opts[:json]["type"] == "com.example.group"
+    assert opts[:json]["spaceType"] == "com.example.group"
   end
 end
