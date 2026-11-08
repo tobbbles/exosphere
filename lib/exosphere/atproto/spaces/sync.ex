@@ -21,10 +21,13 @@ defmodule Exosphere.ATProto.Spaces.Sync do
   reconnect discipline) — this module exposes registration and leaves
   receiving to the app.
 
-  All requests are credential-authed: the space credential travels as the
-  DPoP-scheme access token with a per-request proof carrying its `ath`
-  (through `Exosphere.ATProto.OAuth.Request.authorized/6`, including nonce
-  retries). Pass `:http` to substitute an `HTTP.Behaviour` mock.
+  All requests are credential-authed: the space credential travels as
+  `Authorization: Atproto-Space-Credential <jwt>` with an
+  `Atproto-Space-Audience` header and an RFC 9421 HTTP Message Signature by
+  the credential's bound key (`Spaces.HttpSignature`). The audience is the
+  repo owner's DID for repo-host methods and the space authority's DID for
+  space-host methods (`list_repos/4`, `register_notify/5`,
+  `unregister_notify/5`). Pass `:http` to substitute an `HTTP.Behaviour` mock.
 
   ## Error surface
 
@@ -38,13 +41,15 @@ defmodule Exosphere.ATProto.Spaces.Sync do
   """
 
   alias Exosphere.ATProto.HTTP
-  alias Exosphere.ATProto.OAuth.Request
+  alias Exosphere.ATProto.AtUri
+  alias Exosphere.ATProto.Spaces.Credential
   alias Exosphere.ATProto.Spaces.Commit
   alias Exosphere.ATProto.Spaces.Lthash
   alias Exosphere.ATProto.Spaces.Repo, as: SpaceRepo
   alias Exosphere.ATProto.TID
 
-  @type credential :: %{credential: String.t(), dpop_key: map()}
+  @typedoc "A minted credential and its bound key (`Spaces.Credential.mint/4`)."
+  @type credential :: Credential.t()
 
   @doc """
   The space host's writer set (`com.atproto.space.listRepos`): each member
@@ -93,7 +98,15 @@ defmodule Exosphere.ATProto.Spaces.Sync do
       |> maybe_put("limit", Keyword.get(opts, :limit))
       |> maybe_put("cursor", Keyword.get(opts, :cursor))
 
-    with {:ok, body} <- get(space_host, "com.atproto.space.listRepos", params, cred, opts),
+    with {:ok, body} <-
+           get(
+             space_host,
+             "com.atproto.space.listRepos",
+             params,
+             cred,
+             authority(space_ref),
+             opts
+           ),
          {:ok, repos} <- decode_repos(body["repos"]) do
       {:ok, %{repos: repos, cursor: body["cursor"]}}
     end
@@ -114,6 +127,7 @@ defmodule Exosphere.ATProto.Spaces.Sync do
              "com.atproto.space.getLatestCommit",
              %{space: space_ref, repo: repo_did},
              cred,
+             repo_did,
              opts
            ) do
       decode_commit(body["commit"])
@@ -145,7 +159,8 @@ defmodule Exosphere.ATProto.Spaces.Sync do
       |> maybe_put("limit", Keyword.get(opts, :limit))
       |> maybe_put("excludeValues", Keyword.get(opts, :exclude_values))
 
-    with {:ok, body} <- get(repo_host, "com.atproto.space.listRepoOps", params, cred, opts),
+    with {:ok, body} <-
+           get(repo_host, "com.atproto.space.listRepoOps", params, cred, repo_did, opts),
          {:ok, commit} <- decode_commit(body["commit"]) do
       {:ok, %{ops: body["ops"] || [], commit: commit, cursor: body["cursor"]}}
     end
@@ -163,7 +178,7 @@ defmodule Exosphere.ATProto.Spaces.Sync do
       |> maybe_put("limit", Keyword.get(opts, :limit))
       |> maybe_put("reverse", Keyword.get(opts, :reverse))
 
-    get(repo_host, "com.atproto.space.listRecords", params, cred, opts)
+    get(repo_host, "com.atproto.space.listRecords", params, cred, repo_did, opts)
   end
 
   @doc """
@@ -182,7 +197,7 @@ defmodule Exosphere.ATProto.Spaces.Sync do
   def get_record(repo_host, space_ref, repo_did, collection, rkey, cred, opts \\ []) do
     params = %{space: space_ref, repo: repo_did, collection: collection, rkey: rkey}
 
-    get(repo_host, "com.atproto.space.getRecord", params, cred, opts)
+    get(repo_host, "com.atproto.space.getRecord", params, cred, repo_did, opts)
   end
 
   @doc """
@@ -210,7 +225,7 @@ defmodule Exosphere.ATProto.Spaces.Sync do
     http = Keyword.get(opts, :http, HTTP)
     url = xrpc_url(repo_host, "com.atproto.space.getRepo", %{space: space_ref, repo: repo_did})
 
-    case Request.authorized(http, :get, url, [], cred.dpop_key, cred.credential) do
+    case signed_request(http, :get, url, [], cred, repo_did) do
       {:ok, %{status: 200, body: car}} when is_binary(car) ->
         SpaceRepo.verify_car(car, ctx, public_key, curve, Keyword.take(opts, [:expect_values]))
 
@@ -313,11 +328,11 @@ defmodule Exosphere.ATProto.Spaces.Sync do
   def synced?(%Lthash{} = hash, %{"hash" => commit_hash}),
     do: synced?(hash, commit_hash)
 
-  defp get(host, nsid, params, cred, opts) do
+  defp get(host, nsid, params, cred, audience, opts) do
     http = Keyword.get(opts, :http, HTTP)
     url = xrpc_url(host, nsid, params)
 
-    case Request.authorized(http, :get, url, [], cred.dpop_key, cred.credential) do
+    case signed_request(http, :get, url, [], cred, audience) do
       {:ok, %{status: 200, body: body}} when is_map(body) -> {:ok, body}
       {:ok, response} -> classify_error(response)
       error -> error
@@ -367,13 +382,13 @@ defmodule Exosphere.ATProto.Spaces.Sync do
     http = Keyword.get(opts, :http, HTTP)
     url = "#{String.trim_trailing(space_host, "/")}/xrpc/com.atproto.space.#{method}"
 
-    case Request.authorized(
+    case signed_request(
            http,
            :post,
            url,
            [json: %{"space" => space_ref, "service" => service}],
-           cred.dpop_key,
-           cred.credential
+           cred,
+           authority(space_ref)
          ) do
       {:ok, %{status: 200, body: body}} when is_map(body) ->
         {:ok, body}
@@ -383,6 +398,21 @@ defmodule Exosphere.ATProto.Spaces.Sync do
 
       error ->
         error
+    end
+  end
+
+  # Every credential-authed request: the credential, its audience, and the
+  # signature over both. The signature binds neither method nor URI.
+  defp signed_request(http, method, url, request_opts, cred, audience) do
+    {:ok, headers} = Credential.presentation_headers(cred, audience)
+    http.request(method, url, Keyword.put(request_opts, :headers, headers))
+  end
+
+  # The audience for space-host methods: the authority DID of the space ref.
+  defp authority(space_ref) do
+    case AtUri.parse(space_ref) do
+      {:ok, %AtUri{authority: authority}} when is_binary(authority) -> authority
+      _ -> raise ArgumentError, "not a space reference: #{inspect(space_ref)}"
     end
   end
 

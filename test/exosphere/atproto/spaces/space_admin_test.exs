@@ -322,7 +322,9 @@ defmodule Exosphere.ATProto.Spaces.SpaceAdminTest do
                  @space,
                  "did:plc:user",
                  :write,
-                 @headers, http: SpaceHTTP)
+                 @headers,
+                 http: SpaceHTTP
+               )
 
       {url, _} = Process.get({:get, self()})
       assert url =~ "access=write"
@@ -349,7 +351,9 @@ defmodule Exosphere.ATProto.Spaces.SpaceAdminTest do
                  @space,
                  "did:plc:user",
                  :read,
-                 @headers, http: SpaceHTTP)
+                 @headers,
+                 http: SpaceHTTP
+               )
     end
   end
 end

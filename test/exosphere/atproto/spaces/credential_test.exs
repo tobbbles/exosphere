@@ -5,7 +5,7 @@ defmodule Exosphere.ATProto.Spaces.CredentialTest do
   alias Exosphere.ATProto.Base58
   alias Exosphere.ATProto.Identity.Document
   alias Exosphere.ATProto.OAuth.{DPoP, JWK, Session}
-  alias Exosphere.ATProto.Spaces.Credential
+  alias Exosphere.ATProto.Spaces.{Credential, HttpSignature}
   alias Exosphere.ATProto.Spaces.Token
 
   @pds "https://pds.example.com"
@@ -89,8 +89,10 @@ defmodule Exosphere.ATProto.Spaces.CredentialTest do
     {:ok, authority} = JWK.generate(:secp256k1)
     {:ok, app} = JWK.generate(:p256)
     {:ok, dpop_key} = DPoP.generate_key()
+    {:ok, key} = HttpSignature.generate_key()
 
     %{
+      key: key,
       user: user,
       authority: authority,
       app: app,
@@ -110,13 +112,11 @@ defmodule Exosphere.ATProto.Spaces.CredentialTest do
     jwt
   end
 
-  defp credential_jwt(ctx, dpop_key) do
-    {:ok, jkt} = JWK.thumbprint(JWK.to_public(dpop_key))
-
+  defp credential_jwt(ctx, key) do
     {:ok, jwt} =
       Token.sign(
         :credential,
-        [iss: @authority, sub: @space, dpop_jkt: jkt, iat: @now],
+        [iss: @authority, sub: @space, key_id: key.did_key, iat: @now],
         ctx.authority
       )
 
@@ -187,9 +187,39 @@ defmodule Exosphere.ATProto.Spaces.CredentialTest do
              Credential.get_delegation_token(@pds, @space, http: RecordingHTTP)
   end
 
-  test "mint exchanges a delegation for a DPoP-bound credential", ctx do
+  test "mint sends the key and delegation in the body, unauthenticated", ctx do
     delegation = delegation_jwt(ctx)
-    credential = credential_jwt(ctx, ctx.dpop_key)
+    credential = credential_jwt(ctx, ctx.key)
+
+    Process.put(
+      :post_response,
+      {:ok, %{status: 200, headers: [], body: %{"credential" => credential}}}
+    )
+
+    assert {:ok, %{credential: ^credential, key: key}} =
+             Credential.mint(@space_host, @space, delegation,
+               key: ctx.key,
+               http: RecordingHTTP
+             )
+
+    assert key == ctx.key
+
+    {url, opts} = Process.get(:last_post)
+    assert url == @space_host <> "/xrpc/com.atproto.space.getSpaceCredential"
+
+    # atproto 7b8e094: no Authorization, no DPoP — everything is in the body.
+    assert :error = find_header(opts[:headers], "authorization")
+    assert :error = find_header(opts[:headers], "dpop")
+
+    assert opts[:json] == %{
+             "space" => @space,
+             "credentialKid" => ctx.key.did_key,
+             "delegationToken" => delegation
+           }
+  end
+
+  test "mint without a delegation token asks a public space for a credential", ctx do
+    credential = credential_jwt(ctx, ctx.key)
 
     Process.put(
       :post_response,
@@ -197,31 +227,77 @@ defmodule Exosphere.ATProto.Spaces.CredentialTest do
     )
 
     assert {:ok, %{credential: ^credential}} =
-             Credential.mint(@space_host, @space, delegation,
-               dpop_key: ctx.dpop_key,
-               http: RecordingHTTP
+             Credential.mint(@space_host, @space, nil, key: ctx.key, http: RecordingHTTP)
+
+    {_url, opts} = Process.get(:last_post)
+    refute Map.has_key?(opts[:json], "delegationToken")
+  end
+
+  test "a minted credential presents itself with a verifiable signature", ctx do
+    credential = credential_jwt(ctx, ctx.key)
+    cred = %{credential: credential, key: ctx.key}
+
+    assert {:ok, headers} = Credential.presentation_headers(cred, @user)
+
+    assert {"authorization", "Atproto-Space-Credential " <> ^credential} =
+             List.keyfind(headers, "authorization", 0)
+
+    assert {"atproto-space-audience", @user} = List.keyfind(headers, "atproto-space-audience", 0)
+
+    assert {"signature-input",
+            ~s(atproto-space-credential=\("authorization" "atproto-space-audience"\);tag="atproto-space-credential")} =
+             List.keyfind(headers, "signature-input", 0)
+
+    assert {:ok, %{payload: %{"sub" => @space}}} =
+             Credential.verify_request(headers,
+               audience: @user,
+               document: ctx.authority_doc,
+               sub: @space,
+               now: @now
              )
+  end
 
-    {url, opts} = Process.get(:last_post)
-    assert url == @space_host <> "/xrpc/com.atproto.space.getSpaceCredential"
+  test "verify_request checks the scheme, the signature, and the audience", ctx do
+    credential = credential_jwt(ctx, ctx.key)
 
-    assert {"authorization", "DPoP " <> delegation} in (opts[:headers] || [])
+    {:ok, headers} =
+      Credential.presentation_headers(%{credential: credential, key: ctx.key}, @user)
 
-    assert {:ok, dpop} = find_header(opts[:headers], "dpop")
-    assert {:ok, _} = DPoP.verify_proof(dpop, "POST", url)
+    opts = [audience: @user, document: ctx.authority_doc, now: @now]
 
-    assert opts[:json]["space"] == @space
-    refute Map.has_key?(opts[:json], "clientAttestation")
+    # The scheme is recognised case-insensitively — but the signature covers
+    # the value exactly as sent, so re-casing it after signing breaks it.
+    lower =
+      List.keystore(
+        headers,
+        "authorization",
+        0,
+        {"authorization", "atproto-space-credential " <> credential}
+      )
 
-    # The exchange proof is signed by exactly the key the credential binds to.
-    {:ok, proof} = find_header(opts[:headers], "dpop")
-    {:ok, jkt} = JWK.thumbprint(JWK.to_public(ctx.dpop_key))
-    assert {:ok, %{jkt: ^jkt}} = DPoP.verify_proof(proof, "POST", url)
+    assert {:error, :invalid_http_signature} = Credential.verify_request(lower, opts)
+
+    bearer =
+      List.keystore(headers, "authorization", 0, {"authorization", "Bearer " <> credential})
+
+    assert {:error, :wrong_auth_scheme} = Credential.verify_request(bearer, opts)
+
+    assert {:error, :bad_audience} =
+             Credential.verify_request(headers, Keyword.put(opts, :audience, "did:plc:other"))
+
+    # Signed by a key other than the credential's cnf.kid.
+    {:ok, other_headers} =
+      Credential.presentation_headers(%{credential: credential, key: sig_key()}, @user)
+
+    assert {:error, :invalid_http_signature} = Credential.verify_request(other_headers, opts)
+
+    no_sig = List.keydelete(headers, "signature", 0)
+    assert {:error, {:missing_header, "signature"}} = Credential.verify_request(no_sig, opts)
   end
 
   test "mint carries a client attestation when gating", ctx do
     delegation = delegation_jwt(ctx)
-    credential = credential_jwt(ctx, ctx.dpop_key)
+    credential = credential_jwt(ctx, ctx.key)
 
     Process.put(
       :post_response,
@@ -238,7 +314,7 @@ defmodule Exosphere.ATProto.Spaces.CredentialTest do
 
     assert {:ok, _} =
              Credential.mint(@space_host, @space, delegation,
-               dpop_key: ctx.dpop_key,
+               key: ctx.key,
                client_attestation: attestation,
                http: RecordingHTTP
              )
@@ -250,14 +326,13 @@ defmodule Exosphere.ATProto.Spaces.CredentialTest do
   test "mint catches a credential bound to another key", ctx do
     delegation = delegation_jwt(ctx)
 
-    {:ok, evil_key} = DPoP.generate_key()
-    evil = credential_jwt(ctx, evil_key)
+    evil = credential_jwt(ctx, sig_key())
 
     Process.put(:post_response, {:ok, %{status: 200, headers: [], body: %{"credential" => evil}}})
 
     assert {:error, :credential_bound_to_other_key} =
              Credential.mint(@space_host, @space, delegation,
-               dpop_key: ctx.dpop_key,
+               key: ctx.key,
                http: RecordingHTTP
              )
   end
@@ -272,7 +347,7 @@ defmodule Exosphere.ATProto.Spaces.CredentialTest do
 
     assert {:error, {:http_error, 403, "UserNotAuthorized"}} =
              Credential.mint(@space_host, @space, delegation,
-               dpop_key: ctx.dpop_key,
+               key: ctx.key,
                http: RecordingHTTP
              )
   end
@@ -282,38 +357,42 @@ defmodule Exosphere.ATProto.Spaces.CredentialTest do
 
     assert {:error, :econnrefused} =
              Credential.mint(@space_host, @space, "jwt",
-               dpop_key: dp_key(),
+               key: sig_key(),
                http: RecordingHTTP
              )
   end
 
-  test "mint requires a dpop key" do
-    assert {:error, :missing_dpop_key} =
+  test "mint requires a credential key" do
+    assert {:error, :missing_key} =
              Credential.mint(@space_host, @space, "jwt", http: RecordingHTTP)
   end
 
   test "verify resolves the authority's space key from its DID document", ctx do
-    credential = credential_jwt(ctx, ctx.dpop_key)
-    assert {:ok, %{payload: payload}} = Credential.verify(credential, ctx.authority_doc)
+    credential = credential_jwt(ctx, ctx.key)
+
+    assert {:ok, %{payload: payload}} =
+             Credential.verify(credential, document: ctx.authority_doc, now: @now)
+
     assert payload["iss"] == @authority
     assert payload["sub"] == @space
   end
 
   test "verify rejects a credential signed by the wrong authority", ctx do
     {:ok, other} = JWK.generate(:secp256k1)
-    credential = credential_jwt(ctx, ctx.dpop_key)
+    credential = credential_jwt(ctx, ctx.key)
     doc = did_document(@authority, other)
 
-    assert {:error, :invalid_signature} = Credential.verify(credential, doc)
+    assert {:error, :invalid_signature} = Credential.verify(credential, document: doc, now: @now)
   end
 
   test "verify honours an explicit expected subject", ctx do
-    credential = credential_jwt(ctx, ctx.dpop_key)
+    credential = credential_jwt(ctx, ctx.key)
 
     assert {:error, :bad_subject} =
              Credential.verify(credential,
                get_signing_key: fn _, _, _ -> {:ok, JWK.to_public(ctx.authority)} end,
-               sub: "at://other"
+               sub: "at://other",
+               now: @now
              )
   end
 
@@ -326,33 +405,34 @@ defmodule Exosphere.ATProto.Spaces.CredentialTest do
   test "verify resolves the #atproto key even where a stale #atproto_space is published",
        ctx do
     {:ok, space_jwk} = JWK.generate(:secp256k1)
-    credential = credential_jwt(ctx, ctx.dpop_key)
+    credential = credential_jwt(ctx, ctx.key)
     doc = did_document(@authority, ctx.authority, [{"#atproto_space", space_jwk}])
 
-    assert {:ok, %{payload: %{"iss" => @authority}}} = Credential.verify(credential, doc)
+    assert {:ok, %{payload: %{"iss" => @authority}}} =
+             Credential.verify(credential, document: doc, now: @now)
   end
 
   test "verify rejects a credential signed with a key other than #atproto", ctx do
     {:ok, space_jwk} = JWK.generate(:secp256k1)
-    credential = signed_credential(space_jwk, ctx.dpop_key, [])
+    credential = signed_credential(space_jwk, ctx.key, [])
     doc = did_document(@authority, ctx.authority, [{"#atproto_space", space_jwk}])
 
-    assert {:error, :invalid_signature} = Credential.verify(credential, doc)
+    assert {:error, :invalid_signature} = Credential.verify(credential, document: doc, now: @now)
   end
 
   test "sign refuses a kid override for a credential", ctx do
-    {:ok, jkt} = JWK.thumbprint(JWK.to_public(ctx.dpop_key))
+    jkt = ctx.key.did_key
 
     assert {:error, :fixed_kid} =
              Token.sign(
                :credential,
-               [iss: @authority, sub: @space, dpop_jkt: jkt, kid: "#atproto_space"],
+               [iss: @authority, sub: @space, key_id: jkt, kid: "#atproto_space"],
                ctx.authority
              )
   end
 
   test "verify refuses a credential whose header names any other kid", ctx do
-    {:ok, jkt} = JWK.thumbprint(JWK.to_public(ctx.dpop_key))
+    jkt = ctx.key.did_key
 
     for kid <- ["#atproto_space", "#atproto_labeler", @authority <> "#atproto", nil] do
       header =
@@ -362,7 +442,7 @@ defmodule Exosphere.ATProto.Spaces.CredentialTest do
       payload = %{
         "iss" => @authority,
         "sub" => @space,
-        "cnf" => %{"jkt" => jkt},
+        "cnf" => %{"kid" => jkt},
         "iat" => @now,
         "exp" => @now + 600,
         "jti" => "j"
@@ -395,7 +475,7 @@ defmodule Exosphere.ATProto.Spaces.CredentialTest do
 
   test "mint hands the caller's timeout to the transport", ctx do
     delegation = delegation_jwt(ctx)
-    credential = credential_jwt(ctx, ctx.dpop_key)
+    credential = credential_jwt(ctx, ctx.key)
 
     Process.put(
       :post_response,
@@ -404,7 +484,7 @@ defmodule Exosphere.ATProto.Spaces.CredentialTest do
 
     assert {:ok, _} =
              Credential.mint(@space_host, @space, delegation,
-               dpop_key: ctx.dpop_key,
+               key: ctx.key,
                timeout: 1_500,
                follow_redirects: false,
                http: RecordingHTTP
@@ -416,14 +496,12 @@ defmodule Exosphere.ATProto.Spaces.CredentialTest do
 
     # The exchange's own options are not the caller's to displace.
     assert opts[:json]["space"] == @space
-
-    assert {"authorization", "DPoP " <> ^delegation} =
-             List.keyfind(opts[:headers], "authorization", 0)
+    assert opts[:json]["delegationToken"] == delegation
   end
 
-  test "mint keeps its authorization when the caller passes headers of their own", ctx do
+  test "mint does not forward caller headers onto the unauthenticated exchange", ctx do
     delegation = delegation_jwt(ctx)
-    credential = credential_jwt(ctx, ctx.dpop_key)
+    credential = credential_jwt(ctx, ctx.key)
 
     Process.put(
       :post_response,
@@ -432,15 +510,14 @@ defmodule Exosphere.ATProto.Spaces.CredentialTest do
 
     assert {:ok, _} =
              Credential.mint(@space_host, @space, delegation,
-               dpop_key: ctx.dpop_key,
+               key: ctx.key,
                headers: [{"authorization", "Bearer not-this-one"}],
                http: RecordingHTTP
              )
 
     {_url, opts} = Process.get(:last_post)
-
-    assert {"authorization", "DPoP " <> ^delegation} =
-             List.keyfind(opts[:headers], "authorization", 0)
+    assert :error = find_header(opts[:headers], "authorization")
+    assert opts[:json]["delegationToken"] == delegation
   end
 
   # The mocks above prove the option is in the list; this proves it reaches
@@ -467,21 +544,19 @@ defmodule Exosphere.ATProto.Spaces.CredentialTest do
     :gen_tcp.close(listen)
   end
 
-  defp signed_credential(jwk, dpop_key, opts) do
-    {:ok, jkt} = JWK.thumbprint(JWK.to_public(dpop_key))
-
+  defp signed_credential(jwk, key, opts) do
     {:ok, jwt} =
       Token.sign(
         :credential,
-        [iss: @authority, sub: @space, dpop_jkt: jkt, iat: @now] ++ opts,
+        [iss: @authority, sub: @space, key_id: key.did_key, iat: @now] ++ opts,
         jwk
       )
 
     jwt
   end
 
-  defp dp_key do
-    {:ok, key} = DPoP.generate_key()
+  defp sig_key do
+    {:ok, key} = HttpSignature.generate_key()
     key
   end
 

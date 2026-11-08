@@ -9,7 +9,7 @@ defmodule Exosphere.ATProto.Spaces.TokenTest do
   @user "did:example:alice"
   @authority "did:example:space"
   @space_host Token.space_host_aud(@authority)
-  @dpop_jkt "0ZcOCORZNYy-DWpqq30jZyJGHTN0d2HglBV3uiguA4I"
+  @key_id "did:key:zDnaembgSGUhZULN2Caob4HLJPaxBh92N7rtH21TErzqf8HQo"
   @client_id "https://app.example.com/client-metadata.json"
   @now 1_800_000_000
 
@@ -147,7 +147,7 @@ defmodule Exosphere.ATProto.Spaces.TokenTest do
       {:ok, jwt} =
         Token.sign(
           :credential,
-          [iss: @authority, sub: @space, dpop_jkt: @dpop_jkt, iat: @now],
+          [iss: @authority, sub: @space, key_id: @key_id, iat: @now],
           authority
         )
 
@@ -157,17 +157,88 @@ defmodule Exosphere.ATProto.Spaces.TokenTest do
       assert header["typ"] == "atproto-space-credential+jwt"
       assert header["kid"] == "#atproto"
       assert header["alg"] == "ES256K"
-      assert payload["cnf"] == %{"jkt" => @dpop_jkt}
-      assert payload["exp"] - payload["iat"] == 7200
+      assert payload["cnf"] == %{"kid" => @key_id}
+      assert payload["exp"] - payload["iat"] == 600
+      assert is_binary(payload["jti"])
       refute Map.has_key?(payload, "aud")
     end
 
-    test "requires the DPoP binding at mint time", %{authority: authority} do
+    test "binds only a P-256 did:key, and bounds the lifetime", %{authority: authority} do
+      assert {:error, :invalid_key_id} =
+               Token.sign(
+                 :credential,
+                 [
+                   iss: @authority,
+                   sub: @space,
+                   key_id: "did:key:zQ3shinYwKboZPmphEn4GwNQoozga4ZiTFddzU1aJRfpzr7gh"
+                 ],
+                 authority
+               )
+
+      assert {:error, :invalid_lifetime} =
+               Token.sign(
+                 :credential,
+                 [iss: @authority, sub: @space, key_id: @key_id, expires_in: 3601],
+                 authority
+               )
+
+      assert {:ok, _} =
+               Token.sign(
+                 :credential,
+                 [iss: @authority, sub: @space, key_id: @key_id, expires_in: 3600],
+                 authority
+               )
+    end
+
+    test "parse rejects a credential living longer than an hour", %{authority: authority} do
+      header = %{"alg" => "ES256K", "typ" => "atproto-space-credential+jwt", "kid" => "#atproto"}
+
+      payload = %{
+        "iss" => @authority,
+        "sub" => @space,
+        "cnf" => %{"kid" => @key_id},
+        "iat" => @now,
+        "exp" => @now + 3601,
+        "jti" => "j"
+      }
+
+      assert {:ok, jwt} = JWS.sign(authority, header, payload)
+      assert {:error, :invalid_lifetime} = Token.parse(:credential, jwt)
+    end
+
+    test "verify rejects a credential issued in the future", %{authority: authority} do
+      {:ok, jwt} =
+        Token.sign(
+          :credential,
+          [iss: @authority, sub: @space, key_id: @key_id, iat: @now + 60],
+          authority
+        )
+
+      assert {:error, :issued_in_future} =
+               Token.verify(:credential, jwt, get_signing_key: key_fn(authority), now: @now)
+    end
+
+    test "every class requires a jti", %{user: user} do
+      header = %{"alg" => "ES256K", "typ" => "atproto-space-delegation+jwt", "kid" => "#atproto"}
+
+      payload = %{
+        "iss" => @user,
+        "sub" => @space,
+        "aud" => @space_host,
+        "iat" => @now,
+        "exp" => @now + 60
+      }
+
+      assert {:ok, jwt} = JWS.sign(user, header, payload)
+      assert {:error, :missing_jti} = Token.parse(:delegation, jwt)
+    end
+
+    test "requires the key binding at mint time", %{authority: authority} do
       assert {:error, :missing_cnf} =
                Token.sign(:credential, [iss: @authority, sub: @space], authority)
     end
 
-    test "a credential without cnf.jkt fails structurally", %{authority: authority} do
+    test "a credential without cnf.kid fails structurally", %{authority: authority} do
       header = %{
         "alg" => "ES256K",
         "typ" => "atproto-space-credential+jwt",
@@ -178,7 +249,7 @@ defmodule Exosphere.ATProto.Spaces.TokenTest do
         "iss" => @authority,
         "sub" => @space,
         "iat" => @now,
-        "exp" => @now + 7200,
+        "exp" => @now + 600,
         "jti" => "j"
       }
 

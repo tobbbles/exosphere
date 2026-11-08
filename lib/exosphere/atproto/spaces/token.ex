@@ -2,13 +2,24 @@ defmodule Exosphere.ATProto.Spaces.Token do
   @moduledoc """
   The three space token classes of atproto permissioned data (proposal 0016),
   sharing one wire shape — a compact JWS — and differing only in who signs
-  them, who they are addressed to, and how long they live:
+  them, who they are addressed to, and how long they live. Every class
+  carries a `jti` (the credential's is what `notifyCredentialRevoked` names):
 
   | Class | typ | signed by | TTL | aud | binding |
   |-------|-----|-----------|-----|-----|---------|
   | `:delegation` | `atproto-space-delegation+jwt` | the user's PDS (`#atproto` key) | 60s, single-use | required (the space host) | — |
-  | `:credential` | `atproto-space-credential+jwt` | the space authority (`#atproto` key) | 2h, multi-use | none (it is presented to every repo host in the space) | DPoP key via `cnf.jkt` |
+  | `:credential` | `atproto-space-credential+jwt` | the space authority (`#atproto` key) | 600s (at most 3600s), multi-use | none (it is presented to every repo host in the space) | a P-256 `did:key` via `cnf.kid` |
   | `:client_attestation` | `atproto-client-attestation+jwt` | the app's client-authentication key | 60s, single-use | required (the space host) | — |
+
+  ## Credentials bind a key, not a DPoP thumbprint
+
+  Since atproto `b34848587`/`94de8ab02` a credential is bound to a P-256
+  `did:key` the syncer generated (`cnf.kid`), and every request presenting it
+  carries an HTTP Message Signature by that key
+  (`Spaces.HttpSignature`). It lives 600 seconds by default; `sign/3` refuses
+  a lifetime over 3600 seconds and `parse/2` rejects one (`:invalid_lifetime`),
+  as the reference verifier does, and `verify/3` rejects a credential issued
+  in the future beyond the clock skew (`:issued_in_future`).
 
   ## The `kid` is fixed for user and authority tokens
 
@@ -36,6 +47,7 @@ defmodule Exosphere.ATProto.Spaces.Token do
   """
 
   alias Exosphere.ATProto.OAuth.{JWK, JWS}
+  alias Exosphere.ATProto.Spaces.HttpSignature
 
   @clock_skew_sec 5
 
@@ -47,7 +59,7 @@ defmodule Exosphere.ATProto.Spaces.Token do
           iss: String.t(),
           sub: String.t(),
           aud: String.t() | nil,
-          dpop_jkt: String.t() | nil,
+          key_id: String.t() | nil,
           expires_in: pos_integer(),
           kid: String.t() | nil,
           jti: String.t(),
@@ -79,7 +91,7 @@ defmodule Exosphere.ATProto.Spaces.Token do
     credential: %{
       typ: "atproto-space-credential+jwt",
       kid: "#atproto",
-      expires_in: 7200,
+      expires_in: 600,
       require_aud: false,
       require_cnf: true,
       single_use: false
@@ -109,9 +121,10 @@ defmodule Exosphere.ATProto.Spaces.Token do
   Sign a space token of `class` with a private JWK.
 
   `:iss` and `:sub` are required; `:aud` is required for classes addressed to
-  a space host; `:dpop_jkt` is required for credentials (the RFC 7638
-  thumbprint of the DPoP key the credential binds to). `:iat`, `:jti`, and
-  `:expires_in` may be pinned for tests.
+  a space host; `:key_id` is required for credentials (the P-256 `did:key`
+  the credential binds to, from the `credentialKid` the requester sent).
+  `:iat`, `:jti`, and `:expires_in` may be pinned for tests; a credential's
+  `:expires_in` must be within (0, 3600].
 
   `:kid` is accepted for client attestations only (the JWKS key id, omitted
   when not given); delegation tokens and credentials always carry
@@ -125,7 +138,9 @@ defmodule Exosphere.ATProto.Spaces.Token do
 
     with :ok <- check_kid_opt(opts, spec.kid),
          :ok <- require_opt(opts, :aud, spec.require_aud, :missing_aud),
-         :ok <- require_opt(opts, :dpop_jkt, spec.require_cnf, :missing_cnf),
+         :ok <- require_opt(opts, :key_id, spec.require_cnf, :missing_cnf),
+         :ok <- check_key_id(opts, spec.require_cnf),
+         :ok <- check_lifetime_opt(class, Map.get(opts, :expires_in, spec.expires_in)),
          :ok <- require_opt(opts, :iss, true, :missing_iss),
          :ok <- require_opt(opts, :sub, true, :missing_sub) do
       iat = Map.get(opts, :iat) || System.system_time(:second)
@@ -144,7 +159,7 @@ defmodule Exosphere.ATProto.Spaces.Token do
           "jti" => Map.get(opts, :jti) || random_jti()
         }
         |> maybe_put("aud", Map.get(opts, :aud))
-        |> maybe_put("cnf", jkt_cnf(Map.get(opts, :dpop_jkt)))
+        |> maybe_put("cnf", kid_cnf(Map.get(opts, :key_id)))
 
       JWS.sign(private_jwk, header, payload)
     end
@@ -171,7 +186,8 @@ defmodule Exosphere.ATProto.Spaces.Token do
            :ok <- required_int(payload, "exp", :missing_exp),
            :ok <- required_if(payload, "aud", spec.require_aud, :missing_aud),
            :ok <- required_cnf(payload, spec.require_cnf),
-           :ok <- required_if(payload, "jti", spec.single_use, :missing_jti),
+           :ok <- required_string(payload, "jti", :missing_jti),
+           :ok <- check_lifetime(class, payload),
            :ok <- attestation_subject(class, payload) do
         {:ok, %{header: header, payload: payload, jwt: jwt}}
       end
@@ -201,6 +217,7 @@ defmodule Exosphere.ATProto.Spaces.Token do
 
     with {:ok, %{header: header, payload: payload}} <- parse(class, jwt),
          :ok <- check_exp(payload, now),
+         :ok <- check_iat(class, payload, now),
          :ok <- check_aud(payload, Keyword.get(opts, :aud)),
          :ok <- check_sub(payload, Keyword.get(opts, :sub)),
          {:ok, key} <- fetch_key(get_key, payload["iss"], header["kid"], false),
@@ -297,7 +314,7 @@ defmodule Exosphere.ATProto.Spaces.Token do
   defp required_cnf(payload, false) when is_map_key(payload, "cnf"), do: :ok
   defp required_cnf(_payload, false), do: :ok
 
-  defp required_cnf(%{"cnf" => %{"jkt" => jkt}}, true) when is_binary(jkt) and jkt != "", do: :ok
+  defp required_cnf(%{"cnf" => %{"kid" => "did:" <> _}}, true), do: :ok
   defp required_cnf(_, true), do: {:error, :missing_cnf}
 
   defp require_opt(opts, key, required?, error) do
@@ -315,6 +332,37 @@ defmodule Exosphere.ATProto.Spaces.Token do
 
   defp random_jti, do: :crypto.strong_rand_bytes(16) |> Base.encode16(case: :lower)
 
-  defp jkt_cnf(nil), do: nil
-  defp jkt_cnf(jkt), do: %{"jkt" => jkt}
+  defp kid_cnf(nil), do: nil
+  defp kid_cnf(key_id), do: %{"kid" => key_id}
+
+  # The reference's SPACE_CREDENTIAL_MAX_AGE_SEC: a credential living longer
+  # than an hour is refused at mint time and at verification.
+  @max_credential_lifetime 3600
+
+  defp check_key_id(%{key_id: key_id}, true) do
+    if HttpSignature.p256_did_key?(key_id), do: :ok, else: {:error, :invalid_key_id}
+  end
+
+  defp check_key_id(_opts, _required), do: :ok
+
+  defp check_lifetime_opt(:credential, expires_in)
+       when is_integer(expires_in) and expires_in > 0 and expires_in <= @max_credential_lifetime,
+       do: :ok
+
+  defp check_lifetime_opt(:credential, _), do: {:error, :invalid_lifetime}
+  defp check_lifetime_opt(_class, _), do: :ok
+
+  defp check_lifetime(:credential, %{"iat" => iat, "exp" => exp})
+       when is_integer(iat) and is_integer(exp) and exp > iat and
+              exp - iat <= @max_credential_lifetime,
+       do: :ok
+
+  defp check_lifetime(:credential, _), do: {:error, :invalid_lifetime}
+  defp check_lifetime(_class, _payload), do: :ok
+
+  defp check_iat(:credential, %{"iat" => iat}, now) do
+    if iat > now + @clock_skew_sec, do: {:error, :issued_in_future}, else: :ok
+  end
+
+  defp check_iat(_class, _payload, _now), do: :ok
 end

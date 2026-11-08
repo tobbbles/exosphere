@@ -29,8 +29,7 @@ defmodule Exosphere.ExternalSpaceTest do
 
   alias Exosphere.ATProto.AtUri
   alias Exosphere.ATProto.Identity.{DID, Document}
-  alias Exosphere.ATProto.OAuth.DPoP
-  alias Exosphere.ATProto.Spaces.{Credential, Sync}
+  alias Exosphere.ATProto.Spaces.{Credential, HttpSignature, Sync}
 
   @moduletag :external
   @moduletag timeout: 300_000
@@ -72,13 +71,12 @@ defmodule Exosphere.ExternalSpaceTest do
                  headers: [{"authorization", "Bearer " <> token}]
                )
 
-      # 3. Exchange it at the space host for a DPoP-bound credential.
-      assert {:ok, dpop_key} = DPoP.generate_key()
+      # 3. Exchange it at the space host for a credential bound to a fresh
+      #    P-256 key; every later request is signed by that key.
+      assert {:ok, key} = HttpSignature.generate_key()
 
-      assert {:ok, %{credential: jwt}} =
-               Credential.mint(space_host, space_ref, delegation, dpop_key: dpop_key)
-
-      credential = %{credential: jwt, dpop_key: dpop_key}
+      assert {:ok, credential} =
+               Credential.mint(space_host, space_ref, delegation, key: key)
 
       # 4. The writer set.
       assert {:ok, %{repos: repos}} = Sync.list_repos(space_host, space_ref, credential)

@@ -175,16 +175,34 @@ defmodule Exosphere.ATProto.Crypto do
       {:error, :invalid_signature}
   """
   @spec verify(binary(), signature(), binary(), curve()) :: :ok | {:error, :invalid_signature}
-  def verify(data, signature, public_key, curve)
-      when byte_size(signature) == 64 and curve in [:secp256k1, :p256] do
-    if low_s?(signature, curve) do
-      do_verify(data, signature, public_key, curve)
+  def verify(data, signature, public_key, curve),
+    do: verify(data, signature, public_key, curve, [])
+
+  @doc """
+  Verify an ECDSA-SHA256 signature, with options.
+
+  - `allow_high_s: true` — accept a high-S signature too. Only for formats
+    that say so explicitly: the HTTP message signatures that bind a space
+    credential (proposal 0016, "Credential key binding") require verifiers to
+    accept both low-S and high-S. atproto commit and token signatures stay
+    low-S only (`verify/4`).
+  """
+  @spec verify(binary(), signature(), binary(), curve(), keyword()) ::
+          :ok | {:error, :invalid_signature}
+  def verify(data, signature, public_key, curve, opts)
+      when byte_size(signature) == 64 and curve in [:secp256k1, :p256] and is_list(opts) do
+    if Keyword.get(opts, :allow_high_s, false) or low_s?(signature, curve) do
+      try do
+        do_verify(data, signature, public_key, curve)
+      rescue
+        _ -> {:error, :invalid_signature}
+      end
     else
       {:error, :invalid_signature}
     end
   end
 
-  def verify(_, _, _, _), do: {:error, :invalid_signature}
+  def verify(_, _, _, _, _), do: {:error, :invalid_signature}
 
   defp do_verify(data, signature, public_key, :secp256k1) do
     hash = :crypto.hash(:sha256, data)

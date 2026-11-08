@@ -3,8 +3,8 @@ defmodule Exosphere.ATProto.Spaces.SyncTest do
   use ExUnit.Case, async: true
 
   alias Exosphere.ATProto.{CID, Crypto}
-  alias Exosphere.ATProto.OAuth.{DPoP, JWK}
-  alias Exosphere.ATProto.Spaces.{Commit, Lthash, Repo, Sync, Token}
+  alias Exosphere.ATProto.OAuth.JWK
+  alias Exosphere.ATProto.Spaces.{Commit, Credential, HttpSignature, Lthash, Repo, Sync, Token}
 
   @space_host "https://space-host.example.com"
   @repo_host "https://repo-host.example.com"
@@ -18,13 +18,14 @@ defmodule Exosphere.ATProto.Spaces.SyncTest do
 
     @impl true
     def get(url, opts \\ []) do
-      verify_dpop!(opts, "GET", url)
+      verify_presentation!(opts, url)
+      Process.put(:last_get_headers, opts[:headers])
       stage(:get, url)
     end
 
     @impl true
     def post(url, opts \\ []) do
-      verify_dpop!(opts, "POST", url)
+      verify_presentation!(opts, url)
       Process.put(:last_post_body, opts[:json])
       stage(:post, url)
     end
@@ -33,14 +34,26 @@ defmodule Exosphere.ATProto.Spaces.SyncTest do
     def request(:get, url, opts), do: get(url, opts)
     def request(:post, url, opts), do: post(url, opts)
 
-    # Every request must carry the credential DPoP-bound with a valid proof.
-    defp verify_dpop!(opts, htm, url) do
-      headers = opts[:headers] || []
+    @host_methods ~w(listRepos registerNotify unregisterNotify)
 
-      assert {"authorization", "DPoP " <> cred} = List.keyfind(headers, "authorization", 0)
-      {"dpop", dpop} = List.keyfind(headers, "dpop", 0)
+    # Every request must present the credential the way a host verifies it:
+    # Atproto-Space-Credential scheme, the right audience (the authority for
+    # space-host methods, the repo owner otherwise), and a valid signature by
+    # the credential's bound key.
+    defp verify_presentation!(opts, url) do
+      audience =
+        if Enum.any?(@host_methods, &String.contains?(url, "com.atproto.space." <> &1)),
+          do: "did:plc:spaceauthority",
+          else: "did:plc:author"
 
-      assert {:ok, _} = DPoP.verify_proof(dpop, htm, url, credential: cred)
+      key = Process.get(:authority_public_jwk)
+
+      assert {:ok, _} =
+               Exosphere.ATProto.Spaces.Credential.verify_request(opts[:headers] || [],
+                 audience: audience,
+                 get_signing_key: fn _, _, _ -> {:ok, key} end,
+                 now: 1_800_000_000
+               )
     end
 
     defp stage(key, url) do
@@ -56,13 +69,13 @@ defmodule Exosphere.ATProto.Spaces.SyncTest do
   setup do
     {:ok, authority_key} = JWK.generate(:secp256k1)
     {:ok, user_key} = JWK.generate(:secp256k1)
-    {:ok, dpop_key} = DPoP.generate_key()
-    {:ok, jkt} = JWK.thumbprint(JWK.to_public(dpop_key))
+    {:ok, key} = HttpSignature.generate_key()
+    Process.put(:authority_public_jwk, JWK.to_public(authority_key))
 
     {:ok, credential} =
       Token.sign(
         :credential,
-        [iss: @authority, sub: @space, dpop_jkt: jkt, iat: @now],
+        [iss: @authority, sub: @space, key_id: key.did_key, iat: @now],
         authority_key
       )
 
@@ -72,8 +85,19 @@ defmodule Exosphere.ATProto.Spaces.SyncTest do
       authority_key: authority_key,
       user_key: user_key,
       pub: pub,
-      cred: %{credential: credential, dpop_key: dpop_key}
+      cred: %{credential: credential, key: key}
     }
+  end
+
+  test "a request is refused by the host check when presented to the wrong audience", ctx do
+    {:ok, headers} = Credential.presentation_headers(ctx.cred, @author)
+
+    assert {:error, :bad_audience} =
+             Credential.verify_request(headers,
+               audience: @authority,
+               get_signing_key: fn _, _, _ -> {:ok, JWK.to_public(ctx.authority_key)} end,
+               now: @now
+             )
   end
 
   # The lexicon `bytes` wire form, exactly as a conforming host emits it: the
