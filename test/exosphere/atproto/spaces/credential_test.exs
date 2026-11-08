@@ -4,7 +4,7 @@ defmodule Exosphere.ATProto.Spaces.CredentialTest do
 
   alias Exosphere.ATProto.Base58
   alias Exosphere.ATProto.Identity.Document
-  alias Exosphere.ATProto.OAuth.{DPoP, JWK}
+  alias Exosphere.ATProto.OAuth.{DPoP, JWK, Session}
   alias Exosphere.ATProto.Spaces.Credential
   alias Exosphere.ATProto.Spaces.Token
 
@@ -41,6 +41,48 @@ defmodule Exosphere.ATProto.Spaces.CredentialTest do
       Process.get(key) || default
     end
   end
+
+  # A resource server that challenges the first request for a DPoP nonce
+  # (401 + DPoP-Nonce, as a PDS does) and serves the staged response after.
+  defmodule NonceHTTP do
+    @behaviour Exosphere.ATProto.HTTP.Behaviour
+
+    @impl true
+    def get(url, opts \\ []), do: request(:get, url, opts)
+
+    @impl true
+    def post(url, opts \\ []), do: request(:post, url, opts)
+
+    @impl true
+    def request(method, url, opts \\ []) do
+      seen = Process.get(:nonce_requests, [])
+      Process.put(:nonce_requests, seen ++ [{method, url, opts}])
+
+      if seen == [] do
+        {:ok,
+         %{
+           status: 401,
+           headers: [
+             {"www-authenticate", ~s(DPoP error="use_dpop_nonce")},
+             {"dpop-nonce", "nonce-1"}
+           ],
+           body: %{"error" => "use_dpop_nonce"}
+         }}
+      else
+        Process.get(:nonce_response) || {:ok, %{status: 200, headers: [], body: %{}}}
+      end
+    end
+  end
+
+  defp proof_claims(headers) do
+    {"dpop", proof} = List.keyfind(headers, "dpop", 0)
+    [_header, payload, _sig] = String.split(proof, ".")
+    payload |> Base.url_decode64!(padding: false) |> Jason.decode!()
+  end
+
+  # NonceStore is global and keyed by origin; a unique host keeps async tests
+  # from seeing each other's nonces.
+  defp unique_pds, do: "https://pds-#{System.unique_integer([:positive])}.example.com"
 
   setup do
     {:ok, user} = JWK.generate(:secp256k1)
@@ -100,6 +142,39 @@ defmodule Exosphere.ATProto.Spaces.CredentialTest do
                URI.encode_www_form(@space)
 
     assert {"authorization", "Bearer tok"} in (opts[:headers] || [])
+  end
+
+  test "get_delegation_token DPoP-signs under an OAuth session, with nonce retry", ctx do
+    delegation = delegation_jwt(ctx)
+    pds = unique_pds()
+
+    session = %Session{
+      sub: @user,
+      access_token: "access-jwt",
+      scope: ["atproto"],
+      pds: pds,
+      dpop_key: ctx.dpop_key
+    }
+
+    Process.put(
+      :nonce_response,
+      {:ok, %{status: 200, headers: [], body: %{"token" => delegation}}}
+    )
+
+    assert {:ok, ^delegation} =
+             Credential.get_delegation_token(pds, @space, session: session, http: NonceHTTP)
+
+    assert [{:get, url, first}, {:get, url, retry}] = Process.get(:nonce_requests)
+    assert String.starts_with?(url, pds <> "/xrpc/com.atproto.space.getDelegationToken?space=")
+
+    # DPoP scheme, never Bearer: the session's access token is DPoP-bound.
+    assert {"authorization", "DPoP access-jwt"} in retry[:headers]
+    refute Enum.any?(retry[:headers], &match?({"authorization", "Bearer " <> _}, &1))
+
+    {"dpop", proof} = List.keyfind(retry[:headers], "dpop", 0)
+    assert {:ok, _} = DPoP.verify_proof(proof, "GET", url, credential: "access-jwt")
+    refute Map.has_key?(proof_claims(first[:headers]), "nonce")
+    assert proof_claims(retry[:headers])["nonce"] == "nonce-1"
   end
 
   test "get_delegation_token surfaces http errors" do

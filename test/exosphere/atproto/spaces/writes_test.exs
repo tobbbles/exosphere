@@ -28,6 +28,48 @@ defmodule Exosphere.ATProto.Spaces.WritesTest do
     end
   end
 
+  # A resource server that challenges the first request for a DPoP nonce
+  # (401 + DPoP-Nonce, as a PDS does) and serves the staged response after.
+  defmodule NonceHTTP do
+    @behaviour Exosphere.ATProto.HTTP.Behaviour
+
+    @impl true
+    def get(url, opts \\ []), do: request(:get, url, opts)
+
+    @impl true
+    def post(url, opts \\ []), do: request(:post, url, opts)
+
+    @impl true
+    def request(method, url, opts \\ []) do
+      seen = Process.get(:nonce_requests, [])
+      Process.put(:nonce_requests, seen ++ [{method, url, opts}])
+
+      if seen == [] do
+        {:ok,
+         %{
+           status: 401,
+           headers: [
+             {"www-authenticate", ~s(DPoP error="use_dpop_nonce")},
+             {"dpop-nonce", "nonce-1"}
+           ],
+           body: %{"error" => "use_dpop_nonce"}
+         }}
+      else
+        Process.get(:nonce_response) || {:ok, %{status: 200, headers: [], body: %{}}}
+      end
+    end
+  end
+
+  defp proof_claims(headers) do
+    {"dpop", proof} = List.keyfind(headers, "dpop", 0)
+    [_header, payload, _sig] = String.split(proof, ".")
+    payload |> Base.url_decode64!(padding: false) |> Jason.decode!()
+  end
+
+  # NonceStore is global and keyed by origin; a unique host keeps async tests
+  # from seeing each other's nonces.
+  defp unique_pds, do: "https://pds-#{System.unique_integer([:positive])}.example.com"
+
   test "create_record posts the space-targeted write" do
     assert {:ok, _} =
              Writes.create_record(
@@ -181,5 +223,39 @@ defmodule Exosphere.ATProto.Spaces.WritesTest do
              DPoP.verify_proof(proof, "POST", @pds <> "/xrpc/com.atproto.space.createRecord",
                credential: "access-jwt"
              )
+  end
+
+  test "a DPoP-bound session uses the PDS nonce and retries its challenge once" do
+    {:ok, dpop_key} = DPoP.generate_key()
+    pds = unique_pds()
+
+    session = %Session{
+      sub: @repo,
+      access_token: "access-jwt",
+      scope: ["space:com.example.group"],
+      pds: pds,
+      dpop_key: dpop_key
+    }
+
+    Process.put(:nonce_response, {:ok, %{status: 200, headers: [], body: %{"uri" => "at://x"}}})
+
+    assert {:ok, %{"uri" => "at://x"}} =
+             Writes.create_record(
+               pds,
+               @space,
+               @repo,
+               "com.example.groupPost",
+               %{},
+               [session: session],
+               http: NonceHTTP
+             )
+
+    assert [{:post, url, first}, {:post, url, retry}] = Process.get(:nonce_requests)
+    assert url == pds <> "/xrpc/com.atproto.space.createRecord"
+
+    refute Map.has_key?(proof_claims(first[:headers]), "nonce")
+    assert proof_claims(retry[:headers])["nonce"] == "nonce-1"
+    assert {"authorization", "DPoP access-jwt"} in retry[:headers]
+    assert retry[:json]["collection"] == "com.example.groupPost"
   end
 end

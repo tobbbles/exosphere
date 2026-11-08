@@ -9,9 +9,13 @@ defmodule Exosphere.ATProto.Spaces.Writes do
   routes the record into the space's permissioned repo. Credential-authed
   writes are not a thing — credentials read, sessions write.
 
-  The authorization is the caller's: pass the session's
-  `headers: [{"authorization", "Bearer " <> session.access_token}]`, or pass
-  `session: session` and the DPoP proof is derived per request.
+  The authorization is the caller's. For an atproto OAuth session pass
+  `session: session`: its access token is DPoP-bound, so each request carries
+  `Authorization: DPoP …` plus a fresh proof, the PDS's DPoP nonce is used
+  and a `use_dpop_nonce` challenge is retried once (via
+  `Exosphere.ATProto.OAuth.Request`). A DPoP-bound token sent as `Bearer` is
+  refused by the PDS. `headers: [...]` passes the given headers through
+  verbatim, for any other authorization scheme.
 
   Request options (`:timeout`, `:follow_redirects`) travel in the same
   keyword list as everything else and reach the transport; see
@@ -19,7 +23,7 @@ defmodule Exosphere.ATProto.Spaces.Writes do
   """
 
   alias Exosphere.ATProto.HTTP
-  alias Exosphere.ATProto.OAuth.{DPoP, Session}
+  alias Exosphere.ATProto.OAuth.{Request, Session}
 
   @nsid "com.atproto.space"
 
@@ -166,19 +170,10 @@ defmodule Exosphere.ATProto.Spaces.Writes do
   defp request(http, method, url, opts, headers: headers),
     do: http.request(method, url, Keyword.put(opts, :headers, headers))
 
-  defp request(http, method, url, opts, session: %Session{} = session) do
-    with {:ok, proof} <-
-           DPoP.proof(session.dpop_key, method_name(method), url, ath: session.access_token) do
-      headers = [
-        {"authorization", "DPoP " <> session.access_token},
-        {"dpop", proof}
-      ]
-
-      http.request(method, url, Keyword.put(opts, :headers, headers))
-    end
-  end
-
-  defp method_name(:post), do: "POST"
+  # The shared DPoP executor: nonce store, per-request proof, and one retry
+  # on a `use_dpop_nonce` challenge.
+  defp request(http, method, url, opts, session: %Session{} = session),
+    do: Request.authorized(http, method, url, opts, session.dpop_key, session.access_token)
 
   defp maybe_put(map, _key, nil), do: map
   defp maybe_put(map, key, value), do: Map.put(map, key, value)

@@ -10,7 +10,7 @@ defmodule Exosphere.ATProto.Spaces.Credential do
       # 1. On the user's PDS, under a space-scoped OAuth session
       {:ok, delegation} =
         Credential.get_delegation_token("https://pds.example.com", space_ref,
-          headers: [{"authorization", "Bearer " <> session.access_token}]
+          session: session
         )
 
       # 2. At the space host: a fresh DPoP keypair per credential
@@ -47,7 +47,7 @@ defmodule Exosphere.ATProto.Spaces.Credential do
 
   alias Exosphere.ATProto.{Crypto, HTTP}
   alias Exosphere.ATProto.Identity.Document
-  alias Exosphere.ATProto.OAuth.{DPoP, JWK}
+  alias Exosphere.ATProto.OAuth.{DPoP, JWK, Request, Session}
   alias Exosphere.ATProto.Spaces.Token
 
   @delegation_nsid "com.atproto.space.getDelegationToken"
@@ -57,9 +57,14 @@ defmodule Exosphere.ATProto.Spaces.Credential do
   Fetch a delegation token from the user's PDS
   (`com.atproto.space.getDelegationToken`, OAuth-authenticated).
 
-  The caller supplies the space-scoped OAuth authorization, typically
-  `headers: [{"authorization", "Bearer " <> session.access_token}]`. The
-  token is single-use and lives ~60s: exchange it immediately via `mint/4`.
+  The caller supplies the space-scoped OAuth authorization: pass
+  `session: session` (an `Exosphere.ATProto.OAuth.Session`) and the request
+  is DPoP-signed — `Authorization: DPoP …` plus a per-request proof, using
+  the PDS's DPoP nonce and retrying a `use_dpop_nonce` challenge once. An
+  atproto OAuth access token is DPoP-bound, so sending it as `Bearer` is
+  refused. `headers: [...]` is still accepted and passed through verbatim,
+  for other authorization schemes. The token is single-use and lives ~60s:
+  exchange it immediately via `mint/4`.
   """
   @spec get_delegation_token(String.t(), String.t(), keyword()) ::
           {:ok, String.t()} | {:error, term()}
@@ -70,12 +75,7 @@ defmodule Exosphere.ATProto.Spaces.Credential do
       "#{String.trim_trailing(pds_url, "/")}/xrpc/#{@delegation_nsid}?space=" <>
         URI.encode_www_form(space_ref)
 
-    request_opts =
-      opts
-      |> HTTP.take_request_opts()
-      |> Keyword.put(:headers, Keyword.get(opts, :headers, []))
-
-    case http.get(url, request_opts) do
+    case delegation_request(http, url, opts) do
       {:ok, %{status: 200, body: %{"token" => token}}} when is_binary(token) ->
         {:ok, token}
 
@@ -84,6 +84,18 @@ defmodule Exosphere.ATProto.Spaces.Credential do
 
       error ->
         error
+    end
+  end
+
+  defp delegation_request(http, url, opts) do
+    request_opts = HTTP.take_request_opts(opts)
+
+    case Keyword.get(opts, :session) do
+      %Session{} = session ->
+        Request.authorized(http, :get, url, request_opts, session.dpop_key, session.access_token)
+
+      nil ->
+        http.get(url, Keyword.put(request_opts, :headers, Keyword.get(opts, :headers, [])))
     end
   end
 

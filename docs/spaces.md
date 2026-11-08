@@ -58,9 +58,7 @@ The moving parts, and where exosphere draws the client/host line:
 
       # 2. Get a delegation token from the user's PDS (space-scoped OAuth)
       {:ok, delegation} =
-        Spaces.Credential.get_delegation_token(pds, space_ref,
-          headers: [{"authorization", "Bearer " <> session.access_token}]
-        )
+        Spaces.Credential.get_delegation_token(pds, space_ref, session: session)
 
       # 3. Exchange it at the space host for a DPoP-bound credential
       {:ok, dpop_key} = OAuth.DPoP.generate_key()
