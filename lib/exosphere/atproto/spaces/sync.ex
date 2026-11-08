@@ -15,20 +15,24 @@ defmodule Exosphere.ATProto.Spaces.Sync do
   migration — hence `list_repo_ops/5` returns the retained window, and
   divergence falls back to the full archive.
 
-  Notify registration (`register_notify/5`) subscribes a syncer to write
-  notifications at a space host; delivery of `notifyWrite` stays in the
-  consumer's process tree — this module exposes registration and
-  `decode_notify_write/1`, and leaves receiving to the app.
+  Notify registration (`register_notify/5`) subscribes a syncer to repo
+  update notifications at a space host; delivery of `notifyRepoUpdate` and
+  `notifySpaceStatus` stays in the consumer's process tree — this module
+  exposes registration, withdrawal (`unregister_notify/5`), and
+  `decode_notify_repo_update/1` / `decode_notify_space_status/1`, and leaves
+  receiving to the app.
 
   ## Authorization
 
-  All requests are credential-authed: the space credential travels as
+  Requests are credential-authed: the space credential travels as
   `Authorization: Atproto-Space-Credential <jwt>` with an
   `Atproto-Space-Audience` header and an RFC 9421 HTTP Message Signature by
   the credential's bound key (`Spaces.HttpSignature`). The audience is the
   repo owner's DID for repo-host methods and the space authority's DID for
-  space-host methods (`list_repos/4`, `register_notify/5`,
-  `unregister_notify/5`). Pass `:http` to substitute an `HTTP.Behaviour` mock.
+  space-host methods (`list_writers/4`, `register_notify/5`). The one
+  exception is `unregister_notify/5`, which takes service auth from the
+  service being withdrawn (atproto `atproto-spaces-cleanup` 4037310). Pass
+  `:http` to substitute an `HTTP.Behaviour` mock.
 
   ## Authenticity: the commit and record MACs
 
@@ -43,7 +47,9 @@ defmodule Exosphere.ATProto.Spaces.Sync do
   author's repo host, and deniable to everyone else. A missing `kem_key:` is
   `{:error, :missing_kem_key}`; a MAC that fails is `{:error, :invalid_mac}`,
   on which the proposal advises refreshing the author's DID document before
-  retrying.
+  retrying. A host that cannot use the request's key share answers
+  `InvalidSpaceMac` (it was `BadSpaceMac`), returned as
+  `{:error, :invalid_space_mac}`.
 
   ## Error surface
 
@@ -57,36 +63,46 @@ defmodule Exosphere.ATProto.Spaces.Sync do
 
   The account-state refusals the lexicons declare are typed too, so a caller
   can tell "this account is gone or paused" from a transient failure (atproto
-  `99bf6e2` brought them to `listRepos`, where they describe the space
-  authority; the repo-host reads describe the repo's account):
+  `99bf6e2` brought them to the writer listing, where they describe the space
+  authority; the repo-host reads describe the repo's account), as are the
+  error names the 4037310 lexicons introduced:
 
   | XRPC error | returned |
   |---|---|
   | `RepoTakendown` | `{:error, :repo_takendown}` |
   | `RepoDeactivated` | `{:error, :repo_deactivated}` |
   | `RepoSuspended` | `{:error, :repo_suspended}` |
+  | `InvalidSpaceMac` (was `BadSpaceMac`) | `{:error, :invalid_space_mac}` |
+  | `InvalidCursor` (`listRepoOps`, `listRecords`) | `{:error, :invalid_cursor}` |
   """
 
   alias Exosphere.ATProto.{AtUri, CID, HTTP, TID}
   alias Exosphere.ATProto.CBOR, as: DagCbor
-  alias Exosphere.ATProto.Spaces.{Commit, Credential, Kem, Lthash, Mac}
+  alias Exosphere.ATProto.Identity.DID
+  alias Exosphere.ATProto.Spaces.{Commit, Credential, Kem, Lthash, Mac, Token, XRPC}
   alias Exosphere.ATProto.Spaces.Repo, as: SpaceRepo
 
   @typedoc "A minted credential and its bound key (`Spaces.Credential.mint/4`)."
   @type credential :: Credential.t()
 
   @doc """
-  The space host's writer set (`com.atproto.space.listRepos`): each member
+  The space host's writer set (`com.atproto.space.listWriters`): each member
   repo with its current `repo_rev` and commit `data` (the sha256 of its
   LtHash state) as last reported to the authority, and the `space_rev` at
   which the host last saw it move. The authority may lag the repo hosts,
   which are the source of truth.
 
-  Returns `{:ok, %{repos: [%{did:, repo_rev:, space_rev:, data:}], cursor:
+  Returns `{:ok, %{repos: [%{repo:, repo_rev:, space_rev:, data:}], cursor:
   cursor | nil}}`. The `data` values are base64-decoded from the lexicon
-  `bytes` wire form (`{"$bytes": …}`). The wire field was `hash` until atproto
-  `5791385` (2026-10-27) renamed it alongside the commit's own digest field;
-  a pre-rename host's `hash` is not read across (`data` decodes to `nil`).
+  `bytes` wire form (`{"$bytes": …}`).
+
+  This was `list_repos/4` (`com.atproto.space.listRepos`, entries keyed
+  `did`) until atproto `atproto-spaces-lexicon-review` renamed the method to
+  `listWriters` and the entry's DID field to `repo` (carried by
+  `atproto-spaces-cleanup` 4037310). A pre-rename host does not serve the new
+  method, and a pre-rename entry's `did` is not read across (`repo` decodes
+  to `nil`). The `data` field was `hash` until atproto `5791385`
+  (2026-10-27), likewise not read across.
 
   ## Two revisions, and why they are not the same thing
 
@@ -97,14 +113,14 @@ defmodule Exosphere.ATProto.Spaces.Sync do
       author's latest commit, the same number `list_repo_ops/5`'s `since:`
       takes. It is per-repo and only ever compared within one repo.
     * `space_rev` (wire `spaceRev`) is **the space host's** sequence number
-      for the update: every accepted `notifyWrite` advances one per-space
+      for the update: every accepted `notifyRepoUpdate` advances one per-space
       sequence, and the repo's entry is stamped with where it landed. It is
       what the listing is *ordered by*, ascending, and what the cursor is.
 
   The second is what makes the writer set resumable rather than merely
   pageable: `cursor:` is "repos updated after this space revision
   (exclusive)", so a syncer that remembers the last `space_rev` it processed
-  — from a page, or from a forwarded `notifyWrite`'s `spaceRev` — can ask for
+  — from a page, or from a forwarded `notifyRepoUpdate`'s `spaceRev` — can ask for
   only what moved since, and a gap in a forwarded notification's
   `prevSpaceRev` chain is recovered by exactly that call. A repo can appear
   twice across pages if it moved while you paged; that is the lexicon's
@@ -114,15 +130,15 @@ defmodule Exosphere.ATProto.Spaces.Sync do
   (its last entry's `spaceRev`), and an empty page omits it. So the end of
   the walk is an empty page, one round trip later than "a short page" was.
   """
-  @spec list_repos(String.t(), String.t(), credential(), keyword()) ::
+  @spec list_writers(String.t(), String.t(), credential(), keyword()) ::
           {:ok, %{repos: [map()], cursor: String.t() | nil}} | {:error, term()}
-  def list_repos(space_host, space_ref, cred, opts \\ []) do
+  def list_writers(space_host, space_ref, cred, opts \\ []) do
     params =
       %{space: space_ref}
       |> maybe_put("limit", Keyword.get(opts, :limit))
       |> maybe_put("cursor", Keyword.get(opts, :cursor))
 
-    url = xrpc_url(space_host, "com.atproto.space.listRepos", params)
+    url = xrpc_url(space_host, "com.atproto.space.listWriters", params)
 
     with {:ok, %{body: body}} <- get_json(url, cred, authority(space_ref), [], opts),
          {:ok, repos} <- decode_repos(body["repos"]) do
@@ -194,8 +210,10 @@ defmodule Exosphere.ATProto.Spaces.Sync do
   @doc """
   A repo's records (`com.atproto.space.listRecords`), page by page. Options:
   `:collection` (omit to list across all collections), `:cursor`, `:limit`,
-  `:reverse`, and `:exclude_values` (metadata only — collection, rkey, cid —
-  for diffing a lightly diverged copy).
+  and `:exclude_values` (metadata only — collection, rkey, cid — for diffing
+  a lightly diverged copy). Upstream dropped the `reverse` parameter at
+  4037310, and so has this function. A cursor the host cannot read is
+  `{:error, :invalid_cursor}`.
 
   Listing carries no MAC: verify the result through the set hash, or fetch
   individual records with `get_record/7`.
@@ -208,7 +226,6 @@ defmodule Exosphere.ATProto.Spaces.Sync do
       |> maybe_put("collection", Keyword.get(opts, :collection))
       |> maybe_put("cursor", Keyword.get(opts, :cursor))
       |> maybe_put("limit", Keyword.get(opts, :limit))
-      |> maybe_put("reverse", Keyword.get(opts, :reverse))
       |> maybe_put("excludeValues", Keyword.get(opts, :exclude_values))
 
     url = xrpc_url(repo_host, "com.atproto.space.listRecords", params)
@@ -281,52 +298,121 @@ defmodule Exosphere.ATProto.Spaces.Sync do
   end
 
   @doc """
-  Subscribe to write notifications for the space (`com.atproto.space.registerNotify`,
-  a procedure on the space host). The subscriber is named by `service` — a
-  service identifier (a DID with an optional service fragment), not a bare
-  URL, because `notifyWrite` is delivered with service auth addressed to that
-  identifier. Re-registering replaces the registration and extends the
+  Subscribe to update notifications for the space
+  (`com.atproto.space.registerNotify`, a procedure on the space host),
+  credential-authed. The subscriber is named by `service` — a `did#serviceId`
+  reference, not a URL, because `notifyRepoUpdate` and `notifySpaceStatus`
+  are delivered with service auth addressed to it. Since atproto
+  `atproto-spaces-cleanup` (4037310) the fragment is required: a bare DID is
+  refused here as `{:error, :invalid_service}` (the host would answer
+  `InvalidRequest`). Re-registering renews the registration and extends the
   expiry, which may outlive the credential's own — renew before then.
   """
   @spec register_notify(String.t(), String.t(), String.t(), credential(), keyword()) ::
           {:ok, map()} | {:error, term()}
   def register_notify(space_host, space_ref, service, cred, opts \\ []) do
-    notify_procedure(space_host, "registerNotify", space_ref, service, cred, opts)
-  end
+    if service_ref?(service) do
+      http = Keyword.get(opts, :http, HTTP)
+      url = "#{String.trim_trailing(space_host, "/")}/xrpc/com.atproto.space.registerNotify"
+      body = [json: %{"space" => space_ref, "service" => service}]
 
-  @doc """
-  Withdraw a notify registration (`com.atproto.space.unregisterNotify`),
-  passing the same `service` identifier it was registered under.
-  Registrations may also simply be left to expire.
-  """
-  @spec unregister_notify(String.t(), String.t(), String.t(), credential(), keyword()) ::
-          :ok | {:error, term()}
-  def unregister_notify(space_host, space_ref, service, cred, opts \\ []) do
-    case notify_procedure(space_host, "unregisterNotify", space_ref, service, cred, opts) do
-      {:ok, _} -> :ok
-      error -> error
+      case signed_request(http, :post, url, body, cred, authority(space_ref), []) do
+        {:ok, %{status: 200, body: body}} when is_map(body) -> {:ok, body}
+        {:ok, %{status: 200}} -> {:ok, %{}}
+        {:ok, response} -> classify_error(response)
+        error -> error
+      end
+    else
+      {:error, :invalid_service}
     end
   end
 
   @doc """
-  Decode a forwarded write notification (`com.atproto.space.notifyWrite`, the
-  JSON body a space host POSTs to a registered syncer) into
+  Withdraw a notify registration (`com.atproto.space.unregisterNotify`),
+  passing the `service` it was registered under (or its bare DID, which
+  withdraws every registration under that DID). Registrations may also simply
+  be left to expire. Succeeds when nothing was registered.
+
+  Since atproto `atproto-spaces-cleanup` (4037310, "service auth for
+  unregisterNotify") this is **not** credential-authed: a space credential
+  names no service, so any holder could withdraw anyone's registration. The
+  request carries inter-service auth (`XRPC.ServiceAuth`) issued by the
+  service being withdrawn. `auth` is one of:
+
+  - `[service_auth: [key: private_jwk]]` — minted per request: the service
+    DID's `#atproto` signing key as a private JWK. `iss` defaults to the
+    service's bare DID, `aud` to the authority's space host
+    (`Token.space_host_aud/1`, `{authority}#atproto_pds`), and `lxm` is
+    `com.atproto.space.unregisterNotify`; `:iss`, `:aud`, `:kid` and
+    `:expires_in` may be given to override.
+  - `[headers: [{"authorization", "Bearer " <> jwt}]]` — a token minted
+    elsewhere.
+
+  The host checks that `iss` is the service or its DID and that `aud` is the
+  space authority (bare or `#atproto_pds`).
+  """
+  @spec unregister_notify(String.t(), String.t(), String.t(), keyword(), keyword()) ::
+          :ok | {:error, term()}
+  def unregister_notify(space_host, space_ref, service, auth, opts \\ []) do
+    with {:ok, auth} <- unregister_auth(auth, space_ref, service) do
+      body = %{"space" => space_ref, "service" => service}
+
+      case XRPC.procedure(space_host, "com.atproto.space.unregisterNotify", body, auth, opts) do
+        {:ok, _} -> :ok
+        error -> error
+      end
+    end
+  end
+
+  defp unregister_auth([service_auth: sa], space_ref, service) when is_list(sa) do
+    [did | _] = String.split(service, "#", parts: 2)
+
+    sa =
+      sa
+      |> Keyword.put_new(:iss, did)
+      |> Keyword.put_new_lazy(:aud, fn -> Token.space_host_aud(authority(space_ref)) end)
+
+    {:ok, [service_auth: sa]}
+  end
+
+  defp unregister_auth([headers: headers] = auth, _space_ref, _service) when is_list(headers),
+    do: {:ok, auth}
+
+  defp unregister_auth(_, _, _), do: {:error, :invalid_auth}
+
+  # A `did#serviceId` reference: a DID and a non-empty fragment.
+  defp service_ref?(service) when is_binary(service) do
+    case String.split(service, "#", parts: 2) do
+      [did, id] when id != "" -> DID.valid?(did)
+      _ -> false
+    end
+  end
+
+  defp service_ref?(_), do: false
+
+  @doc """
+  Decode a forwarded repo update notification
+  (`com.atproto.space.notifyRepoUpdate`, the JSON body a space host POSTs to a
+  registered syncer) into
   `%{space:, repo:, repo_rev:, data:, space_rev:, prev_space_rev:}`.
 
+  This was `decode_notify_write/1` (`notifyWrite`) until atproto
+  `atproto-spaces-lexicon-review` renamed the method; the body is unchanged.
   `data` is the repo's commit digest after the write, base64-decoded from the
   lexicon `bytes` form (the field was `hash` until atproto `5791385`).
   `space_rev`/`prev_space_rev` sequence the space: a `prev_space_rev` that is
   not the last `space_rev` you processed means notifications were missed —
-  recover with `list_repos/4`'s `cursor:` set to the last one you did
+  recover with `list_writers/4`'s `cursor:` set to the last one you did
   process. The notification carries no record data and authenticates
   nothing about the repo: sync the repo itself from its host.
 
-  Receiving the POST (and checking its service auth) is the app's job; this
-  only gives the body a shape. Missing required fields are
-  `{:error, {:missing_field, name}}`.
+  Receiving the POST (and checking its service auth, e.g. with
+  `XRPC.ServiceAuth.verify/3` and `lxm: "com.atproto.space.notifyRepoUpdate"`)
+  is the app's job; this only gives the body a shape. Missing required fields
+  are `{:error, {:missing_field, name}}`.
   """
-  @spec decode_notify_write(map()) :: {:ok, map()} | {:error, term()}
-  def decode_notify_write(%{} = body) do
+  @spec decode_notify_repo_update(map()) :: {:ok, map()} | {:error, term()}
+  def decode_notify_repo_update(%{} = body) do
     with :ok <- require_fields(body, ~w(space repo repoRev data)),
          {:ok, data} <- decode_field(body, "data") do
       {:ok,
@@ -338,6 +424,35 @@ defmodule Exosphere.ATProto.Spaces.Sync do
          space_rev: body["spaceRev"],
          prev_space_rev: body["prevSpaceRev"]
        }}
+    end
+  end
+
+  @doc """
+  Decode a space status notification (`com.atproto.space.notifySpaceStatus`,
+  POSTed by the space host to registered syncers) into
+  `{:ok, %{space: space_ref, status: status}}`.
+
+  It replaces `notifySpaceDeleted` (atproto `atproto-spaces-lexicon-review`),
+  which carried only the space: the status is now explicit. `"deleted"` — the
+  one status upstream defines, decoded as `:deleted` — means the space is gone
+  and every copy of its data should be dropped. Any other status (the field
+  is an open set of known values) decodes to its string, for the app to
+  ignore or handle. Missing fields are `{:error, {:missing_field, name}}`.
+  """
+  @spec decode_notify_space_status(map()) ::
+          {:ok, %{space: String.t(), status: :deleted | String.t()}} | {:error, term()}
+  def decode_notify_space_status(%{} = body) do
+    with :ok <- require_fields(body, ~w(space status)) do
+      case body do
+        %{"space" => space, "status" => "deleted"} when is_binary(space) ->
+          {:ok, %{space: space, status: :deleted}}
+
+        %{"space" => space, "status" => status} when is_binary(space) and is_binary(status) ->
+          {:ok, %{space: space, status: status}}
+
+        _ ->
+          {:error, :invalid_notification}
+      end
     end
   end
 
@@ -370,19 +485,6 @@ defmodule Exosphere.ATProto.Spaces.Sync do
 
     case signed_request(http, :get, url, [], cred, audience, extra_headers) do
       {:ok, %{status: 200, body: body} = response} when is_map(body) -> {:ok, response}
-      {:ok, response} -> classify_error(response)
-      error -> error
-    end
-  end
-
-  defp notify_procedure(space_host, method, space_ref, service, cred, opts) do
-    http = Keyword.get(opts, :http, HTTP)
-    url = "#{String.trim_trailing(space_host, "/")}/xrpc/com.atproto.space.#{method}"
-    body = [json: %{"space" => space_ref, "service" => service}]
-
-    case signed_request(http, :post, url, body, cred, authority(space_ref), []) do
-      {:ok, %{status: 200, body: body}} when is_map(body) -> {:ok, body}
-      {:ok, %{status: 200}} -> {:ok, %{}}
       {:ok, response} -> classify_error(response)
       error -> error
     end
@@ -450,7 +552,7 @@ defmodule Exosphere.ATProto.Spaces.Sync do
     else
       :mac -> {:error, :invalid_mac}
       :cid -> {:error, :record_cid_mismatch}
-      {:error, {:bad_space_mac, _}} = error -> error
+      {:error, {:invalid_space_mac, _}} = error -> error
       {:error, _} -> {:error, :invalid_record}
     end
   end
@@ -498,10 +600,12 @@ defmodule Exosphere.ATProto.Spaces.Sync do
 
   # -- errors -----------------------------------------------------------------
 
-  @account_errors %{
+  @typed_errors %{
     "RepoTakendown" => :repo_takendown,
     "RepoDeactivated" => :repo_deactivated,
-    "RepoSuspended" => :repo_suspended
+    "RepoSuspended" => :repo_suspended,
+    "InvalidSpaceMac" => :invalid_space_mac,
+    "InvalidCursor" => :invalid_cursor
   }
 
   # XRPC error bodies are {"error": code, "message": msg}. The sync-recovery
@@ -515,8 +619,8 @@ defmodule Exosphere.ATProto.Spaces.Sync do
     {:error, {:since_out_of_bounds, floor_from_message(body["message"])}}
   end
 
-  defp classify_error(%{body: %{"error" => code}}) when is_map_key(@account_errors, code),
-    do: {:error, Map.fetch!(@account_errors, code)}
+  defp classify_error(%{body: %{"error" => code}}) when is_map_key(@typed_errors, code),
+    do: {:error, Map.fetch!(@typed_errors, code)}
 
   defp classify_error(%{status: status}), do: {:error, {:http_error, status}}
 
@@ -607,11 +711,12 @@ defmodule Exosphere.ATProto.Spaces.Sync do
   defp decode_repos(_), do: {:error, :invalid_response}
 
   # The current field names only. A host still on the pre-`357c4cee9` lexicon
-  # sends `rev` and no `spaceRev`, and both decode to `nil` here rather than
-  # being read across: guessing that a field means what its successor means
-  # is how a client ends up agreeing with one stale host and nobody else.
+  # sends `rev` and no `spaceRev`, and one before 4037310 sends `did` rather
+  # than `repo`; those decode to `nil` here rather than being read across:
+  # guessing that a field means what its successor means is how a client ends
+  # up agreeing with one stale host and nobody else.
   defp decode_repo(repo, data) do
-    %{did: repo["did"], repo_rev: repo["repoRev"], space_rev: repo["spaceRev"], data: data}
+    %{repo: repo["repo"], repo_rev: repo["repoRev"], space_rev: repo["spaceRev"], data: data}
   end
 
   defp maybe_put(map, _key, nil), do: map

@@ -27,6 +27,7 @@ defmodule Exosphere.ATProto.Spaces.Mac do
   `getRepo` use the commit type; `getRecord` the record type.
   """
 
+  alias Exosphere.ATProto.Identity.DID
   alias Exosphere.ATProto.Spaces.StructuredFields, as: SF
 
   @commit_type "atproto-space-repo"
@@ -100,28 +101,36 @@ defmodule Exosphere.ATProto.Spaces.Mac do
 
   @doc """
   Parse a request's `Atproto-Space-Want-Mac`, returning its `key_share`.
-  Missing or malformed headers and unsupported types or versions are
-  `{:error, {:bad_space_mac, reason}}` — the `BadSpaceMac` the host answers.
+  Missing or malformed headers, unsupported types or versions, and a
+  `key_share` that is not a DID are `{:error, {:invalid_space_mac, reason}}` —
+  the `InvalidSpaceMac` the host answers (it was `BadSpaceMac` until atproto
+  `atproto-spaces-lexicon-review`; the DID check is from
+  `atproto-spaces-cleanup` 4037310).
   """
   @spec parse_want_mac_header(String.t() | nil, mac_type()) ::
-          {:ok, String.t()} | {:error, {:bad_space_mac, term()}}
+          {:ok, String.t()} | {:error, {:invalid_space_mac, term()}}
   def parse_want_mac_header(value, type) do
     with {:ok, dict} <- parse(value, type) do
       case SF.get_bare(dict, "key_share") do
-        key_share when is_binary(key_share) -> {:ok, key_share}
-        _ -> {:error, {:bad_space_mac, :missing_key_share}}
+        key_share when is_binary(key_share) ->
+          if DID.valid?(key_share),
+            do: {:ok, key_share},
+            else: {:error, {:invalid_space_mac, :invalid_key_share}}
+
+        _ ->
+          {:error, {:invalid_space_mac, :missing_key_share}}
       end
     end
   end
 
   @doc "Parse a response's `Atproto-Space-Mac`, returning the MAC bytes."
   @spec parse_mac_header(String.t() | nil, mac_type()) ::
-          {:ok, binary()} | {:error, {:bad_space_mac, term()}}
+          {:ok, binary()} | {:error, {:invalid_space_mac, term()}}
   def parse_mac_header(value, type) do
     with {:ok, dict} <- parse(value, type) do
       case SF.get_bare(dict, "mac") do
         {:bytes, mac} -> {:ok, mac}
-        _ -> {:error, {:bad_space_mac, :missing_mac}}
+        _ -> {:error, {:invalid_space_mac, :missing_mac}}
       end
     end
   end
@@ -131,25 +140,25 @@ defmodule Exosphere.ATProto.Spaces.Mac do
          :ok <- no_inner_lists(dict) do
       cond do
         SF.get_bare(dict, "type") != type_name(type) ->
-          {:error, {:bad_space_mac, :unsupported_type}}
+          {:error, {:invalid_space_mac, :unsupported_type}}
 
         SF.get_bare(dict, "ver") != version(type) ->
-          {:error, {:bad_space_mac, :unsupported_version}}
+          {:error, {:invalid_space_mac, :unsupported_version}}
 
         true ->
           {:ok, dict}
       end
     else
-      {:error, :invalid_structured_field} -> {:error, {:bad_space_mac, :malformed_header}}
+      {:error, :invalid_structured_field} -> {:error, {:invalid_space_mac, :malformed_header}}
       {:error, _} = error -> error
     end
   end
 
-  defp parse(_value, _type), do: {:error, {:bad_space_mac, :missing_header}}
+  defp parse(_value, _type), do: {:error, {:invalid_space_mac, :missing_header}}
 
   defp no_inner_lists(dict) do
     if Enum.any?(dict, &match?({_, {:inner_list, _, _}}, &1)),
-      do: {:error, {:bad_space_mac, :malformed_header}},
+      do: {:error, {:invalid_space_mac, :malformed_header}},
       else: :ok
   end
 

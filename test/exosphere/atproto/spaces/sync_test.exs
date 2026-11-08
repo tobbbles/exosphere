@@ -36,7 +36,11 @@ defmodule Exosphere.ATProto.Spaces.SyncTest do
 
     @impl true
     def post(url, opts \\ []) do
-      verify_presentation!(opts, url)
+      if String.contains?(url, "com.atproto.space.unregisterNotify"),
+        do: verify_service_auth!(opts, url),
+        else: verify_presentation!(opts, url)
+
+      Process.put(:last_post_headers, opts[:headers])
       Process.put(:last_post_body, opts[:json])
       stage(:post, url)
     end
@@ -45,7 +49,30 @@ defmodule Exosphere.ATProto.Spaces.SyncTest do
     def request(:get, url, opts), do: get(url, opts)
     def request(:post, url, opts), do: post(url, opts)
 
-    @host_methods ~w(listRepos registerNotify unregisterNotify)
+    @host_methods ~w(listWriters registerNotify)
+
+    # unregisterNotify carries service auth from the service being withdrawn
+    # (atproto 4037310), not a space credential: check it the way the
+    # reference PDS does — signature by the service DID's key, `iss` the
+    # service or its DID, `aud` the authority, `lxm` the method.
+    defp verify_service_auth!(opts, _url) do
+      refute Enum.any?(opts[:headers] || [], fn {k, _} ->
+               String.downcase(k) == "atproto-space-audience"
+             end)
+
+      {_, "Bearer " <> jwt} =
+        Enum.find(opts[:headers], fn {k, _} -> String.downcase(k) == "authorization" end)
+
+      key = Process.get(:service_public_jwk)
+
+      assert {:ok, payload} =
+               Exosphere.ATProto.XRPC.ServiceAuth.verify(jwt, fn _, _, _ -> {:ok, key} end,
+                 aud: ["did:plc:spaceauthority", "did:plc:spaceauthority#atproto_pds"],
+                 lxm: "com.atproto.space.unregisterNotify"
+               )
+
+      Process.put(:last_service_auth, payload)
+    end
 
     # Every request must present the credential the way a host verifies it:
     # Atproto-Space-Credential scheme, the right audience (the authority for
@@ -220,7 +247,8 @@ defmodule Exosphere.ATProto.Spaces.SyncTest do
         {:ok, %{status: 400, headers: [], body: %{"error" => code, "message" => "..."}}}
       end)
 
-      assert {:error, ^expected} = Sync.list_repos(@space_host, @space, ctx.cred, http: SyncHTTP)
+      assert {:error, ^expected} =
+               Sync.list_writers(@space_host, @space, ctx.cred, http: SyncHTTP)
 
       assert {:error, ^expected} =
                Sync.get_latest_commit(@repo_host, @space, @author, ctx.cred,
@@ -278,7 +306,7 @@ defmodule Exosphere.ATProto.Spaces.SyncTest do
       {:ok, %{status: 200, headers: [], body: %{"ops" => [], "commit" => wire(commit)}}}
     end)
 
-    assert {:error, {:bad_space_mac, :missing_header}} =
+    assert {:error, {:invalid_space_mac, :missing_header}} =
              Sync.list_repo_ops(@repo_host, @space, @author, ctx.cred,
                http: SyncHTTP,
                kem_key: ctx.kem
@@ -328,13 +356,15 @@ defmodule Exosphere.ATProto.Spaces.SyncTest do
            status: 200,
            headers: [],
            body: %{
-             "repos" => [%{"did" => @author, "repoRev" => "r", "spaceRev" => "s", "data" => wire}]
+             "repos" => [
+               %{"repo" => @author, "repoRev" => "r", "spaceRev" => "s", "data" => wire}
+             ]
            }
          }}
       end)
 
       assert {:ok, %{repos: [%{data: ^hash}]}} =
-               Sync.list_repos(@space_host, @space, ctx.cred, http: SyncHTTP, kem_key: ctx.kem)
+               Sync.list_writers(@space_host, @space, ctx.cred, http: SyncHTTP, kem_key: ctx.kem)
     end
 
     # The same bytes in the url-safe alphabet are not the data model's base64.
@@ -348,7 +378,7 @@ defmodule Exosphere.ATProto.Spaces.SyncTest do
          body: %{
            "repos" => [
              %{
-               "did" => @author,
+               "repo" => @author,
                "repoRev" => "r",
                "spaceRev" => "s",
                "data" => %{"$bytes" => urlsafe}
@@ -359,7 +389,7 @@ defmodule Exosphere.ATProto.Spaces.SyncTest do
     end)
 
     assert {:error, {:invalid_bytes, "data"}} =
-             Sync.list_repos(@space_host, @space, ctx.cred, http: SyncHTTP, kem_key: ctx.kem)
+             Sync.list_writers(@space_host, @space, ctx.cred, http: SyncHTTP, kem_key: ctx.kem)
   end
 
   test "malformed bytes are an error, not a silent pass-through", ctx do
@@ -412,13 +442,13 @@ defmodule Exosphere.ATProto.Spaces.SyncTest do
              )
   end
 
-  test "list_repos returns the writer set with decoded commit hashes", ctx do
+  test "list_writers returns the writer set with decoded commit hashes", ctx do
     hash = :crypto.hash(:sha256, "state")
 
     Process.put(
       :get,
       fn url ->
-        assert String.contains?(url, "/xrpc/com.atproto.space.listRepos?")
+        assert String.contains?(url, "/xrpc/com.atproto.space.listWriters?")
         assert String.contains?(url, "space=" <> URI.encode_www_form(@space))
 
         {:ok,
@@ -428,7 +458,7 @@ defmodule Exosphere.ATProto.Spaces.SyncTest do
            body: %{
              "repos" => [
                %{
-                 "did" => @author,
+                 "repo" => @author,
                  "repoRev" => "3kbcq3p7ad400",
                  "spaceRev" => "3kbcq3p7ad4zz",
                  "data" => bytes(hash)
@@ -441,13 +471,13 @@ defmodule Exosphere.ATProto.Spaces.SyncTest do
     )
 
     assert {:ok, %{repos: [repo], cursor: "3kbcq3p7ad4zz"}} =
-             Sync.list_repos(@space_host, @space, ctx.cred, http: SyncHTTP, kem_key: ctx.kem)
+             Sync.list_writers(@space_host, @space, ctx.cred, http: SyncHTTP, kem_key: ctx.kem)
 
     # The repo's own revision and the host's sequence position are separate
-    # fields with separate jobs (see `list_repos/4`), and neither is read as
+    # fields with separate jobs (see `list_writers/4`), and neither is read as
     # the other.
     assert repo == %{
-             did: @author,
+             repo: @author,
              repo_rev: "3kbcq3p7ad400",
              space_rev: "3kbcq3p7ad4zz",
              data: hash
@@ -455,7 +485,7 @@ defmodule Exosphere.ATProto.Spaces.SyncTest do
 
     # limit/cursor reach the wire
     assert {:ok, _} =
-             Sync.list_repos(@space_host, @space, ctx.cred,
+             Sync.list_writers(@space_host, @space, ctx.cred,
                http: SyncHTTP,
                kem_key: ctx.kem,
                limit: 500,
@@ -466,11 +496,13 @@ defmodule Exosphere.ATProto.Spaces.SyncTest do
     assert Process.get(:last_url) =~ "cursor=next"
   end
 
-  test "list_repos does not read a pre-rename host's `rev`/`hash` as `repoRev`/`data`", ctx do
-    # A host on the lexicon before atproto 357c4cee9 still says `rev`, and one
-    # before 5791385 still says `hash`. The client answers "unknown" rather than
-    # guessing the old field means the new one — `nil` is a value every caller
-    # already handles, a wrong guess is not.
+  test "list_writers does not read a pre-rename host's `did`/`rev`/`hash` as `repo`/`repoRev`/`data`",
+       ctx do
+    # A host on the lexicon before atproto 357c4cee9 still says `rev`, one
+    # before 5791385 still says `hash`, and one before 4037310 still says `did`.
+    # The client answers "unknown" rather than guessing the old field means the
+    # new one — `nil` is a value every caller already handles, a wrong guess is
+    # not.
     Process.put(:get, fn _url ->
       {:ok,
        %{
@@ -480,11 +512,58 @@ defmodule Exosphere.ATProto.Spaces.SyncTest do
        }}
     end)
 
-    assert {:ok, %{repos: [%{repo_rev: nil, space_rev: nil, data: nil}], cursor: nil}} =
-             Sync.list_repos(@space_host, @space, ctx.cred, http: SyncHTTP, kem_key: ctx.kem)
+    assert {:ok, %{repos: [%{repo: nil, repo_rev: nil, space_rev: nil, data: nil}], cursor: nil}} =
+             Sync.list_writers(@space_host, @space, ctx.cred, http: SyncHTTP, kem_key: ctx.kem)
   end
 
-  test "decode_notify_write/1 shapes a forwarded notification" do
+  test "the 4037310 error names are typed", ctx do
+    for {code, expected} <- [
+          {"InvalidSpaceMac", :invalid_space_mac},
+          {"InvalidCursor", :invalid_cursor}
+        ] do
+      Process.put(:get, fn _url ->
+        {:ok, %{status: 400, headers: [], body: %{"error" => code, "message" => "..."}}}
+      end)
+
+      assert {:error, ^expected} =
+               Sync.list_repo_ops(@repo_host, @space, @author, ctx.cred,
+                 http: SyncHTTP,
+                 kem_key: ctx.kem
+               )
+
+      assert {:error, ^expected} =
+               Sync.list_records(@repo_host, @space, @author, ctx.cred, http: SyncHTTP)
+    end
+
+    # The pre-rename name is no longer recognised.
+    Process.put(:get, fn _url ->
+      {:ok, %{status: 400, headers: [], body: %{"error" => "BadSpaceMac"}}}
+    end)
+
+    assert {:error, {:http_error, 400}} =
+             Sync.get_latest_commit(@repo_host, @space, @author, ctx.cred,
+               http: SyncHTTP,
+               kem_key: ctx.kem
+             )
+  end
+
+  test "decode_notify_space_status/1 reads the status, typing `deleted`" do
+    assert {:ok, %{space: @space, status: :deleted}} =
+             Sync.decode_notify_space_status(%{"space" => @space, "status" => "deleted"})
+
+    # An open set of known values: an unknown status is passed through.
+    assert {:ok, %{space: @space, status: "archived"}} =
+             Sync.decode_notify_space_status(%{"space" => @space, "status" => "archived"})
+
+    # A notifySpaceDeleted body (no status) is missing a required field.
+    assert {:error, {:missing_field, "status"}} =
+             Sync.decode_notify_space_status(%{"space" => @space})
+
+    assert {:error, :invalid_notification} =
+             Sync.decode_notify_space_status(%{"space" => @space, "status" => 1})
+  end
+
+  test "decode_notify_repo_update/1 shapes a forwarded notification" do
     data = :crypto.hash(:sha256, "state")
 
     assert {:ok,
@@ -496,7 +575,7 @@ defmodule Exosphere.ATProto.Spaces.SyncTest do
               space_rev: "3kbcq3p7ad4zz",
               prev_space_rev: "3kbcq3p7ad4yy"
             }} =
-             Sync.decode_notify_write(%{
+             Sync.decode_notify_repo_update(%{
                "space" => @space,
                "repo" => @author,
                "repoRev" => "3kbcq3p7ad400",
@@ -507,7 +586,7 @@ defmodule Exosphere.ATProto.Spaces.SyncTest do
 
     # A pre-5791385 body (`hash`, no `data`) is missing a required field.
     assert {:error, {:missing_field, "data"}} =
-             Sync.decode_notify_write(%{
+             Sync.decode_notify_repo_update(%{
                "space" => @space,
                "repo" => @author,
                "repoRev" => "3kbcq3p7ad400",
@@ -649,13 +728,71 @@ defmodule Exosphere.ATProto.Spaces.SyncTest do
     # The notify registration is a procedure: JSON body {space, service}.
     assert Process.get(:last_post_body) == %{"space" => @space, "service" => service}
 
-    Process.put(:post, fn _url -> {:ok, %{status: 200, headers: [], body: %{}}} end)
+    # A bare DID is no longer a service reference (atproto 4037310).
+    assert {:error, :invalid_service} =
+             Sync.register_notify(@space_host, @space, "did:web:syncer.example.com", ctx.cred,
+               http: SyncHTTP
+             )
+  end
+
+  test "unregister_notify withdraws with service auth from the service, not a credential" do
+    service = "did:web:syncer.example.com#atproto_space_syncer"
+    {:ok, service_key} = JWK.generate(:secp256k1)
+    Process.put(:service_public_jwk, JWK.to_public(service_key))
+    Process.put(:post, fn _url -> {:ok, %{status: 200, headers: [], body: nil}} end)
 
     assert :ok =
-             Sync.unregister_notify(@space_host, @space, service, ctx.cred,
-               http: SyncHTTP,
-               kem_key: ctx.kem
+             Sync.unregister_notify(
+               @space_host,
+               @space,
+               service,
+               [service_auth: [key: service_key]],
+               http: SyncHTTP
              )
+
+    assert Process.get(:last_post_body) == %{"space" => @space, "service" => service}
+
+    # The token: the bare service DID as `iss`, the authority's space host as
+    # `aud`, scoped to the one method, short-lived, with a nonce.
+    payload = Process.get(:last_service_auth)
+    assert payload["iss"] == "did:web:syncer.example.com"
+    assert payload["aud"] == "did:plc:spaceauthority#atproto_pds"
+    assert payload["lxm"] == "com.atproto.space.unregisterNotify"
+    assert payload["exp"] - payload["iat"] == 60
+    assert is_binary(payload["jti"])
+
+    # A token minted elsewhere passes through.
+    {:ok, headers} =
+      Exosphere.ATProto.XRPC.ServiceAuth.headers(
+        [
+          iss: "did:web:syncer.example.com",
+          aud: "did:plc:spaceauthority",
+          lxm: "com.atproto.space.unregisterNotify"
+        ],
+        service_key
+      )
+
+    assert :ok =
+             Sync.unregister_notify(@space_host, @space, service, [headers: headers],
+               http: SyncHTTP
+             )
+
+    # Host refusals keep their XRPC error name.
+    Process.put(:post, fn _url ->
+      {:ok, %{status: 403, headers: [], body: %{"error" => "Forbidden"}}}
+    end)
+
+    assert {:error, {:http_error, 403, "Forbidden"}} =
+             Sync.unregister_notify(
+               @space_host,
+               @space,
+               service,
+               [service_auth: [key: service_key]],
+               http: SyncHTTP
+             )
+
+    assert {:error, :invalid_auth} =
+             Sync.unregister_notify(@space_host, @space, service, [], http: SyncHTTP)
   end
 
   test "list_records lists across collections, with excludeValues", ctx do

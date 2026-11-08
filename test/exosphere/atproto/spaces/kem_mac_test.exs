@@ -107,7 +107,7 @@ defmodule Exosphere.ATProto.Spaces.KemMacTest do
                :crypto.mac(:hmac, :sha256, @secret, context <> cid)
     end
 
-    test "headers round-trip, and the wrong type, version or shape is BadSpaceMac" do
+    test "headers round-trip, and the wrong type, version or shape is InvalidSpaceMac" do
       want = Mac.want_mac_header(:commit, "did:key:zDnaeX")
       assert want == ~s(type="atproto-space-repo", ver=1, key_share="did:key:zDnaeX")
       assert {:ok, "did:key:zDnaeX"} = Mac.parse_want_mac_header(want, :commit)
@@ -117,22 +117,27 @@ defmodule Exosphere.ATProto.Spaces.KemMacTest do
       assert header =~ ~s(type="atproto-space-record", ver=1, mac=:)
       assert {:ok, ^mac} = Mac.parse_mac_header(header, :record)
 
-      assert {:error, {:bad_space_mac, :unsupported_type}} = Mac.parse_mac_header(header, :commit)
+      assert {:error, {:invalid_space_mac, :unsupported_type}} =
+               Mac.parse_mac_header(header, :commit)
 
-      assert {:error, {:bad_space_mac, :unsupported_version}} =
+      assert {:error, {:invalid_space_mac, :unsupported_version}} =
                Mac.parse_mac_header(~s(type="atproto-space-record", ver=2, mac=:AA==:), :record)
 
       # A Token is not a String: an unquoted type does not match.
-      assert {:error, {:bad_space_mac, :unsupported_type}} =
+      assert {:error, {:invalid_space_mac, :unsupported_type}} =
                Mac.parse_mac_header("type=atproto-space-repo, ver=1, mac=:AA==:", :commit)
 
-      assert {:error, {:bad_space_mac, :missing_mac}} =
+      assert {:error, {:invalid_space_mac, :missing_mac}} =
                Mac.parse_mac_header(~s(type="atproto-space-repo", ver=1), :commit)
 
-      assert {:error, {:bad_space_mac, :missing_header}} = Mac.parse_mac_header(nil, :commit)
+      assert {:error, {:invalid_space_mac, :missing_header}} = Mac.parse_mac_header(nil, :commit)
 
-      assert {:error, {:bad_space_mac, :malformed_header}} =
+      assert {:error, {:invalid_space_mac, :malformed_header}} =
                Mac.parse_want_mac_header("type=(", :commit)
+
+      # The key share must be a DID (atproto 4037310), not just any string.
+      assert {:error, {:invalid_space_mac, :invalid_key_share}} =
+               Mac.parse_want_mac_header(Mac.want_mac_header(:commit, "zDnaeX"), :commit)
     end
   end
 end
