@@ -25,7 +25,7 @@ defmodule Exosphere.ATProto.OAuth.Scope do
     Default is the full record action list. `read` is all-or-nothing across
     collections and implies `read_self`
   - `manage` (repeatable): space administration (`create`/`update`/`delete`,
-    mapping to simplespace operations under `manage=update`); no default
+    the policy-agnostic `com.atproto.space` methods, with member-list changes under `manage=update`); no default
 
   An empty `collection` list means *no write targets* — not "all collections".
   Bundling into OAuth permission sets requires a concrete spaceType.
