@@ -4,7 +4,18 @@ defmodule Exosphere.ATProto.Spaces.SyncTest do
 
   alias Exosphere.ATProto.{CID, Crypto}
   alias Exosphere.ATProto.OAuth.JWK
-  alias Exosphere.ATProto.Spaces.{Commit, Credential, HttpSignature, Lthash, Repo, Sync, Token}
+
+  alias Exosphere.ATProto.Spaces.{
+    Commit,
+    Credential,
+    HttpSignature,
+    Kem,
+    Lthash,
+    Mac,
+    Repo,
+    Sync,
+    Token
+  }
 
   @space_host "https://space-host.example.com"
   @repo_host "https://repo-host.example.com"
@@ -41,10 +52,14 @@ defmodule Exosphere.ATProto.Spaces.SyncTest do
     # space-host methods, the repo owner otherwise), and a valid signature by
     # the credential's bound key.
     defp verify_presentation!(opts, url) do
+      # As a host derives it: the repo param for repo methods, the authority
+      # for space-host methods.
+      query = URI.decode_query(URI.parse(url).query || "")
+
       audience =
         if Enum.any?(@host_methods, &String.contains?(url, "com.atproto.space." <> &1)),
           do: "did:plc:spaceauthority",
-          else: "did:plc:author"
+          else: query["repo"]
 
       key = Process.get(:authority_public_jwk)
 
@@ -81,7 +96,13 @@ defmodule Exosphere.ATProto.Spaces.SyncTest do
 
     {:ok, %{public_key: pub}} = Crypto.generate_keypair(:secp256k1)
 
+    # The author's #atproto_kem key: the syncer gets the public half, the mock
+    # repo host decapsulates with the private half to MAC what it serves.
+    {:ok, kem} = Crypto.generate_keypair(:p256)
+    Process.put(:kem_private, kem.private_key)
+
     %{
+      kem: kem.public_key,
       authority_key: authority_key,
       user_key: user_key,
       pub: pub,
@@ -106,6 +127,28 @@ defmodule Exosphere.ATProto.Spaces.SyncTest do
   # data model specifies — which is how the decoding bug survived them.
   defp bytes(bin), do: %{"$bytes" => Base.encode64(bin)}
 
+  # What a conforming repo host answers with: the MAC under the shared secret
+  # it decapsulates from the request's Atproto-Space-Want-Mac key share.
+  defp host_mac(type, subject) do
+    {_, want} = List.keyfind(Process.get(:last_get_headers), "atproto-space-want-mac", 0)
+    {:ok, key_share} = Mac.parse_want_mac_header(want, type)
+    {:ok, secret} = Kem.decapsulate(Process.get(:kem_private), key_share)
+
+    mac =
+      case {type, subject} do
+        {:commit, commit} -> Mac.commit_mac(secret, commit)
+        {:record, {uri, cid}} -> Mac.record_mac(secret, uri, CID.to_bytes(cid))
+      end
+
+    {"atproto-space-mac", Mac.mac_header(type, mac)}
+  end
+
+  defp head_commit(data \\ :crypto.hash(:sha256, "head-state")) do
+    %{"ver" => 1, "repo" => @author, "space" => @space, "rev" => "3kbcq3p7ad42b", "data" => data}
+  end
+
+  defp wire(commit), do: Map.put(commit, "data", bytes(commit["data"]))
+
   test "SinceOutOfBounds is typed, with the floor parsed from the message", ctx do
     # The wire shape a host emits when `since` predates (or falls outside) the
     # retained oplog window — the cue to recover via the full CAR.
@@ -125,6 +168,7 @@ defmodule Exosphere.ATProto.Spaces.SyncTest do
     assert {:error, {:since_out_of_bounds, "3kbcq3p7ad2c2"}} =
              Sync.list_repo_ops(@repo_host, @space, @author, ctx.cred,
                http: SyncHTTP,
+               kem_key: ctx.kem,
                since: "3kbcq3p7ad400"
              )
 
@@ -140,7 +184,10 @@ defmodule Exosphere.ATProto.Spaces.SyncTest do
     end)
 
     assert {:error, {:since_out_of_bounds, nil}} =
-             Sync.list_repo_ops(@repo_host, @space, @author, ctx.cred, http: SyncHTTP)
+             Sync.list_repo_ops(@repo_host, @space, @author, ctx.cred,
+               http: SyncHTTP,
+               kem_key: ctx.kem
+             )
 
     # Anything that merely looks like a floor is not one: the candidate must
     # be a valid TID.
@@ -157,7 +204,10 @@ defmodule Exosphere.ATProto.Spaces.SyncTest do
     end)
 
     assert {:error, {:since_out_of_bounds, nil}} =
-             Sync.list_repo_ops(@repo_host, @space, @author, ctx.cred, http: SyncHTTP)
+             Sync.list_repo_ops(@repo_host, @space, @author, ctx.cred,
+               http: SyncHTTP,
+               kem_key: ctx.kem
+             )
   end
 
   test "other 400s keep the generic http_error shape", ctx do
@@ -166,34 +216,83 @@ defmodule Exosphere.ATProto.Spaces.SyncTest do
     end)
 
     assert {:error, {:http_error, 400}} =
-             Sync.list_repo_ops(@repo_host, @space, @author, ctx.cred, http: SyncHTTP)
+             Sync.list_repo_ops(@repo_host, @space, @author, ctx.cred,
+               http: SyncHTTP,
+               kem_key: ctx.kem
+             )
 
     # And a body-less 400 (e.g. a proxy) stays generic too.
     Process.put(:get, fn _url -> {:ok, %{status: 400, headers: [], body: ""}} end)
 
     assert {:error, {:http_error, 400}} =
-             Sync.list_repo_ops(@repo_host, @space, @author, ctx.cred, http: SyncHTTP)
+             Sync.list_repo_ops(@repo_host, @space, @author, ctx.cred,
+               http: SyncHTTP,
+               kem_key: ctx.kem
+             )
   end
 
-  test "list_repo_ops decodes the head commit's bytes", ctx do
+  test "list_repo_ops verifies the head commit against the response MAC", ctx do
+    commit = head_commit()
+
     Process.put(:get, fn _url ->
       {:ok,
        %{
          status: 200,
-         headers: [],
-         body: %{
-           "ops" => [],
-           "commit" => %{
-             "ver" => 1,
-             "hash" => bytes(<<7::256>>),
-             "rev" => "head"
-           }
-         }
+         headers: [host_mac(:commit, commit)],
+         body: %{"ops" => [], "commit" => wire(commit)}
        }}
     end)
 
-    assert {:ok, %{commit: %{"hash" => <<7::256>>}}} =
-             Sync.list_repo_ops(@repo_host, @space, @author, ctx.cred, http: SyncHTTP)
+    assert {:ok, %{commit: ^commit}} =
+             Sync.list_repo_ops(@repo_host, @space, @author, ctx.cred,
+               http: SyncHTTP,
+               kem_key: ctx.kem
+             )
+
+    # The request asked for the commit MAC with a fresh did:key share.
+    {_, want} = List.keyfind(Process.get(:last_get_headers), "atproto-space-want-mac", 0)
+    assert want =~ ~s(type="atproto-space-repo", ver=1, key_share="did:key:zDn)
+
+    # A head commit without a MAC header is refused; so is a wrong MAC.
+    Process.put(:get, fn _url ->
+      {:ok, %{status: 200, headers: [], body: %{"ops" => [], "commit" => wire(commit)}}}
+    end)
+
+    assert {:error, {:bad_space_mac, :missing_header}} =
+             Sync.list_repo_ops(@repo_host, @space, @author, ctx.cred,
+               http: SyncHTTP,
+               kem_key: ctx.kem
+             )
+
+    Process.put(:get, fn _url ->
+      forged = {"atproto-space-mac", Mac.mac_header(:commit, :binary.copy(<<0>>, 32))}
+      {:ok, %{status: 200, headers: [forged], body: %{"ops" => [], "commit" => wire(commit)}}}
+    end)
+
+    assert {:error, :invalid_mac} =
+             Sync.list_repo_ops(@repo_host, @space, @author, ctx.cred,
+               http: SyncHTTP,
+               kem_key: ctx.kem
+             )
+
+    # A backfill page (no commit) carries no MAC and needs none.
+    Process.put(:get, fn _url ->
+      {:ok, %{status: 200, headers: [], body: %{"ops" => [], "cursor" => "c"}}}
+    end)
+
+    assert {:ok, %{commit: nil, cursor: "c"}} =
+             Sync.list_repo_ops(@repo_host, @space, @author, ctx.cred,
+               http: SyncHTTP,
+               kem_key: ctx.kem
+             )
+  end
+
+  test "MAC'd methods need the author's KEM key", ctx do
+    assert {:error, :missing_kem_key} =
+             Sync.get_latest_commit(@repo_host, @space, @author, ctx.cred, http: SyncHTTP)
+
+    assert {:error, :missing_kem_key} =
+             Sync.get_repo(@repo_host, @space, @author, ctx.cred, http: SyncHTTP)
   end
 
   test "bytes use the standard alphabet, padding optional, url-safe rejected", ctx do
@@ -215,7 +314,7 @@ defmodule Exosphere.ATProto.Spaces.SyncTest do
       end)
 
       assert {:ok, %{repos: [%{data: ^hash}]}} =
-               Sync.list_repos(@space_host, @space, ctx.cred, http: SyncHTTP)
+               Sync.list_repos(@space_host, @space, ctx.cred, http: SyncHTTP, kem_key: ctx.kem)
     end
 
     # The same bytes in the url-safe alphabet are not the data model's base64.
@@ -240,7 +339,7 @@ defmodule Exosphere.ATProto.Spaces.SyncTest do
     end)
 
     assert {:error, {:invalid_bytes, "data"}} =
-             Sync.list_repos(@space_host, @space, ctx.cred, http: SyncHTTP)
+             Sync.list_repos(@space_host, @space, ctx.cred, http: SyncHTTP, kem_key: ctx.kem)
   end
 
   test "malformed bytes are an error, not a silent pass-through", ctx do
@@ -251,31 +350,46 @@ defmodule Exosphere.ATProto.Spaces.SyncTest do
          headers: [],
          body: %{
            "ops" => [],
-           "commit" => %{"ver" => 1, "rev" => "head", "hash" => %{"$bytes" => "not*base64!"}}
+           "commit" => %{head_commit() | "data" => %{"$bytes" => "not*base64!"}}
          }
        }}
     end)
 
-    assert {:error, {:invalid_bytes, "hash"}} =
-             Sync.list_repo_ops(@repo_host, @space, @author, ctx.cred, http: SyncHTTP)
+    assert {:error, {:invalid_bytes, "data"}} =
+             Sync.list_repo_ops(@repo_host, @space, @author, ctx.cred,
+               http: SyncHTTP,
+               kem_key: ctx.kem
+             )
   end
 
-  test "get_latest_commit returns the commit with its bytes decoded", ctx do
-    sig = :crypto.strong_rand_bytes(64)
+  test "get_latest_commit returns the MAC-verified commit", ctx do
+    commit = head_commit()
 
     Process.put(:get, fn url ->
       assert String.contains?(url, "/xrpc/com.atproto.space.getLatestCommit?")
 
       {:ok,
-       %{
-         status: 200,
-         headers: [],
-         body: %{"commit" => %{"rev" => "head", "hash" => bytes(<<7::256>>), "sig" => bytes(sig)}}
-       }}
+       %{status: 200, headers: [host_mac(:commit, commit)], body: %{"commit" => wire(commit)}}}
     end)
 
-    assert {:ok, %{"rev" => "head", "hash" => <<7::256>>, "sig" => ^sig}} =
-             Sync.get_latest_commit(@repo_host, @space, @author, ctx.cred, http: SyncHTTP)
+    assert {:ok, ^commit} =
+             Sync.get_latest_commit(@repo_host, @space, @author, ctx.cred,
+               http: SyncHTTP,
+               kem_key: ctx.kem
+             )
+
+    # A commit for another repo is refused even with a valid MAC over it.
+    other = %{commit | "repo" => "did:plc:someoneelse"}
+
+    Process.put(:get, fn _url ->
+      {:ok, %{status: 200, headers: [host_mac(:commit, other)], body: %{"commit" => wire(other)}}}
+    end)
+
+    assert {:error, :repo_mismatch} =
+             Sync.get_latest_commit(@repo_host, @space, @author, ctx.cred,
+               http: SyncHTTP,
+               kem_key: ctx.kem
+             )
   end
 
   test "list_repos returns the writer set with decoded commit hashes", ctx do
@@ -307,7 +421,7 @@ defmodule Exosphere.ATProto.Spaces.SyncTest do
     )
 
     assert {:ok, %{repos: [repo], cursor: "3kbcq3p7ad4zz"}} =
-             Sync.list_repos(@space_host, @space, ctx.cred, http: SyncHTTP)
+             Sync.list_repos(@space_host, @space, ctx.cred, http: SyncHTTP, kem_key: ctx.kem)
 
     # The repo's own revision and the host's sequence position are separate
     # fields with separate jobs (see `list_repos/4`), and neither is read as
@@ -323,6 +437,7 @@ defmodule Exosphere.ATProto.Spaces.SyncTest do
     assert {:ok, _} =
              Sync.list_repos(@space_host, @space, ctx.cred,
                http: SyncHTTP,
+               kem_key: ctx.kem,
                limit: 500,
                cursor: "next"
              )
@@ -346,7 +461,7 @@ defmodule Exosphere.ATProto.Spaces.SyncTest do
     end)
 
     assert {:ok, %{repos: [%{repo_rev: nil, space_rev: nil, data: nil}], cursor: nil}} =
-             Sync.list_repos(@space_host, @space, ctx.cred, http: SyncHTTP)
+             Sync.list_repos(@space_host, @space, ctx.cred, http: SyncHTTP, kem_key: ctx.kem)
   end
 
   test "decode_notify_write/1 shapes a forwarded notification" do
@@ -398,34 +513,30 @@ defmodule Exosphere.ATProto.Spaces.SyncTest do
       }
     ]
 
+    commit = head_commit()
+
     Process.put(:get, fn url ->
       assert String.contains?(url, "since=3kbcq3p7ad400")
+      assert String.contains?(url, "excludeValues=true")
 
       {:ok,
        %{
          status: 200,
-         headers: [],
-         body: %{
-           "ops" => ops,
-           "commit" => %{
-             "ver" => 1,
-             "hash" => bytes(:crypto.hash(:sha256, "head-state")),
-             "rev" => "head"
-           }
-         }
+         headers: [host_mac(:commit, commit)],
+         body: %{"ops" => ops, "commit" => wire(commit)}
        }}
     end)
 
-    assert {:ok, %{ops: ^ops, commit: %{"rev" => "head", "hash" => head_hash}, cursor: nil}} =
+    assert {:ok, %{ops: ^ops, commit: ^commit, cursor: nil}} =
              Sync.list_repo_ops(@repo_host, @space, @author, ctx.cred,
                http: SyncHTTP,
-               since: "3kbcq3p7ad400"
+               kem_key: ctx.kem,
+               since: "3kbcq3p7ad400",
+               exclude_values: true
              )
   end
 
-  test "get_repo verifies a full CAR end to end", ctx do
-    commit_ctx = %{space: @space, author: @author}
-
+  test "get_repo verifies a full STAR archive end to end", ctx do
     records = [
       {"com.example.groupPost", "3jz1", %{"$type" => "com.example.groupPost", "text" => "one"}},
       {"com.example.groupPost", "3jz2", %{"$type" => "com.example.groupPost", "text" => "two"}}
@@ -436,36 +547,33 @@ defmodule Exosphere.ATProto.Spaces.SyncTest do
         Commit.add_record(h, c, r, CID.encode(CID.create!(rec)))
       end)
 
-    # verify_car checks the *author's* #atproto key, so the repo host serves
-    # a commit the author signed.
-    {:ok, %{public_key: author_pub, private_key: author_priv}} =
-      Crypto.generate_keypair(:secp256k1)
+    commit = Commit.build(hash, %{space: @space, repo: @author, rev: "3kbcq3p7ad400"})
+    star = Repo.serialize(commit, records)
 
-    {:ok, commit} =
-      Commit.sign(hash, Map.put(commit_ctx, :rev, "3kbcq3p7ad400"), author_priv, :secp256k1)
-
-    car = Repo.serialize(commit, records)
-
-    Process.put(:get, fn _url -> {:ok, %{status: 200, headers: [], body: car}} end)
+    Process.put(:get, fn url ->
+      assert String.contains?(url, "/xrpc/com.atproto.space.getRepo?")
+      {:ok, %{status: 200, headers: [host_mac(:commit, commit)], body: star}}
+    end)
 
     assert {:ok, verified} =
-             Sync.get_repo(
-               @repo_host,
-               @space,
-               @author,
-               commit_ctx,
-               author_pub,
-               :secp256k1,
-               ctx.cred,
-               http: SyncHTTP
+             Sync.get_repo(@repo_host, @space, @author, ctx.cred,
+               http: SyncHTTP,
+               kem_key: ctx.kem
              )
 
     assert length(verified.records) == 2
-    assert Lthash.digest(verified.lthash) == commit["hash"]
-    assert Sync.synced?(verified.lthash, commit["hash"])
+    assert Sync.synced?(verified.lthash, commit)
+    assert Sync.synced?(verified.lthash, commit["data"])
+
+    # Served for a different repo than asked: refused.
+    assert {:error, :repo_mismatch} =
+             Sync.get_repo(@repo_host, @space, "did:plc:other", ctx.cred,
+               http: SyncHTTP,
+               kem_key: ctx.kem
+             )
   end
 
-  test "the running set hash detects divergence and converges through ops", ctx do
+  test "the running set hash detects divergence and converges through ops" do
     cid_a = "bafyreidefdycgbfy3oglcb6ism3eqhyp5llsrpzxjsuac2gsy4mtrtx244"
     cid_b = "bafyreidpw4cbv6gr4ukh33z23pvvrpr3wi4gnpmi4doamlsl3sa4rgri2a"
 
@@ -513,29 +621,97 @@ defmodule Exosphere.ATProto.Spaces.SyncTest do
     end)
 
     assert {:ok, %{"expiresAt" => _}} =
-             Sync.register_notify(@space_host, @space, service, ctx.cred, http: SyncHTTP)
+             Sync.register_notify(@space_host, @space, service, ctx.cred,
+               http: SyncHTTP,
+               kem_key: ctx.kem
+             )
 
     # The notify registration is a procedure: JSON body {space, service}.
     assert Process.get(:last_post_body) == %{"space" => @space, "service" => service}
 
     Process.put(:post, fn _url -> {:ok, %{status: 200, headers: [], body: %{}}} end)
-    assert :ok = Sync.unregister_notify(@space_host, @space, service, ctx.cred, http: SyncHTTP)
+
+    assert :ok =
+             Sync.unregister_notify(@space_host, @space, service, ctx.cred,
+               http: SyncHTTP,
+               kem_key: ctx.kem
+             )
   end
 
-  test "list_records and get_record hit the repo host", ctx do
+  test "list_records lists across collections, with excludeValues", ctx do
     Process.put(:get, fn url ->
-      assert String.contains?(url, URI.encode_www_form("com.example.groupPost"))
+      assert String.contains?(url, "/xrpc/com.atproto.space.listRecords?")
+      assert String.contains?(url, "excludeValues=true")
+      refute String.contains?(url, "collection=")
       {:ok, %{status: 200, headers: [], body: %{"records" => []}}}
     end)
 
     assert {:ok, %{"records" => []}} =
-             Sync.list_records(@repo_host, @space, @author, "com.example.groupPost", ctx.cred,
-               http: SyncHTTP
+             Sync.list_records(@repo_host, @space, @author, ctx.cred,
+               http: SyncHTTP,
+               exclude_values: true
+             )
+  end
+
+  test "get_record verifies the record MAC, the URI, and the value's CID", ctx do
+    value = %{"$type" => "com.example.groupPost", "text" => "one"}
+    cid = CID.create!(value)
+    uri = @space <> "/" <> @author <> "/com.example.groupPost/3jz1"
+
+    body = %{"uri" => uri, "cid" => CID.encode(cid), "value" => value}
+
+    Process.put(:get, fn _url ->
+      {:ok, %{status: 200, headers: [host_mac(:record, {uri, cid})], body: body}}
+    end)
+
+    assert {:ok, ^body} =
+             Sync.get_record(
+               @repo_host,
+               @space,
+               @author,
+               "com.example.groupPost",
+               "3jz1",
+               ctx.cred,
+               http: SyncHTTP,
+               kem_key: ctx.kem
              )
 
-    assert {:ok, %{}} =
-             Sync.get_record(@repo_host, @space, @author, "com.example.groupPost", "1", ctx.cred,
-               http: SyncHTTP
+    {_, want} = List.keyfind(Process.get(:last_get_headers), "atproto-space-want-mac", 0)
+    assert want =~ ~s(type="atproto-space-record", ver=1)
+
+    # A value that does not encode to the MAC'd CID is refused.
+    Process.put(:get, fn _url ->
+      {:ok,
+       %{
+         status: 200,
+         headers: [host_mac(:record, {uri, cid})],
+         body: %{body | "value" => %{"text" => "two"}}
+       }}
+    end)
+
+    assert {:error, :record_cid_mismatch} =
+             Sync.get_record(
+               @repo_host,
+               @space,
+               @author,
+               "com.example.groupPost",
+               "3jz1",
+               ctx.cred,
+               http: SyncHTTP,
+               kem_key: ctx.kem
+             )
+
+    # A record other than the one requested is refused.
+    assert {:error, :record_uri_mismatch} =
+             Sync.get_record(
+               @repo_host,
+               @space,
+               @author,
+               "com.example.groupPost",
+               "3jz9",
+               ctx.cred,
+               http: SyncHTTP,
+               kem_key: ctx.kem
              )
   end
 end

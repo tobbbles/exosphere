@@ -1,6 +1,6 @@
 defmodule Exosphere.ExternalSpaceTest do
   @moduledoc """
-  A live Spaces round trip: delegation → credential → writer set → verified CAR.
+  A live Spaces round trip: delegation → credential → writer set → verified STAR archive.
 
   This is the `spaces/alpha` promotion checklist's "one `@tag :external` round
   trip against a stable alpha PDS", written so it can be run the moment such a
@@ -87,16 +87,15 @@ defmodule Exosphere.ExternalSpaceTest do
       #    the only place it meets bytes the reference implementation produced.
       for repo <- repos do
         {:ok, author_doc} = DID.resolve(repo.did)
-        {:ok, author_key, curve} = Document.get_space_signing_key(author_doc)
 
-        ctx = %{space: space_ref, author: repo.did}
+        {:ok, kem_key} = Document.get_kem_key(author_doc)
 
         assert {:ok, verified} =
-                 Sync.get_repo(pds, space_ref, repo.did, ctx, author_key, curve, credential),
-               "full-CAR verification failed for #{repo.did}"
+                 Sync.get_repo(pds, space_ref, repo.did, credential, kem_key: kem_key),
+               "full-archive verification failed for #{repo.did}"
 
-        assert Sync.synced?(verified.lthash, %{"hash" => repo.hash}),
-               "the verified set hash does not match the writer set's commit hash"
+        assert Sync.synced?(verified.lthash, repo.data),
+               "the verified set hash does not match the writer set's commit data"
       end
     end
   end

@@ -16,32 +16,11 @@ defmodule Exospace.Interop.SpacesCorpusTest do
 
   use ExUnit.Case, async: true
 
-  alias Exosphere.ATProto.CID
-  alias Exosphere.ATProto.Spaces.{Commit, Lthash, Repo, Token}
+  alias Exosphere.ATProto.Spaces.{Lthash, Token}
   alias Exosphere.Test.Interop
 
-  # Helpers used in module-attribute initializers must be defined above them.
-  defp unhex(s), do: Base.decode16!(s, case: :mixed)
-
   @lthash Interop.spaces_corpus("lthash.json")
-  @signed_commit Interop.spaces_corpus("signed-commit.json")
-  @repo_car Interop.spaces_corpus("repo-car.json")
   @credentials Interop.spaces_corpus("credentials.json")
-
-  defp wire_commit(%{} = commit) do
-    Map.new(commit, fn
-      {k, v} when k in ~w(hash ikm sig mac) -> {k, unhex(v)}
-      {k, v} -> {k, v}
-    end)
-  end
-
-  defp commit_key(fixture_key) do
-    %{
-      private: unhex(fixture_key["privateKey"]),
-      public: unhex(fixture_key["publicKeyCompressed"]),
-      jwk: fixture_key["jwk"]
-    }
-  end
 
   describe "lthash: the corpus digests reproduce exactly" do
     test "every case folds to the reference state and digest" do
@@ -91,154 +70,6 @@ defmodule Exospace.Interop.SpacesCorpusTest do
       assert multiset["isEmpty"] == false
       single = Enum.find(@lthash["cases"], &(&1["name"] == "single-record-element"))
       assert multiset["state"] == single["state"]
-    end
-  end
-
-  describe "signedCommit: ctx bytes, MAC, signature, and re-signing" do
-    test "encode_ctx/2 reproduces the reference ctx bytes, including the long URI" do
-      for variant <- @signed_commit["variants"] do
-        ctx = ctx_of(variant)
-        ikm = unhex(variant["ikm"])
-
-        assert Commit.encode_ctx(ctx, ikm) == unhex(variant["ctxBytes"]),
-               "#{variant["name"]}: ctx encoding diverged"
-      end
-    end
-
-    test "verify/4 accepts every reference commit" do
-      key = commit_key(@signed_commit["key"])
-
-      for variant <- @signed_commit["variants"] do
-        assert :ok =
-                 Commit.verify(
-                   wire_commit(variant["commit"]),
-                   ctx_of(variant),
-                   key.public,
-                   :secp256k1
-                 ),
-               "#{variant["name"]}: the reference commit failed verification"
-      end
-    end
-
-    test "sign/5 with the pinned ikm reproduces the reference commit byte-for-byte" do
-      # RFC 6979 deterministic ECDSA on both sides (libsecp256k1 here,
-      # @noble/curves there): identical key + ctx + ikm must yield the identical
-      # signature, not merely one that verifies.
-      key = commit_key(@signed_commit["key"])
-
-      for variant <- @signed_commit["variants"] do
-        hash = Enum.reduce(variant["elements"], Lthash.new(), &Lthash.add(&2, &1))
-        ikm = unhex(variant["ikm"])
-
-        assert {:ok, commit} =
-                 Commit.sign(hash, ctx_of(variant), key.private, :secp256k1, ikm: ikm)
-
-        expected = wire_commit(variant["commit"])
-
-        assert commit["hash"] == expected["hash"], "#{variant["name"]}: hash diverged"
-        assert commit["mac"] == expected["mac"], "#{variant["name"]}: mac diverged"
-        assert commit["sig"] == expected["sig"], "#{variant["name"]}: sig diverged"
-        assert commit["ver"] == expected["ver"] and commit["rev"] == expected["rev"]
-      end
-    end
-
-    test "a tampered hash fails the MAC, not just the signature" do
-      key = commit_key(@signed_commit["key"])
-      variant = hd(@signed_commit["variants"])
-      commit = wire_commit(variant["commit"])
-
-      tampered = %{commit | "hash" => :crypto.hash(:sha256, "not the repo state")}
-
-      assert {:error, :invalid_mac} =
-               Commit.verify(tampered, ctx_of(variant), key.public, :secp256k1)
-
-      # And a wrong ctx (say, another reader's rev) must fail too.
-      assert {:error, _} =
-               Commit.verify(
-                 commit,
-                 %{ctx_of(variant) | rev: "3kzzzzzzzzz2"},
-                 key.public,
-                 :secp256k1
-               )
-    end
-  end
-
-  describe "repo CAR: layout, canonical order, and byte-identical serialization" do
-    setup do
-      key = commit_key(@repo_car["key"])
-
-      %{
-        key: key,
-        car: Base.decode64!(@repo_car["car"]),
-        index_only: Base.decode64!(@repo_car["carIndexOnly"]),
-        ctx: %{space: @repo_car["ctx"]["space"], author: @repo_car["ctx"]["author"]},
-        records: Enum.map(@repo_car["records"], &{&1["collection"], &1["rkey"], &1["record"]})
-      }
-    end
-
-    test "verify_car/5 accepts the reference CAR end to end", ctx do
-      assert {:ok, verified} = Repo.verify_car(ctx.car, ctx.ctx, ctx.key.public, :secp256k1)
-
-      assert verified.rev == @repo_car["ctx"]["rev"]
-      assert verified.commit["hash"] == unhex(@repo_car["commit"]["hash"])
-
-      # The index entries are exactly the fixture's (a map on our side; the
-      # canonical ORDER of those entries is asserted by the record order below
-      # and by the dedicated order test).
-      assert Map.new(verified.index, fn {path, cid} -> {path, CID.encode(cid)} end) ==
-               Map.new(@repo_car["indexEntries"], fn [path, cid] -> {path, cid} end)
-
-      assert [%{collection: "z.foo.bar", rkey: "a"} | _] = verified.records
-    end
-
-    test "the index order is shortest-first, not bytewise", ctx do
-      # "z.foo.bar/a" (10 bytes) precedes "a.foo.bar/abcdefgh" (19) under the
-      # canonical length-first rule; plain bytewise would reverse them. The
-      # record set was built to tell the two rules apart.
-      assert Enum.map(@repo_car["indexEntries"], &hd/1) ==
-               ["z.foo.bar/a", "a.foo.bar/abcdefgh", "com.example.thread/3jzfcgty2a2h"]
-
-      assert {:ok, verified} = Repo.verify_car(ctx.car, ctx.ctx, ctx.key.public, :secp256k1)
-      assert [%{rkey: "a"}, %{rkey: "abcdefgh"}, %{rkey: "3jzfcgty2a2h"}] = verified.records
-    end
-
-    test "serialize/3 reproduces the reference CAR byte-for-byte", ctx do
-      commit = wire_commit(@repo_car["commit"])
-
-      # The records are deliberately fed in the fixture's non-canonical input
-      # order; the serializer must emit the canonical layout regardless.
-      assert Repo.serialize(commit, ctx.records) == ctx.car
-      assert Repo.serialize(commit, ctx.records, exclude_values: true) == ctx.index_only
-    end
-
-    test "every block's CBOR bytes match the reference's", ctx do
-      assert {:ok, %{blocks: blocks, order: order}} = Repo.decode_car(ctx.car)
-
-      for %{"role" => role, "cid" => cid, "bytes" => bytes} <- @repo_car["blocks"] do
-        decoded = CID.decode!(cid)
-        assert decoded in order, "block #{role} #{cid} missing from our stream order"
-        assert Map.fetch!(blocks, decoded) == unhex(bytes), "block bytes diverged for #{role}"
-      end
-    end
-
-    test "the index-only CAR verifies only when values are not expected", ctx do
-      assert {:ok, %{records: []}} =
-               Repo.verify_car(ctx.index_only, ctx.ctx, ctx.key.public, :secp256k1,
-                 expect_values: false
-               )
-
-      assert {:error, :record_count_mismatch} =
-               Repo.verify_car(ctx.index_only, ctx.ctx, ctx.key.public, :secp256k1)
-    end
-
-    test "a tampered record block fails its content hash", ctx do
-      # Flip the very last byte — inside the final record block, past the header
-      # and both roots.
-      size = byte_size(ctx.car)
-      tampered = binary_part(ctx.car, 0, size - 1) <> "X"
-
-      assert {:error, :content_hash_mismatch} =
-               Repo.verify_car(tampered, ctx.ctx, ctx.key.public, :secp256k1)
     end
   end
 
@@ -292,12 +123,6 @@ defmodule Exospace.Interop.SpacesCorpusTest do
     end
   end
 
-  defp ctx_of(variant) do
-    %{"space" => space, "author" => author, "rev" => rev} = variant["ctx"]
-    %{space: space, author: author, rev: rev}
-  end
-
-  # The reference names the attestation class in camelCase; our atoms snake_case.
   defp token_class("delegation"), do: :delegation
   defp token_class("credential"), do: :credential
   defp token_class("clientAttestation"), do: :client_attestation

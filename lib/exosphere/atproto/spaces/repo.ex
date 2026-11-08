@@ -1,40 +1,43 @@
 defmodule Exosphere.ATProto.Spaces.Repo do
   @moduledoc """
-  Permissioned repo serialization and verification (atproto proposal 0016).
+  Permissioned repo serialization and verification: the `atproto-space-repo`
+  STAR profile (proposal 0016, "Repo serialization"; atproto `bf02818`,
+  `13994f1`, `bd58bd8`).
 
-  A permissioned repo serializes as a two-root CAR: the signed commit block,
-  then the index block — a DAG-CBOR map from `"{collection}/{rkey}"` to the
-  record's CID, in canonical key order — followed by one record block per
-  index entry, *in the index's order*. Blobs are excluded.
+  A space repo is served by `getRepo` (and imported by `importRepo`) as a
+  STAR archive (`Exosphere.ATProto.Star`):
 
-  `verify_car/5` runs the full pipeline the reference consumer runs, failing
-  loudly at each stage: frame CIDs are hashed against their contents at decode
-  time, the commit block must lead and the index follow, the commit's MAC and
-  signature must verify, the index must be canonically encoded and fold (via
-  LtHash) to the commit's hash, and every record block must appear in index
-  order under its index CID. An index-only CAR (`exclude_values: true` at
-  serialization, `expect_values: false` at verification) carries no record
-  blocks; the index still authenticates against the commit.
+  - the metadata is a DRISL map with `$type: "atproto-space-repo"` and every
+    field of the repo's commit (`ver`, `repo`, `space`, `rev`, `data`);
+  - each pair is a record path `"{collection}/{rkey}"` (UTF-8) and the
+    record's DRISL encoding, in **strict lexicographic order of the key
+    bytes**, no duplicates; an empty repo has no pairs.
+
+  The commit's MAC travels in the response's `Atproto-Space-Mac` header, not
+  in the archive. `verify/4` runs the consumer pipeline the proposal lays
+  out, rejecting the whole archive on any failure: validate the metadata
+  (type, version, and that `repo`/`space` are the ones requested), verify
+  the commit MAC, then fold every record's
+  `{collection}/{rkey}/{record_cid}` into a fresh set hash and require its
+  digest to equal the commit's `data` — only that match shows the repo was
+  received complete. `read/1` does the same without a MAC, for a host
+  importing an account's own repo.
+
+  Archive limits (the profile's operational caps): metadata 64 KiB, keys
+  4 KiB, values 1 MiB.
+
+  Until atproto `bf02818` the repo was a two-root CAR (signed commit block,
+  canonical index block, record blocks) with an index-only variant
+  (`excludeValues`); both are gone, as is that variant.
   """
 
-  alias Exosphere.ATProto.CAR
-  alias Exosphere.ATProto.CBOR
+  alias Exosphere.ATProto.CBOR, as: DagCbor
   alias Exosphere.ATProto.CID
-  alias Exosphere.ATProto.Spaces.Commit
-  alias Exosphere.ATProto.Spaces.Lthash
+  alias Exosphere.ATProto.{NSID, RecordKey, Star}
+  alias Exosphere.ATProto.Spaces.{Commit, Lthash}
 
-  @car_version 1
-  @sha256_code 0x12
-  @sha256_digest_len 32
-
-  @type decoded_car :: %{
-          required(:roots) => [CID.t()],
-          required(:blocks) => %{CID.t() => binary()},
-          # The index order matters, which a map cannot carry.
-          required(:order) => [CID.t()]
-        }
-
-  @type ctx_input :: %{required(:space) => String.t(), required(:author) => String.t()}
+  @star_type "atproto-space-repo"
+  @limits [max_meta_length: 64 * 1024, max_key_length: 4 * 1024, max_value_length: 1024 * 1024]
 
   @type verified_record :: %{
           required(:collection) => String.t(),
@@ -45,340 +48,142 @@ defmodule Exosphere.ATProto.Spaces.Repo do
 
   @type verified :: %{
           required(:commit) => Commit.t(),
-          required(:index) => %{String.t() => CID.t()},
           required(:records) => [verified_record()],
           required(:lthash) => Lthash.t(),
           required(:rev) => String.t()
         }
 
-  @doc """
-  Decode a CAR into its header roots, raw block bytes, and stream order.
+  @doc "The STAR profile name (`$type`)."
+  @spec star_type() :: String.t()
+  def star_type, do: @star_type
 
-  Every frame's CID is checked against the sha256 of its contents, so a
-  tampered block fails here, loudly.
-
-  Two verifications here are deliberately stricter than the reference
-  consumer: the index block must be *canonically* encoded (the reference
-  accepts any decodable index, since set-hash folding is order-independent),
-  and `expect_values: false` rejects a CAR that carries record blocks. Both
-  are safe against reference-produced CARs (the reference provider always
-  emits canonical, values-excluded shapes) but reject more of the possible
-  input space — an imposition on other producers, kept because canonical
-  indexes make streaming order checks meaningful and an unexpected block is
-  worth failing loudly on.
-  """
-  @spec decode_car(binary()) :: {:ok, decoded_car()} | {:error, term()}
-  def decode_car(data) when is_binary(data) do
-    with {:ok, header, rest} <- decode_header(data),
-         {:ok, roots} <- extract_roots(header),
-         {:ok, entries} <- decode_blocks(rest, []) do
-      blocks = Map.new(entries)
-      order = Enum.map(entries, &elem(&1, 0))
-      {:ok, %{roots: roots, blocks: blocks, order: order}}
-    end
-  end
-
-  def decode_car(_), do: {:error, :invalid_car}
+  @doc "The profile's archive limits, as `Star.decode/2` options."
+  @spec limits() :: Star.limits()
+  def limits, do: @limits
 
   @doc """
-  Serialize a repo as a two-root CAR.
+  Serialize a repo as an `atproto-space-repo` STAR archive.
 
-  `records` is a list of `{collection, rkey, record_map}` triples. The index
-  is built over the canonically-sorted paths and record blocks follow in that
-  order. With `exclude_values: true` only the two roots are written.
+  `records` is a list of `{collection, rkey, record_map}`; they are written in
+  strict path-byte order whatever the input order. Duplicate paths raise.
+  Blobs are not included.
   """
-  @spec serialize(Commit.t(), [{String.t(), String.t(), map()}], keyword()) :: binary()
-  def serialize(commit, records, opts \\ []) when is_list(records) do
-    sorted =
+  @spec serialize(Commit.t(), [{String.t(), String.t(), map()}]) :: binary()
+  def serialize(%{} = commit, records) when is_list(records) do
+    pairs =
       records
-      |> Map.new(fn {collection, rkey, record} -> {record_path(collection, rkey), record} end)
-      |> Enum.sort_by(fn {path, _record} -> {byte_size(path), path} end)
+      |> Enum.map(fn {collection, rkey, record} ->
+        {record_path(collection, rkey), DagCbor.encode!(record)}
+      end)
+      |> Enum.sort_by(&elem(&1, 0))
 
-    index = Map.new(sorted, fn {path, record} -> {path, CID.create!(record)} end)
+    paths = Enum.map(pairs, &elem(&1, 0))
 
-    commit_bytes = CBOR.encode!(Commit.to_dag_cbor(commit))
-    index_bytes = CBOR.encode!(index)
+    if length(Enum.uniq(paths)) != length(paths) do
+      raise ArgumentError, "duplicate record path in space repo"
+    end
 
-    commit_cid = raw_cid(commit_bytes)
-    index_cid = raw_cid(index_bytes)
-
-    record_blocks =
-      if opts[:exclude_values] do
-        []
-      else
-        for {_path, record} <- sorted do
-          bytes = CBOR.encode!(record)
-          {raw_cid(bytes), bytes}
-        end
-      end
-
-    # Block order is load-bearing here — the commit must lead and the index
-    # follow, with records in index order — so the blocks go in as a list.
-    CAR.encode!(
-      [commit_cid, index_cid],
-      [{commit_cid, commit_bytes}, {index_cid, index_bytes} | record_blocks]
-    )
+    Star.encode(Map.put(Commit.to_dag_cbor(commit), "$type", @star_type), pairs)
   end
 
   @doc """
-  Verify a permissioned repo CAR end to end.
-
-  `ctx` supplies the space URI and author DID from the surrounding request;
-  the `rev` comes from the commit itself, per the reference consumer. The
-  public key is the author's account signing key (`#atproto`).
-
-  With `expect_values: false` the CAR must be index-only (no record blocks).
+  Verify a repo archive served for `ctx` (`%{space:, repo:}`, the request)
+  against the commit MAC from its response header, end to end. On success
+  the returned set hash is the authenticated running hash to continue
+  syncing from.
   """
-  @spec verify_car(binary(), ctx_input(), binary(), atom(), keyword()) ::
-          {:ok, verified()} | {:error, term()}
-  def verify_car(car, ctx, public_key, curve, opts \\ [])
-
-  def verify_car(car, %{space: space, author: author}, public_key, curve, opts)
-      when is_binary(space) and is_binary(author) do
-    with {:ok, decoded} <- decode_car(car),
-         {:ok, commit_cid, index_cid} <- check_roots(decoded),
-         {:ok, commit} <- commit_block(decoded, commit_cid),
-         {:ok, index, index_bytes} <- index_block(decoded, index_cid),
-         {:ok, rev} <- commit_rev(commit),
-         commit_ctx = %{space: space, author: author, rev: rev},
-         :ok <- Commit.verify(commit, commit_ctx, public_key, curve),
-         :ok <- canonical_index?(index, index_bytes),
-         {:ok, lthash} <- fold_index(index),
-         :ok <- index_matches_commit(lthash, commit),
-         {:ok, records} <-
-           verify_records(decoded, index, Keyword.get(opts, :expect_values, true)) do
-      {:ok, %{commit: commit, index: index, records: records, lthash: lthash, rev: rev}}
+  @spec verify(binary(), Commit.ctx(), binary(), binary()) :: {:ok, verified()} | {:error, term()}
+  def verify(star, %{space: _, repo: _} = ctx, shared_secret, mac) when is_binary(star) do
+    with {:ok, %{meta: meta, pairs: pairs}} <- Star.decode(star, @limits),
+         {:ok, commit} <- commit_from_meta(meta),
+         :ok <- Commit.verify(commit, ctx, shared_secret, mac) do
+      verify_records(commit, pairs)
     end
   end
-
-  def verify_car(_, _, _, _, _), do: {:error, :invalid_context}
 
   @doc """
-  Fold an index (path → CID) into the set hash it commits to.
+  Read a repo archive *without* authenticating its commit: the records are
+  still checked against the commit's `data`, but nothing vouches for the
+  commit itself. For a repo host importing an account's own repo
+  (`importRepo`), which carries no MAC.
   """
-  @spec fold_index(%{String.t() => CID.t()}) :: {:ok, Lthash.t()} | {:error, term()}
-  def fold_index(index) when is_map(index) do
-    index
-    |> Enum.sort_by(fn {path, _cid} -> {byte_size(path), path} end)
-    |> Enum.reduce_while({:ok, Lthash.new()}, fn {path, cid}, {:ok, hash} ->
-      case {is_struct(cid, CID), split_record_path(path)} do
-        {true, {:ok, collection, rkey}} ->
-          {:cont, {:ok, Commit.add_record(hash, collection, rkey, CID.encode(cid))}}
-
-        _ ->
-          {:halt, {:error, :invalid_index}}
-      end
-    end)
-  end
-
-  def fold_index(_), do: {:error, :invalid_index}
-
-  # -- verification stages ------------------------------------------------------
-
-  defp check_roots(%{roots: [commit_cid, index_cid]}), do: {:ok, commit_cid, index_cid}
-  defp check_roots(%{roots: roots}), do: {:error, {:expected_two_roots, length(roots)}}
-
-  defp commit_block(%{order: [commit_cid | _], blocks: blocks}, commit_cid) do
-    with {:ok, bytes} <- fetch_block(blocks, commit_cid) do
-      decode_block(bytes)
+  @spec read(binary()) :: {:ok, verified()} | {:error, term()}
+  def read(star) when is_binary(star) do
+    with {:ok, %{meta: meta, pairs: pairs}} <- Star.decode(star, @limits),
+         {:ok, commit} <- commit_from_meta(meta) do
+      verify_records(commit, pairs)
     end
   end
 
-  defp commit_block(_, _), do: {:error, :commit_block_must_lead}
+  defp commit_from_meta(%{"$type" => @star_type} = meta) do
+    commit = Map.delete(meta, "$type")
 
-  defp index_block(%{order: [_, index_cid | _], blocks: blocks}, index_cid) do
-    with {:ok, bytes} <- fetch_block(blocks, index_cid),
-         {:ok, index} <- decode_block(bytes),
-         :ok <- index_shape(index) do
-      {:ok, index, bytes}
+    cond do
+      commit["ver"] != Commit.version() -> {:error, {:unsupported_commit_version, commit["ver"]}}
+      Commit.well_formed?(commit) -> {:ok, commit}
+      true -> {:error, :invalid_commit}
     end
   end
 
-  defp index_block(_, _), do: {:error, :index_block_must_follow}
+  defp commit_from_meta(_), do: {:error, :wrong_star_type}
 
-  defp fetch_block(blocks, cid) do
-    case Map.fetch(blocks, cid) do
-      {:ok, bytes} -> {:ok, bytes}
-      :error -> {:error, :missing_block}
-    end
-  end
-
-  defp index_shape(index) when is_map(index) do
-    if Enum.all?(index, fn {k, v} -> is_binary(k) and is_struct(v, CID) end) do
-      :ok
-    else
-      {:error, :invalid_index}
-    end
-  end
-
-  defp index_shape(_), do: {:error, :invalid_index}
-
-  defp commit_rev(%{"rev" => rev}) when is_binary(rev), do: {:ok, rev}
-  defp commit_rev(_), do: {:error, :invalid_commit}
-
-  defp canonical_index?(index, index_bytes) do
-    case CBOR.encode(index) do
-      {:ok, ^index_bytes} -> :ok
-      _ -> {:error, :index_not_canonical}
-    end
-  end
-
-  defp index_matches_commit(lthash, %{"hash" => hash}) do
-    if Lthash.digest(lthash) == hash do
-      :ok
-    else
-      {:error, :index_hash_mismatch}
-    end
-  end
-
-  defp index_matches_commit(_, _), do: {:error, :invalid_commit}
-
-  defp verify_records(
-         %{order: [_commit_cid, _index_cid | record_cids], blocks: blocks},
-         index,
-         expect_values
-       ) do
-    if expect_values do
-      if length(record_cids) != map_size(index) do
-        {:error, :record_count_mismatch}
-      else
-        ordered_paths =
-          index
-          |> Enum.sort_by(fn {path, _cid} -> {byte_size(path), path} end)
-          |> Enum.map(&elem(&1, 0))
-
-        verify_ordered_records(record_cids, blocks, index, ordered_paths, [])
-      end
-    else
-      if record_cids == [] do
-        {:ok, []}
-      else
-        {:error, :unexpected_record_blocks}
-      end
-    end
-  end
-
-  defp verify_records(_, _, _), do: {:error, :invalid_car_order}
-
-  defp verify_ordered_records([], _blocks, _index, [], acc), do: {:ok, Enum.reverse(acc)}
-
-  defp verify_ordered_records([cid | cids], blocks, index, [path | paths], acc) do
-    case Map.fetch(index, path) do
-      {:ok, expected} when expected == cid ->
-        with {:ok, bytes} <- fetch_block(blocks, cid),
-             {:ok, record} <- decode_block(bytes),
-             {:ok, collection, rkey} <- split_record_path(path) do
-          verify_ordered_records(cids, blocks, index, paths, [
-            %{collection: collection, rkey: rkey, cid: expected, record: record} | acc
-          ])
+  defp verify_records(commit, pairs) do
+    result =
+      Enum.reduce_while(pairs, {:ok, nil, Lthash.new(), []}, fn {key, value},
+                                                                {:ok, prev, hash, acc} ->
+        with :ok <- check_order(prev, key),
+             {:ok, collection, rkey} <- parse_record_path(key),
+             {:ok, record} <- decode_record(value) do
+          cid = %CID{version: 1, codec: :dag_cbor, hash: :crypto.hash(:sha256, value)}
+          hash = Commit.add_record(hash, collection, rkey, CID.encode(cid))
+          entry = %{collection: collection, rkey: rkey, cid: cid, record: record}
+          {:cont, {:ok, key, hash, [entry | acc]}}
         else
-          {:error, reason} -> {:error, reason}
+          error -> {:halt, error}
+        end
+      end)
+
+    with {:ok, _last, lthash, acc} <- result do
+      if Commit.matches?(lthash, commit) do
+        {:ok, %{commit: commit, records: Enum.reverse(acc), lthash: lthash, rev: commit["rev"]}}
+      else
+        {:error, :records_do_not_match_commit}
+      end
+    end
+  end
+
+  # Strict lexicographic byte order; Erlang compares binaries bytewise, a
+  # prefix sorting before any longer key it starts.
+  defp check_order(nil, _key), do: :ok
+  defp check_order(prev, key) when key > prev, do: :ok
+  defp check_order(_prev, key), do: {:error, {:records_out_of_order, key}}
+
+  defp parse_record_path(path) do
+    with true <- String.valid?(path),
+         [collection, rkey] <- String.split(path, "/"),
+         true <- NSID.valid?(collection),
+         true <- RecordKey.valid?(rkey) do
+      {:ok, collection, rkey}
+    else
+      _ -> {:error, {:invalid_record_path, path}}
+    end
+  end
+
+  # The whole value must be one CBOR item (no trailing bytes) and a map.
+  defp decode_record(bytes) do
+    case CBOR.decode(bytes) do
+      {:ok, raw, ""} ->
+        case DagCbor.transform_links(raw) do
+          %{} = record when not is_struct(record) -> {:ok, record}
+          _ -> {:error, :invalid_record}
         end
 
       _ ->
-        {:error, {:record_block_out_of_order, path}}
+        {:error, :invalid_record}
     end
+  rescue
+    _ -> {:error, :invalid_record}
   end
-
-  # -- CAR framing ---------------------------------------------------------------
-
-  defp decode_header(data) do
-    with {:ok, header_len, rest} <- read_varint(data),
-         true <- header_len > 0 and byte_size(rest) >= header_len,
-         <<header_bytes::binary-size(^header_len), remaining::binary>> <- rest,
-         {:ok, header} <- CBOR.decode(header_bytes),
-         %{"version" => @car_version} <- header do
-      {:ok, header, remaining}
-    else
-      _ -> {:error, :invalid_car_header}
-    end
-  end
-
-  defp extract_roots(%{"roots" => roots}) when is_list(roots) do
-    cids = Enum.map(roots, &CBOR.transform_links/1)
-
-    if Enum.all?(cids, &is_struct(&1, CID)) do
-      {:ok, cids}
-    else
-      {:error, :invalid_roots}
-    end
-  end
-
-  defp extract_roots(_), do: {:error, :invalid_roots}
-
-  defp decode_blocks(<<>>, acc), do: {:ok, Enum.reverse(acc)}
-
-  defp decode_blocks(data, acc) do
-    with {:ok, frame_len, rest} <- read_varint(data),
-         true <- frame_len > 0 and byte_size(rest) >= frame_len,
-         <<frame::binary-size(^frame_len), remaining::binary>> <- rest,
-         {:ok, cid, bytes} <- split_frame(frame),
-         :ok <- check_content_cid(cid, bytes) do
-      decode_blocks(remaining, [{cid, bytes} | acc])
-    else
-      {:error, :content_hash_mismatch} = mismatch -> mismatch
-      _ -> {:error, :invalid_block_frame}
-    end
-  end
-
-  # A block frame is <CID bytes><block data>. The CID length is walked from
-  # its varint structure (v1) or fixed at 34 bytes (v0 sha2-256).
-  defp split_frame(<<0x01, rest0::binary>>) do
-    with {:ok, _codec, after_codec} <- read_varint(rest0),
-         {:ok, @sha256_code, after_fn} <- read_varint(after_codec),
-         {:ok, @sha256_digest_len, after_len} <- read_varint(after_fn),
-         <<digest::binary-size(@sha256_digest_len), bytes::binary>> <- after_len do
-      varints = binary_part(rest0, 0, byte_size(rest0) - byte_size(after_len))
-
-      case CID.from_bytes(<<0x01, varints::binary, digest::binary>>) do
-        {:ok, cid} -> {:ok, cid, bytes}
-        error -> error
-      end
-    else
-      _ -> {:error, :unknown_cid_format}
-    end
-  end
-
-  defp split_frame(<<0x12, 0x20, _::binary-size(32), bytes::binary>> = frame) do
-    with {:ok, cid} <- CID.from_bytes(binary_part(frame, 0, 34)) do
-      {:ok, cid, bytes}
-    end
-  end
-
-  defp split_frame(_), do: {:error, :unknown_cid_format}
-
-  defp check_content_cid(%CID{} = cid, bytes) do
-    if :crypto.hash(:sha256, bytes) == cid.hash do
-      :ok
-    else
-      {:error, :content_hash_mismatch}
-    end
-  end
-
-  defp decode_block(bytes) when is_binary(bytes) do
-    case CBOR.decode(bytes) do
-      {:ok, value} -> {:ok, CBOR.transform_links(value)}
-      _ -> {:error, :invalid_block}
-    end
-  end
-
-  defp decode_block(_), do: {:error, :invalid_block}
-
-  defp raw_cid(bytes), do: %CID{version: 1, codec: :dag_cbor, hash: :crypto.hash(:sha256, bytes)}
 
   defp record_path(collection, rkey), do: collection <> "/" <> rkey
-
-  defp split_record_path(path) do
-    case String.split(path, "/") do
-      [collection, rkey] -> {:ok, collection, rkey}
-      _ -> {:error, :invalid_record_path}
-    end
-  end
-
-  defp read_varint(data) do
-    {value, rest} = Varint.LEB128.decode(data)
-    {:ok, value, rest}
-  rescue
-    _ -> {:error, :varint_decode_failed}
-  end
 end
