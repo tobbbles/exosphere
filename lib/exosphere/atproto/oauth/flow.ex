@@ -36,8 +36,15 @@ defmodule Exosphere.ATProto.OAuth.Flow do
 
   ## Options
 
-  - `:scope` - scopes to request (default: the client metadata scope,
-    filtered to what the server supports)
+  - `:scope` - scopes to request, as a list or a space-separated string
+    (default: the client metadata scope). Sent to the authorization server
+    as given; it must include `"atproto"` (`{:error, :atproto_scope_required}`
+    otherwise). It is *not* intersected with the server's `scopes_supported`:
+    atproto's granular scopes (`repo:`, `rpc:`, `blob:`, `account:`,
+    `identity:`, `include:`) are parameterised and cannot be enumerated, so
+    an authorization server advertises only `atproto` and the `transition:*`
+    scopes there and still accepts the rest. Check the granted scope on the
+    resulting `Session` instead.
   - `:state` - explicit state value (default: generated)
   - `:http` - HTTP module implementing `HTTP.Behaviour` (testing)
   - `:timeout` - request timeout in milliseconds
@@ -47,7 +54,7 @@ defmodule Exosphere.ATProto.OAuth.Flow do
           {:ok, {String.t(), RequestContext.t()}} | {:error, term()}
   def authorize_url(%Client{} = client, %Discovery{} = resolved, opts \\ []) do
     %ServerMetadata{} = auth_server = resolved.auth_server
-    scope = ServerMetadata.supported_scopes(auth_server, opts[:scope] || client.metadata.scope)
+    scope = normalize_scope(opts[:scope] || client.metadata.scope)
     state = Keyword.get(opts, :state) || random_state()
     verifier = PKCE.generate_verifier()
 
@@ -114,8 +121,12 @@ defmodule Exosphere.ATProto.OAuth.Flow do
     end
   end
 
-  defp check_scope([]), do: {:error, :no_supported_scopes}
-  defp check_scope(_), do: :ok
+  defp normalize_scope(scope) when is_binary(scope), do: String.split(scope, " ", trim: true)
+  defp normalize_scope(scope) when is_list(scope), do: scope
+
+  defp check_scope(scope) do
+    if "atproto" in scope, do: :ok, else: {:error, :atproto_scope_required}
+  end
 
   defp push_authorization_request(client, auth_server, form, dpop_key, opts) do
     form =

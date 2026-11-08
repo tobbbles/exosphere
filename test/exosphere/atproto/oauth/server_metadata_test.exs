@@ -148,14 +148,14 @@ defmodule Exosphere.ATProto.OAuth.ServerMetadataTest do
              ServerMetadata.fetch_authorization_server(@origin, http: two)
   end
 
-  test "supported_scopes/2 intersects with server support" do
+  test "supported_scopes/2 (deprecated) still intersects with server support" do
     {:ok, metadata} = ServerMetadata.validate(valid_metadata(), @origin)
 
-    assert ServerMetadata.supported_scopes(metadata, [
-             "atproto",
-             "transition:chat.bsky",
-             "made.up"
-           ]) ==
-             ["atproto"]
+    # Called through apply/3 so the deprecation warning stays out of the
+    # test build; the behaviour is kept for existing callers.
+    assert apply(ServerMetadata, :supported_scopes, [
+             metadata,
+             ["atproto", "transition:chat.bsky", "made.up"]
+           ]) == ["atproto"]
   end
 end

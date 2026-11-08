@@ -138,6 +138,40 @@ defmodule Exosphere.OAuthE2ETest do
     assert length(xrpc_requests) == 2
   end
 
+  test "granular scopes reach the authorization server unfiltered", %{mock: mock} do
+    # The mock AS, like the reference one, advertises only atproto and
+    # transition:generic in scopes_supported. Granular scopes are
+    # parameterised and never listed there, so they must not be filtered out.
+    client = confidential_client(mock)
+    {:ok, resolved} = Discovery.resolve(MockPDS.did(mock))
+
+    scope = [
+      "atproto",
+      "repo:app.bsky.feed.post?action=create",
+      "rpc:app.bsky.feed.getFeed?aud=*",
+      "blob:image/*",
+      "account:email"
+    ]
+
+    assert {:ok, {authorize_url, ctx}} = Flow.authorize_url(client, resolved, scope: scope)
+
+    # The mock grants exactly the scope the PAR request carried.
+    {:ok, params} = follow_authorize_redirect(authorize_url)
+    assert {:ok, session} = Flow.callback(ctx, params)
+    assert session.scope == scope
+  end
+
+  test "a scope without atproto is refused before any request", %{mock: mock} do
+    client = confidential_client(mock)
+    {:ok, resolved} = Discovery.resolve(MockPDS.did(mock))
+    before = length(MockPDS.requests(mock))
+
+    assert {:error, :atproto_scope_required} =
+             Flow.authorize_url(client, resolved, scope: "transition:generic")
+
+    assert length(MockPDS.requests(mock)) == before
+  end
+
   test "request context round-trips through a JSON-encodable map", %{mock: mock} do
     client = confidential_client(mock)
     identifier = MockPDS.did(mock)

@@ -104,9 +104,18 @@ defmodule Exosphere.ATProto.OAuth.ServerMetadata do
   end
 
   @doc """
-  The scopes to request: the intersection of the client's desired scopes
-  with those the server supports.
+  The intersection of the client's desired scopes with the server's
+  `scopes_supported`.
+
+  Do not use this to decide what to request. atproto authorization servers
+  advertise only `atproto` and the `transition:*` scopes in
+  `scopes_supported` — the granular scopes (`repo:`, `rpc:`, `blob:`,
+  `account:`, `identity:`, `include:`) are parameterised and cannot be
+  enumerated — so intersecting silently drops every granular scope.
+  `Exosphere.ATProto.OAuth.Flow.authorize_url/3` no longer calls this and
+  sends the requested scope unfiltered.
   """
+  @deprecated "atproto granular scopes are not enumerated in scopes_supported; request scopes as-is"
   @spec supported_scopes(t(), [String.t()]) :: [String.t()]
   def supported_scopes(%__MODULE__{scopes_supported: supported}, desired)
       when is_list(desired) do

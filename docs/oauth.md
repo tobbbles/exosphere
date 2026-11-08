@@ -71,6 +71,15 @@ alias Exosphere.ATProto.OAuth.{Discovery, Flow, RequestContext}
 # redirect(conn, external: authorize_url)
 ```
 
+The requested scope is the client metadata's `scope` unless you pass
+`scope:` (a list or a space-separated string; it must include `"atproto"`).
+It is sent to the authorization server as given — *not* intersected with
+the server's `scopes_supported`. atproto's granular scopes (`repo:`, `rpc:`,
+`blob:`, `account:`, `identity:`, `include:`) are parameterised, so servers
+list only `atproto` and `transition:*` there; filtering against that list
+would silently drop every granular scope. What was actually granted is on
+`session.scope`.
+
 `ctx` (a `RequestContext`) contains the PKCE verifier and the session DPoP
 private key — store it server-side, never in a browser-readable cookie.
 For persistence across processes, `RequestContext.to_map/1` and
