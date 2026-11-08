@@ -352,6 +352,22 @@ defmodule Exosphere.ATProto.Spaces.CredentialTest do
              )
   end
 
+  test "mint types the refusals that change what a syncer does", ctx do
+    for {code, expected} <- [
+          {"SpaceDeleted", :space_deleted},
+          {"RepoTakendown", :repo_takendown},
+          {"RepoDeactivated", :repo_deactivated}
+        ] do
+      Process.put(
+        :post_response,
+        {:ok, %{status: 400, headers: [], body: %{"error" => code, "message" => "..."}}}
+      )
+
+      assert {:error, ^expected} =
+               Credential.mint(@space_host, @space, nil, key: ctx.key, http: RecordingHTTP)
+    end
+  end
+
   test "mint passes transport errors through instead of crashing" do
     Process.put(:post_response, {:error, :econnrefused})
 

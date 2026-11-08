@@ -56,6 +56,12 @@ defmodule Exosphere.ATProto.Spaces.Credential do
   @delegation_nsid "com.atproto.space.getDelegationToken"
   @credential_nsid "com.atproto.space.getSpaceCredential"
 
+  @exchange_errors %{
+    "SpaceDeleted" => :space_deleted,
+    "RepoTakendown" => :repo_takendown,
+    "RepoDeactivated" => :repo_deactivated
+  }
+
   @typedoc "A minted credential with the key it is bound to — what `Spaces.Sync` takes."
   @type t :: %{credential: String.t(), key: HttpSignature.key()}
   @doc """
@@ -139,6 +145,19 @@ defmodule Exosphere.ATProto.Spaces.Credential do
   success the minted credential is checked to be bound to `key` before it is
   returned, so a misbehaving host is caught immediately. Returns
   `{:ok, %{credential: jwt, key: key}}`, ready for `Spaces.Sync`.
+
+  Refusals that change what a syncer should do are typed:
+
+  - `{:error, :space_deleted}` (`SpaceDeleted`) — the space is gone: delete
+    every copy of its data (proposal 0016, "Space deletion"). Any *other*
+    renewal failure says nothing about the space.
+  - `{:error, :repo_takendown}` / `{:error, :repo_deactivated}`
+    (`RepoTakendown` / `RepoDeactivated`, atproto `99bf6e2`) — the space
+    authority's account is taken down or deactivated.
+
+  Other refusals (`UserNotAuthorized`, `AppNotAuthorized`, `NotAuthorized`,
+  `SpaceNotFound`, `InvalidDelegationToken`, …) come back as
+  `{:error, {:http_error, status, code}}`.
   """
   @spec mint(String.t(), String.t(), String.t() | nil, keyword()) ::
           {:ok, t()} | {:error, term()}
@@ -277,6 +296,9 @@ defmodule Exosphere.ATProto.Spaces.Credential do
     case http.post(url, request_opts) do
       {:ok, %{status: 200, body: %{"credential" => jwt}}} when is_binary(jwt) ->
         {:ok, jwt}
+
+      {:ok, %{body: %{"error" => code}}} when is_map_key(@exchange_errors, code) ->
+        {:error, Map.fetch!(@exchange_errors, code)}
 
       {:ok, %{status: status, body: %{} = body}} ->
         {:error, {:http_error, status, body["error"]}}

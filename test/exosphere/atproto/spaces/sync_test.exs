@@ -210,6 +210,26 @@ defmodule Exosphere.ATProto.Spaces.SyncTest do
              )
   end
 
+  test "account-state refusals are typed, for the writer set and repo reads", ctx do
+    for {code, expected} <- [
+          {"RepoTakendown", :repo_takendown},
+          {"RepoDeactivated", :repo_deactivated},
+          {"RepoSuspended", :repo_suspended}
+        ] do
+      Process.put(:get, fn _url ->
+        {:ok, %{status: 400, headers: [], body: %{"error" => code, "message" => "..."}}}
+      end)
+
+      assert {:error, ^expected} = Sync.list_repos(@space_host, @space, ctx.cred, http: SyncHTTP)
+
+      assert {:error, ^expected} =
+               Sync.get_latest_commit(@repo_host, @space, @author, ctx.cred,
+                 http: SyncHTTP,
+                 kem_key: ctx.kem
+               )
+    end
+  end
+
   test "other 400s keep the generic http_error shape", ctx do
     Process.put(:get, fn _url ->
       {:ok, %{status: 400, headers: [], body: %{"error" => "SpaceNotFound", "message" => "..."}}}

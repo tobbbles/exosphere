@@ -54,6 +54,17 @@ defmodule Exosphere.ATProto.Spaces.Sync do
   covered), the client returns `{:error, {:since_out_of_bounds, floor}}` with
   the window's oldest retained rev parsed out of the message when the host
   carries it — the position a full `get_repo/5` recovery starts from.
+
+  The account-state refusals the lexicons declare are typed too, so a caller
+  can tell "this account is gone or paused" from a transient failure (atproto
+  `99bf6e2` brought them to `listRepos`, where they describe the space
+  authority; the repo-host reads describe the repo's account):
+
+  | XRPC error | returned |
+  |---|---|
+  | `RepoTakendown` | `{:error, :repo_takendown}` |
+  | `RepoDeactivated` | `{:error, :repo_deactivated}` |
+  | `RepoSuspended` | `{:error, :repo_suspended}` |
   """
 
   alias Exosphere.ATProto.{AtUri, CID, HTTP, TID}
@@ -487,6 +498,12 @@ defmodule Exosphere.ATProto.Spaces.Sync do
 
   # -- errors -----------------------------------------------------------------
 
+  @account_errors %{
+    "RepoTakendown" => :repo_takendown,
+    "RepoDeactivated" => :repo_deactivated,
+    "RepoSuspended" => :repo_suspended
+  }
+
   # XRPC error bodies are {"error": code, "message": msg}. The sync-recovery
   # signal is typed rather than left as a bare 400: a caller of list_repo_ops/5
   # gets a named match to route to the full-archive recovery, not a
@@ -497,6 +514,9 @@ defmodule Exosphere.ATProto.Spaces.Sync do
   defp classify_error(%{status: 400, body: %{"error" => "SinceOutOfBounds"} = body}) do
     {:error, {:since_out_of_bounds, floor_from_message(body["message"])}}
   end
+
+  defp classify_error(%{body: %{"error" => code}}) when is_map_key(@account_errors, code),
+    do: {:error, Map.fetch!(@account_errors, code)}
 
   defp classify_error(%{status: status}), do: {:error, {:http_error, status}}
 
