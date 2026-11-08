@@ -1,8 +1,10 @@
 {
   "generator": {
     "repository": "https://github.com/bluesky-social/atproto",
-    "branch": "permissioned-data",
-    "commit": "98ef3a6b9d1364f0543f137dd024de9651b21c4c",
+    "branch": "atproto-spaces-cleanup",
+    "commit": "4037310976201ee057f1b06aeef04a3cdc080258",
+    "includes": "atproto-spaces-lexicon-review@7089c42",
+    "star": "packages/star from permissioned-data@98ef3a6b9d1364f0543f137dd024de9651b21c4c (graft-star.mjs)",
     "package": "@atproto/space@0.0.1, @atproto/star (MIT)",
     "generatedAt": "2026-11-08"
   },
@@ -35,17 +37,17 @@
     "writers": [
       {
         "did": "did:plc:author",
-        "rev": "3kbcq3p7ad2c2",
+        "repoRev": "3kbcq3p7ad2c2",
         "data": "e5a00aa9991ac8a5ee3109844d84a55583bd20572ad3ffcd42792f3c36b183ad",
         "spaceRev": "3kbcq3p7ad3a4"
       },
       {
         "did": "did:plc:bob",
-        "rev": "3kbcq3p7ad2k4",
+        "repoRev": "3kbcq3p7ad2k4",
         "data": "e520afb6cb3ed072eab5810c920850ac09bfa945fe213982e9e715140ef80091",
         "spaceRev": "3kbcq3p7ad3a2"
       }
     ]
   },
-  "star": "KmwBAGKjY3ZlcgFlJHR5cGVyYXRwcm90by1zcGFjZS1tZXRhZXNwYWNleDthdDovL2RpZDpwbGM6c3BhY2VhdXRob3JpdHkvc3BhY2UvY29tLmV4YW1wbGUuZ3JvdXAvZGVmYXVsdAEGcG9saWN5UKRlJHR5cGV4HmNvbS5hdHByb3RvLm1lbWJlcnNwYWNlLnBvbGljeWpwdWJsaWNSZWFk9GtwdWJsaWNXcml0ZfRucHVibGlzaE1lbWJlcnP1ASxjb20uYXRwcm90by5tZW1iZXJzcGFjZS5tZW1iZXIvZGlkOnBsYzphbGljZTSjZHJlYWT1ZSR0eXBleB5jb20uYXRwcm90by5tZW1iZXJzcGFjZS5tZW1iZXJld3JpdGX1ASxjb20uYXRwcm90by5tZW1iZXJzcGFjZS5tZW1iZXIvZGlkOnBsYzpjYXJvbDSjZHJlYWT1ZSR0eXBleB5jb20uYXRwcm90by5tZW1iZXJzcGFjZS5tZW1iZXJld3JpdGX0ARV3cml0ZXIvZGlkOnBsYzphdXRob3JRo2NyZXZtM2tiY3EzcDdhZDJjMmRkYXRhWCDloAqpmRrIpe4xCYRNhKVVg70gVyrT/81CeS88NrGDrWhzcGFjZVJldm0za2JjcTNwN2FkM2E0ARJ3cml0ZXIvZGlkOnBsYzpib2JRo2NyZXZtM2tiY3EzcDdhZDJrNGRkYXRhWCDlIK+2yz7Qcuq1gQySCFCsCb+pRf4hOYLp5xUUDvgAkWhzcGFjZVJldm0za2JjcTNwN2FkM2EyAA=="
+  "star": "KmwBAGKjY3ZlcgFlJHR5cGVyYXRwcm90by1zcGFjZS1tZXRhZXNwYWNleDthdDovL2RpZDpwbGM6c3BhY2VhdXRob3JpdHkvc3BhY2UvY29tLmV4YW1wbGUuZ3JvdXAvZGVmYXVsdAEGcG9saWN5UKRlJHR5cGV4HmNvbS5hdHByb3RvLm1lbWJlcnNwYWNlLnBvbGljeWpwdWJsaWNSZWFk9GtwdWJsaWNXcml0ZfRucHVibGlzaE1lbWJlcnP1ASxjb20uYXRwcm90by5tZW1iZXJzcGFjZS5tZW1iZXIvZGlkOnBsYzphbGljZTSjZHJlYWT1ZSR0eXBleB5jb20uYXRwcm90by5tZW1iZXJzcGFjZS5tZW1iZXJld3JpdGX1ASxjb20uYXRwcm90by5tZW1iZXJzcGFjZS5tZW1iZXIvZGlkOnBsYzpjYXJvbDSjZHJlYWT1ZSR0eXBleB5jb20uYXRwcm90by5tZW1iZXJzcGFjZS5tZW1iZXJld3JpdGX0ARV3cml0ZXIvZGlkOnBsYzphdXRob3JVo2RkYXRhWCDloAqpmRrIpe4xCYRNhKVVg70gVyrT/81CeS88NrGDrWdyZXBvUmV2bTNrYmNxM3A3YWQyYzJoc3BhY2VSZXZtM2tiY3EzcDdhZDNhNAESd3JpdGVyL2RpZDpwbGM6Ym9iVaNkZGF0YVgg5SCvtss+0HLqtYEMkghQrAm/qUX+ITmC6ecVFA74AJFncmVwb1Jldm0za2JjcTNwN2FkMms0aHNwYWNlUmV2bTNrYmNxM3A3YWQzYTIA"
 }

@@ -5,27 +5,61 @@ atproto proposal 0016 (permissioned data), not by exosphere. They are the G1
 conformance gate's strongest evidence: exosphere's primitives must reproduce or
 verify these exact bytes.
 
-- Upstream: <https://github.com/bluesky-social/atproto>, branch `permissioned-data`
-- Pinned commit: `98ef3a6b9d1364f0543f137dd024de9651b21c4c` (2026-11-06)
+- Upstream: <https://github.com/bluesky-social/atproto>
+- Pinned tree: branch `atproto-spaces-cleanup` at
+  `4037310976201ee057f1b06aeef04a3cdc080258` (2026-11-05), which carries
+  branch `atproto-spaces-lexicon-review` up to `7089c427ae2a35ede70c4ee7256a4807ea607335`,
+  with `packages/star` from branch `permissioned-data` at
+  `98ef3a6b9d1364f0543f137dd024de9651b21c4c` (2026-11-06) grafted in by
+  `graft-star.mjs` (see "Why a graft" below)
 - Packages: `@atproto/space@0.0.1` and `@atproto/star` (MIT), with
-  `@atproto/crypto` from the same checkout
+  `@atproto/crypto` from the same tree
 - Generator: `generate.mjs` in this directory (committed alongside the fixtures)
-- Generated: 2026-11-08 (previous pin: `787a730`, 2026-09-22 — signed commits
-  and two-root CARs, both since retired upstream)
+- Generated: 2026-11-08 (previous pins: `98ef3a6`, 2026-11-06; `787a730`,
+  2026-09-22 — signed commits and two-root CARs, both since retired upstream)
+
+Against the `98ef3a6` pin, only `space-meta.json` changed bytes: the writer
+entries are keyed `repoRev` rather than `rev`. `lthash.json`,
+`commit-mac.json`, `repo-star.json` and the HTTP signature in
+`credentials.json` regenerate byte-identically.
+
+## Why a graft
+
+`atproto-spaces-cleanup` forked from `permissioned-data` at `99bf6e2`, before
+STAR moved into its own `@atproto/star` package and gained its control byte
+(`13994f1`, `bd58bd8`, both in `98ef3a6`). Its `packages/space` still carries
+the older in-package STAR codec, so neither upstream tip has both the renames
+and the current STAR container, and merging the two branches conflicts (in
+`packages/space`, `packages/star`, `packages/repo`, the PDS and the lockfile).
+Lexicons do not conflict: `permissioned-data` has not touched them since
+`99bf6e2`.
+
+`graft-star.mjs` resolves the one part of that conflict that reaches these
+bytes the way `permissioned-data` did: it makes `packages/space` use
+`@atproto/star` (with the per-profile read limits from `98ef3a6`) and deletes
+the in-package codec. Nothing else changes.
 
 ## To regenerate
 
-From a checkout of the atproto repo at the pinned commit with dependencies
-installed and `packages/space` built (the repo pins pnpm 11.11.0):
+The repo pins pnpm 11.11.0.
 
 ```sh
+# 1. The cleanup-branch tree, plus packages/star from permissioned-data
+git clone https://github.com/bluesky-social/atproto /path/to/atproto
 cd /path/to/atproto
-pnpm install --filter "@atproto/space..." --frozen-lockfile --ignore-scripts
+git checkout 4037310976201ee057f1b06aeef04a3cdc080258
+git checkout 98ef3a6b9d1364f0543f137dd024de9651b21c4c -- packages/star
+node /path/to/exosphere/test/fixtures/spaces-corpora/graft-star.mjs --atproto .
+
+# 2. Build and generate
+pnpm install --filter "@atproto/space..." --ignore-scripts --no-frozen-lockfile
 pnpm exec tsc --build packages/space/tsconfig.build.json
 node /path/to/exosphere/test/fixtures/spaces-corpora/generate.mjs \
   --atproto /path/to/atproto --out /path/to/exosphere/test/fixtures/spaces-corpora
-git -C /path/to/exosphere diff test/fixtures/spaces-corpora   # empty for the deterministic files
+git -C /path/to/exosphere diff test/fixtures/spaces-corpora   # only credentials.json token iat/jti
 ```
+
+(The lockfile is not frozen because the graft adds a workspace dependency.)
 
 Everything is byte-deterministic (fixed keys, fixed ephemeral KEM keys, fixed
 records; RFC 6979 signing in the reference) except the token JWTs in
@@ -41,7 +75,7 @@ regeneration diff on any other file means the reference moved.
 | `commit-mac.json` | KEM shared secrets (RFC 9180 DHKEM(P-256) via the reference's `decapsulate`, from fixed ephemeral keys), `defs#commit` fields and `data`, commit MACs (incl. a 532-byte space URI), record MACs over URI + binary CID, and the exact `Atproto-Space-Want-Mac` / `Atproto-Space-Mac` header strings | `Spaces.{Kem,Commit,Mac}`, second encoder |
 | `repo-star.json` | The `atproto-space-repo` STAR archive: metadata, strict key-byte pair order (the record set contains a pair whose length-first and bytewise orders differ), per-record DRISL bytes, the empty repo | `Spaces.Repo`, `Star`, second encoder |
 | `credentials.json` | The three token classes (`typ`/`kid`, claims, TTLs, `cnf.kid`, `jti`, `#atproto_pds` audience) by shape and signature; the RFC 9421 HTTP message signature presenting a credential, byte-for-byte | `Spaces.{Token,HttpSignature}` |
-| `space-meta.json` | An `atproto-space-meta` archive: policy, memberspace policy state, writer set | `Spaces.SpaceMeta`, second encoder |
+| `space-meta.json` | An `atproto-space-meta` archive: policy, memberspace policy state, writer set (`repoRev`, `data`, `spaceRev`) | `Spaces.SpaceMeta`, second encoder |
 
 The corpus is checked in (not fetched) so the suite runs offline and
 deterministically in CI, mirroring the `fixtures/interop` convention. The

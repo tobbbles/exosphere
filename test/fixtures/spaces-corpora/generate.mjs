@@ -1,6 +1,12 @@
 // Generates the exosphere spaces conformance corpus from the official
-// reference implementation (@atproto/space and @atproto/star, the
-// `permissioned-data` branch of bluesky-social/atproto).
+// reference implementation (@atproto/space and @atproto/star from
+// bluesky-social/atproto).
+//
+// The pinned tree is the `atproto-spaces-cleanup` branch at 4037310 (which
+// carries `atproto-spaces-lexicon-review` at 7089c42) with `packages/star`
+// from `permissioned-data` at 98ef3a6 grafted in by `graft-star.mjs` — the
+// cleanup branch forked before STAR moved into its own package and gained its
+// control byte, so neither upstream tip has both. See SOURCE.md.
 //
 // Everything below is fixed here (keys, ephemeral keys, contexts, records) so
 // re-running the script reproduces the committed fixtures exactly. The one
@@ -9,8 +15,8 @@
 // HTTP message signatures ARE deterministic (RFC 6979 P-256 in the reference)
 // and are pinned byte-for-byte.
 //
-// Usage (from a checkout of atproto at the pinned commit, deps installed and
-// `packages/space` built — see SOURCE.md):
+// Usage (from the grafted tree, deps installed and `packages/space` built —
+// see SOURCE.md):
 //
 //   node /path/to/exosphere/test/fixtures/spaces-corpora/generate.mjs \
 //     --atproto /path/to/atproto --out /path/to/exosphere/test/fixtures/spaces-corpora
@@ -42,8 +48,7 @@ const star = await fromDist('packages/star/dist/index.js')
 const {
   LtHash,
   RepoCommit,
-  formatSetHashElement,
-  serializeRepo,
+  writeRepoStar,
   serializeRecord,
   verifyRepoStarFull,
   verifyCommit,
@@ -52,20 +57,29 @@ const {
   formatWantMacHeader,
   formatMacHeader,
   decapsulate,
-  createSpaceToken,
+  createDelegationToken,
+  createSpaceCredential,
+  createClientAttestation,
   createSpaceSigHeaders,
   verifyCredentialSig,
   spaceHostAud,
-  serializeSpaceMeta,
+  writeSpaceMetaStar,
   readSpaceMetaStar,
 } = space
 const { Secp256k1Keypair, P256Keypair } = crypto
 const { readStar } = star
 
+// `${collection}/${rkey}/${cid}` — the set-hash element, as the reference's
+// `formatSetHashElement` builds it (no longer exported since the cleanup
+// branch; `formatRecordPath` still is).
+const formatSetHashElement = (collection, rkey, cid) => `${space.formatRecordPath(collection, rkey)}/${cid.toString()}`
+
 const REFERENCE = {
   repository: 'https://github.com/bluesky-social/atproto',
-  branch: 'permissioned-data',
-  commit: '98ef3a6b9d1364f0543f137dd024de9651b21c4c',
+  branch: 'atproto-spaces-cleanup',
+  commit: '4037310976201ee057f1b06aeef04a3cdc080258',
+  includes: 'atproto-spaces-lexicon-review@7089c42',
+  star: 'packages/star from permissioned-data@98ef3a6b9d1364f0543f137dd024de9651b21c4c (graft-star.mjs)',
   package: '@atproto/space@0.0.1, @atproto/star (MIT)',
   generatedAt: new Date().toISOString().slice(0, 10),
 }
@@ -260,10 +274,8 @@ const commitVariant = (name, ctx, records, secretIndex) => {
   const commit = commitOver(ctx, records)
   const sharedSecret = secretOf(secretIndex)
   const mac = computeCommitMac(sharedSecret, commit)
-  assert(
-    verifyCommit(commit, { space: ctx.space, repo: ctx.repo, sharedSecret, mac }),
-    `verifyCommit rejected ${name}`,
-  )
+  // Throws on any mismatch (it returned a boolean before the cleanup branch).
+  verifyCommit(commit, { space: ctx.space, repo: ctx.repo, sharedSecret, mac })
   return {
     name,
     ctx,
@@ -322,9 +334,9 @@ const commitMac = {
 
 const starCtx = { space: SPACE, repo: AUTHOR, rev: '3kbcq3p7ad2c2' }
 const starCommit = commitOver(starCtx, serialized)
-const starBytes = await collect(serializeRepo(starCommit, sortedRecords))
+const starBytes = await collect(writeRepoStar(starCommit, sortedRecords))
 const emptyCommit = commitOver(starCtx, [])
-const emptyStarBytes = await collect(serializeRepo(emptyCommit, []))
+const emptyStarBytes = await collect(writeRepoStar(emptyCommit, []))
 
 // Self-check with the reference consumer before pinning anything.
 const starSecret = secretOf(0)
@@ -384,21 +396,18 @@ const keyInfo = (curve, priv, keypair) => ({
   jwk: jwkFromCompressed(curve, keypair.publicKeyBytes()),
 })
 
-const delegationJwt = await createSpaceToken('delegation', { iss: AUTHOR, sub: SPACE, aud: AUD }, userKeypair)
-const credentialJwt = await createSpaceToken(
-  'credential',
-  { iss: AUTHORITY, sub: SPACE, keyId: credentialKey.did() },
-  authorityKeypair,
-)
-const attestationJwt = await createSpaceToken(
-  'clientAttestation',
-  {
-    iss: 'https://app.example.com/client-metadata.json',
-    sub: 'https://app.example.com/client-metadata.json',
-    aud: AUD,
-  },
-  attestationKeypair,
-)
+const delegationJwt = await createDelegationToken({ iss: AUTHOR, sub: SPACE, aud: AUD, keypair: userKeypair })
+const credentialJwt = await createSpaceCredential({
+  iss: AUTHORITY,
+  sub: SPACE,
+  keyId: credentialKey.did(),
+  keypair: authorityKeypair,
+})
+const attestationJwt = await createClientAttestation({
+  clientId: 'https://app.example.com/client-metadata.json',
+  aud: AUD,
+  keypair: attestationKeypair,
+})
 
 const decodeJwt = (jwt) => {
   const [h, p] = jwt.split('.')
@@ -409,9 +418,10 @@ const decodeJwt = (jwt) => {
 // The signature is over the Authorization value and the audience only, so a
 // fixed credential string pins it byte-for-byte (RFC 6979 in the reference).
 const SIG_AUTHORIZATION = 'Atproto-Space-Credential eyJhbGciOiJFUzI1NksiLCJ0eXAiOiJhdHByb3RvLXNwYWNlLWNyZWRlbnRpYWwrand0In0.e30.c2ln'
-const sigHeaders = await createSpaceSigHeaders(credentialKey, {
+const { headers: sigHeaders } = await createSpaceSigHeaders({
   authorization: SIG_AUTHORIZATION,
   audience: AUTHOR,
+  keypair: credentialKey,
 })
 await verifyCredentialSig(sigHeaders, credentialKey.did())
 
@@ -474,11 +484,12 @@ const metaArchive = {
     { key: 'com.atproto.memberspace.member/did:plc:alice', value: { $type: 'com.atproto.memberspace.member', read: true, write: true } },
   ],
   writers: [
-    { did: 'did:plc:bob', rev: '3kbcq3p7ad2k4', data: starCommit.data, spaceRev: '3kbcq3p7ad3a2' },
-    { did: AUTHOR, rev: '3kbcq3p7ad2c2', data: emptyCommit.data, spaceRev: '3kbcq3p7ad3a4' },
+    // `repoRev`, not `rev`, since the cleanup branch (matching listWriters).
+    { did: 'did:plc:bob', repoRev: '3kbcq3p7ad2k4', data: starCommit.data, spaceRev: '3kbcq3p7ad3a2' },
+    { did: AUTHOR, repoRev: '3kbcq3p7ad2c2', data: emptyCommit.data, spaceRev: '3kbcq3p7ad3a4' },
   ],
 }
-const metaBytes = await collect(serializeSpaceMeta(metaArchive))
+const metaBytes = await collect(writeSpaceMetaStar(metaArchive))
 const metaRead = await readSpaceMetaStar([metaBytes])
 assert(metaRead.writers.length === 2, 'reference meta reader saw the wrong writer count')
 

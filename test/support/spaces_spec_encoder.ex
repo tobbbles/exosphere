@@ -219,8 +219,14 @@ defmodule Exosphere.ATProto.Spaces.SpecEncoder do
   ## Metadata {"$type": "atproto-space-meta", "ver": 1, "space": …}; the body
   ## has three sections in order — "a single policy key", then policy state
   ## keys "structured like repository keys", then "one writer/{did} key per
-  ## account in the writer set" carrying rev, data and spaceRev — and "within
-  ## each section, keys MUST be in strict lexicographic order".
+  ## account in the writer set" carrying the repo revision, data and spaceRev
+  ## — and "within each section, keys MUST be in strict lexicographic order".
+  ##
+  ## The proposal text (main at `0634c26`, and its open lexicon-refactor PR at
+  ## `2d1ca30`) still calls the repo revision `rev`. The atproto
+  ## `atproto-spaces-cleanup` branch (`4037310`) keys it `repoRev`, matching
+  ## `listWriters#repo`. No prose names the key, so this one field follows the
+  ## upstream `listWriters` lexicon's field name rather than the README.
 
   @spec serialize_space_meta(String.t(), map(), [{String.t(), map()}], [map()]) :: binary()
   def serialize_space_meta(space, policy, policy_state, writers) do
@@ -234,7 +240,12 @@ defmodule Exosphere.ATProto.Spaces.SpecEncoder do
     writer_pairs =
       writers
       |> Enum.map(fn %{"did" => did} = w ->
-        value = %{"rev" => w["rev"], "data" => {:bytes, w["data"]}, "spaceRev" => w["spaceRev"]}
+        value = %{
+          "repoRev" => w["repoRev"],
+          "data" => {:bytes, w["data"]},
+          "spaceRev" => w["spaceRev"]
+        }
+
         {"writer/" <> did, dag_cbor(value)}
       end)
       |> Enum.sort_by(&elem(&1, 0))

@@ -16,7 +16,11 @@ defmodule Exosphere.ATProto.Spaces.SpaceMeta do
      paths (`{nsid}/{rkey}`), e.g. memberspace's
      `com.atproto.memberspace.member/{did}` entries.
   3. **Writers** — one `writer/{did}` key per account in the writer set, with
-     `rev`, `data` and `spaceRev` (what `listRepos` serves after migration).
+     `repoRev`, `data` and `spaceRev` (what `listWriters` serves after
+     migration). The repo revision was keyed `rev` until the
+     `atproto-spaces-cleanup` branch (`4037310`) renamed it to match
+     `listWriters`; an archive carrying `rev` is rejected as a malformed
+     writer.
 
   `decode/1` rejects the archive on a parse error, a missing policy, a
   section out of place, a duplicate or out-of-order key, a non-map value, or
@@ -35,7 +39,7 @@ defmodule Exosphere.ATProto.Spaces.SpaceMeta do
   @limits [max_meta_length: 64 * 1024, max_key_length: 4 * 1024, max_value_length: 1024 * 1024]
   @writer_prefix "writer/"
 
-  @type writer :: %{did: String.t(), rev: String.t(), data: binary(), space_rev: String.t()}
+  @type writer :: %{did: String.t(), repo_rev: String.t(), data: binary(), space_rev: String.t()}
   @type t :: %{
           space: String.t(),
           policy: map(),
@@ -57,7 +61,7 @@ defmodule Exosphere.ATProto.Spaces.SpaceMeta do
       |> Map.get(:writers, [])
       |> Enum.map(fn w ->
         value = %{
-          "rev" => w.rev,
+          "repoRev" => w.repo_rev,
           "data" => %CBOR.Tag{tag: :bytes, value: w.data},
           "spaceRev" => w.space_rev
         }
@@ -145,9 +149,10 @@ defmodule Exosphere.ATProto.Spaces.SpaceMeta do
 
   defp put(acc, :writers, @writer_prefix <> did = key, map) do
     with true <- DID.valid?(did),
-         %{"rev" => rev, "data" => data, "spaceRev" => space_rev} when is_binary(data) <- map,
-         true <- TID.valid?(rev) and TID.valid?(space_rev) do
-      writer = %{did: did, rev: rev, data: data, space_rev: space_rev}
+         %{"repoRev" => repo_rev, "data" => data, "spaceRev" => space_rev} when is_binary(data) <-
+           map,
+         true <- TID.valid?(repo_rev) and TID.valid?(space_rev) do
+      writer = %{did: did, repo_rev: repo_rev, data: data, space_rev: space_rev}
       {:ok, %{acc | writers: [writer | acc.writers]}}
     else
       _ -> {:error, {:invalid_writer, key}}
