@@ -213,7 +213,7 @@ defmodule Exosphere.ATProto.Spaces.CredentialTest do
 
     assert opts[:json] == %{
              "space" => @space,
-             "credentialKid" => ctx.key.did_key,
+             "credentialKey" => ctx.key.did_key,
              "delegationToken" => delegation
            }
   end
@@ -342,10 +342,10 @@ defmodule Exosphere.ATProto.Spaces.CredentialTest do
 
     Process.put(
       :post_response,
-      {:ok, %{status: 403, headers: [], body: %{"error" => "UserNotAuthorized"}}}
+      {:ok, %{status: 403, headers: [], body: %{"error" => "SpaceNotFound"}}}
     )
 
-    assert {:error, {:http_error, 403, "UserNotAuthorized"}} =
+    assert {:error, {:http_error, 403, "SpaceNotFound"}} =
              Credential.mint(@space_host, @space, delegation,
                key: ctx.key,
                http: RecordingHTTP
@@ -356,7 +356,10 @@ defmodule Exosphere.ATProto.Spaces.CredentialTest do
     for {code, expected} <- [
           {"SpaceDeleted", :space_deleted},
           {"RepoTakendown", :repo_takendown},
-          {"RepoDeactivated", :repo_deactivated}
+          {"RepoDeactivated", :repo_deactivated},
+          # Renamed from UserNotAuthorized by atproto-spaces-lexicon-review.
+          {"AccountNotAuthorized", :account_not_authorized},
+          {"AppNotAuthorized", :app_not_authorized}
         ] do
       Process.put(
         :post_response,
@@ -368,7 +371,7 @@ defmodule Exosphere.ATProto.Spaces.CredentialTest do
     end
   end
 
-  # -- revocation (notifyCredentialRevoked) ----------------------------------
+  # -- revocation (notifyCredentialsRevoked) ---------------------------------
 
   test "verify_request rejects a credential whose jti was revoked for its space", ctx do
     credential = credential_jwt(ctx, ctx.key)
@@ -390,11 +393,11 @@ defmodule Exosphere.ATProto.Spaces.CredentialTest do
     assert {:ok, _} = Credential.verify_request(headers, [revoked?: other?] ++ opts)
   end
 
-  test "notify_credential_revoked posts the jtis with the caller's service auth" do
+  test "notify_credentials_revoked posts the jtis with the caller's service auth" do
     Process.put(:post_response, {:ok, %{status: 200, headers: [], body: nil}})
 
     assert :ok =
-             Credential.notify_credential_revoked(
+             Credential.notify_credentials_revoked(
                @pds,
                @space,
                ["jti-1", "jti-2"],
@@ -403,16 +406,40 @@ defmodule Exosphere.ATProto.Spaces.CredentialTest do
              )
 
     {url, opts} = Process.get(:last_post)
-    assert url == @pds <> "/xrpc/com.atproto.space.notifyCredentialRevoked"
+    assert url == @pds <> "/xrpc/com.atproto.space.notifyCredentialsRevoked"
     assert opts[:json] == %{"space" => @space, "credentials" => ["jti-1", "jti-2"]}
     assert {"authorization", "Bearer service-jwt"} in opts[:headers]
 
     for bad <- [[], List.duplicate("j", 101), [""], [1]] do
       assert {:error, :invalid_revocation} =
-               Credential.notify_credential_revoked(@pds, @space, bad, [headers: []],
+               Credential.notify_credentials_revoked(@pds, @space, bad, [headers: []],
                  http: RecordingHTTP
                )
     end
+  end
+
+  test "notify_credentials_revoked can mint the authority's service auth per request", ctx do
+    Process.put(:post_response, {:ok, %{status: 200, headers: [], body: nil}})
+
+    assert :ok =
+             Credential.notify_credentials_revoked(
+               @pds,
+               @space,
+               ["jti-1"],
+               [service_auth: [iss: @authority, aud: @user, key: ctx.authority]],
+               http: RecordingHTTP
+             )
+
+    {_url, opts} = Process.get(:last_post)
+    {_, "Bearer " <> jwt} = List.keyfind(opts[:headers], "authorization", 0)
+
+    assert {:ok, %{"iss" => @authority, "aud" => @user}} =
+             Exosphere.ATProto.XRPC.ServiceAuth.verify(
+               jwt,
+               fn _, _, _ -> {:ok, JWK.to_public(ctx.authority)} end,
+               aud: @user,
+               lxm: "com.atproto.space.notifyCredentialsRevoked"
+             )
   end
 
   test "decode_revocation/1 shapes a received notification" do

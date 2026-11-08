@@ -17,7 +17,7 @@ defmodule Exosphere.ATProto.Spaces.HttpSignature do
   credential and audience until the credential expires.
 
   The key is a fresh P-256 keypair per credential (`generate_key/0`); its
-  `did:key` is what `Spaces.Credential.mint/4` sends as `credentialKid`.
+  `did:key` is what `Spaces.Credential.mint/4` sends as `credentialKey`.
   Signatures are `ecdsa-p256-sha256`, the 64-byte `r || s` encoding;
   verifiers accept both low-S and high-S signatures, as the proposal
   requires. This module replaces the DPoP binding (`cnf.jkt`) the alpha used

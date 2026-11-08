@@ -30,9 +30,10 @@ defmodule Exosphere.ATProto.Spaces.Credential do
       {:ok, headers} = Credential.presentation_headers(cred, repo_owner_did)
 
   Since atproto `57b24c6`/`7b8e094` (2026-10) the exchange carries no
-  Authorization header and no DPoP proof: the key to bind (`credentialKid`,
-  the key's `did:key`) and the optional delegation token and client
-  attestation travel in the JSON body. The credential is bound to that key by
+  Authorization header and no DPoP proof: the key to bind (`credentialKey`,
+  the key's `did:key`; the field was `credentialKid` until atproto
+  `atproto-spaces-lexicon-review`) and the optional delegation token and
+  client attestation travel in the JSON body. The credential is bound to that key by
   `cnf.kid`, lives 600 seconds, and every use is signed — see
   `Spaces.HttpSignature`. A public space needs no delegation token.
 
@@ -59,7 +60,9 @@ defmodule Exosphere.ATProto.Spaces.Credential do
   @exchange_errors %{
     "SpaceDeleted" => :space_deleted,
     "RepoTakendown" => :repo_takendown,
-    "RepoDeactivated" => :repo_deactivated
+    "RepoDeactivated" => :repo_deactivated,
+    "AccountNotAuthorized" => :account_not_authorized,
+    "AppNotAuthorized" => :app_not_authorized
   }
 
   @typedoc "A minted credential with the key it is bound to — what `Spaces.Sync` takes."
@@ -137,7 +140,7 @@ defmodule Exosphere.ATProto.Spaces.Credential do
   `nil` for a space that does not gate on the user (a public space). Options:
 
   - `:key` (required) — a fresh `Spaces.HttpSignature.generate_key/0` key; its
-    `did:key` is sent as `credentialKid` and becomes the credential's
+    `did:key` is sent as `credentialKey` and becomes the credential's
     `cnf.kid`. Keep it for the credential's lifetime and discard it after.
   - `:client_attestation` — only when the space gates on app identity.
 
@@ -155,8 +158,13 @@ defmodule Exosphere.ATProto.Spaces.Credential do
     (`RepoTakendown` / `RepoDeactivated`, atproto `99bf6e2`) — the space
     authority's account is taken down or deactivated.
 
-  Other refusals (`UserNotAuthorized`, `AppNotAuthorized`, `NotAuthorized`,
-  `SpaceNotFound`, `InvalidDelegationToken`, …) come back as
+  - `{:error, :account_not_authorized}` (`AccountNotAuthorized`, which was
+    `UserNotAuthorized` until atproto `atproto-spaces-lexicon-review`) — the
+    policy does not let this account read the space.
+  - `{:error, :app_not_authorized}` (`AppNotAuthorized`) — the policy does not
+    let this app read the space (`allowed_apps`).
+
+  Other refusals (`SpaceNotFound`, `InvalidDelegationToken`, …) come back as
   `{:error, {:http_error, status, code}}`.
   """
   @spec mint(String.t(), String.t(), String.t() | nil, keyword()) ::
@@ -257,8 +265,9 @@ defmodule Exosphere.ATProto.Spaces.Credential do
   ## Revocation
 
   A space authority may revoke outstanding credentials early with
-  `com.atproto.space.notifyCredentialRevoked` (atproto `a571a93fc`;
-  `notify_credential_revoked/5` sends it, `decode_revocation/1` reads it). A
+  `com.atproto.space.notifyCredentialsRevoked` (atproto `a571a93fc`, renamed
+  from `notifyCredentialRevoked` by `atproto-spaces-lexicon-review`;
+  `notify_credentials_revoked/5` sends it, `decode_revocation/1` reads it). A
   repo host MUST then reject a credential whose `jti` was revoked for that
   space, and keep the revocation for at least 60 minutes — after which no
   credential carrying that `jti` can still be valid (the 3600-second lifetime
@@ -281,24 +290,29 @@ defmodule Exosphere.ATProto.Spaces.Credential do
 
   @doc """
   Notify a repo host that the authority revoked credentials
-  (`com.atproto.space.notifyCredentialRevoked`), identified by `jti` — 1 to
-  100 per call. Revocation is idempotent, so retrying delivery is safe.
+  (`com.atproto.space.notifyCredentialsRevoked`; it was
+  `notify_credential_revoked/5` / `notifyCredentialRevoked` before atproto
+  `atproto-spaces-lexicon-review`), identified by `jti` — 1 to 100 per call.
+  Revocation is idempotent, so retrying delivery is safe.
 
   The call is authenticated with service auth from the space authority,
-  addressed to the repo DID: pass it as
+  addressed to the bare repo DID (the reference host looks the audience up as
+  an account it hosts). Pass `service_auth: [iss: authority_did, aud:
+  repo_did, key: authority_signing_jwk]` to mint it per request
+  (`XRPC.ServiceAuth`, `lxm` set for you), or a pre-minted
   `headers: [{"authorization", "Bearer " <> service_jwt}]`. Fanning
   revocations out to the repo hosts of a space is the authority's job and its
   prerogative.
   """
-  @spec notify_credential_revoked(String.t(), String.t(), [String.t()], keyword(), keyword()) ::
+  @spec notify_credentials_revoked(String.t(), String.t(), [String.t()], keyword(), keyword()) ::
           :ok | {:error, term()}
-  def notify_credential_revoked(repo_host, space_ref, jtis, auth, opts \\ []) do
+  def notify_credentials_revoked(repo_host, space_ref, jtis, auth, opts \\ []) do
     with :ok <- check_jtis(jtis) do
       body = %{"space" => space_ref, "credentials" => jtis}
 
       case XRPC.procedure(
              repo_host,
-             "com.atproto.space.notifyCredentialRevoked",
+             "com.atproto.space.notifyCredentialsRevoked",
              body,
              auth,
              opts
@@ -310,7 +324,7 @@ defmodule Exosphere.ATProto.Spaces.Credential do
   end
 
   @doc """
-  Decode a received `notifyCredentialRevoked` body into
+  Decode a received `notifyCredentialsRevoked` body into
   `{:ok, %{space: space_ref, jtis: [jti]}}`, validating its shape (1–100
   non-empty `jti` strings). Checking the request's service auth — that it is
   from the space's authority and addressed to this repo — is the host's job.
@@ -362,7 +376,7 @@ defmodule Exosphere.ATProto.Spaces.Credential do
     do: Enum.reduce(headers, %{}, fn {k, v}, acc -> Map.put_new(acc, String.downcase(k), v) end)
 
   defp exchange_body(space_ref, key, delegation_jwt, attestation) do
-    %{"space" => space_ref, "credentialKid" => key.did_key}
+    %{"space" => space_ref, "credentialKey" => key.did_key}
     |> maybe_put("delegationToken", delegation_jwt)
     |> maybe_put("clientAttestation", attestation)
   end

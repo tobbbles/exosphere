@@ -3,7 +3,7 @@ defmodule Exosphere.ATProto.Spaces.Token do
   The three space token classes of atproto permissioned data (proposal 0016),
   sharing one wire shape — a compact JWS — and differing only in who signs
   them, who they are addressed to, and how long they live. Every class
-  carries a `jti` (the credential's is what `notifyCredentialRevoked` names):
+  carries a `jti` (the credential's is what `notifyCredentialsRevoked` names):
 
   | Class | typ | signed by | TTL | aud | binding |
   |-------|-----|-----------|-----|-----|---------|
@@ -122,7 +122,7 @@ defmodule Exosphere.ATProto.Spaces.Token do
 
   `:iss` and `:sub` are required; `:aud` is required for classes addressed to
   a space host; `:key_id` is required for credentials (the P-256 `did:key`
-  the credential binds to, from the `credentialKid` the requester sent).
+  the credential binds to, from the `credentialKey` the requester sent).
   `:iat`, `:jti`, and `:expires_in` may be pinned for tests; a credential's
   `:expires_in` must be within (0, 3600].
 
