@@ -368,6 +368,63 @@ defmodule Exosphere.ATProto.Spaces.CredentialTest do
     end
   end
 
+  # -- revocation (notifyCredentialRevoked) ----------------------------------
+
+  test "verify_request rejects a credential whose jti was revoked for its space", ctx do
+    credential = credential_jwt(ctx, ctx.key)
+    {:ok, %{payload: %{"jti" => jti}}} = Token.parse(:credential, credential)
+
+    {:ok, headers} =
+      Credential.presentation_headers(%{credential: credential, key: ctx.key}, @user)
+
+    opts = [audience: @user, document: ctx.authority_doc, now: @now]
+
+    revoked = MapSet.new([{@space, jti}])
+    revoked? = fn space, jti -> MapSet.member?(revoked, {space, jti}) end
+
+    assert {:error, :credential_revoked} =
+             Credential.verify_request(headers, [revoked?: revoked?] ++ opts)
+
+    # Revoked in another space: not this credential.
+    other? = fn _space, _jti -> false end
+    assert {:ok, _} = Credential.verify_request(headers, [revoked?: other?] ++ opts)
+  end
+
+  test "notify_credential_revoked posts the jtis with the caller's service auth" do
+    Process.put(:post_response, {:ok, %{status: 200, headers: [], body: nil}})
+
+    assert :ok =
+             Credential.notify_credential_revoked(
+               @pds,
+               @space,
+               ["jti-1", "jti-2"],
+               [headers: [{"authorization", "Bearer service-jwt"}]],
+               http: RecordingHTTP
+             )
+
+    {url, opts} = Process.get(:last_post)
+    assert url == @pds <> "/xrpc/com.atproto.space.notifyCredentialRevoked"
+    assert opts[:json] == %{"space" => @space, "credentials" => ["jti-1", "jti-2"]}
+    assert {"authorization", "Bearer service-jwt"} in opts[:headers]
+
+    for bad <- [[], List.duplicate("j", 101), [""], [1]] do
+      assert {:error, :invalid_revocation} =
+               Credential.notify_credential_revoked(@pds, @space, bad, [headers: []],
+                 http: RecordingHTTP
+               )
+    end
+  end
+
+  test "decode_revocation/1 shapes a received notification" do
+    assert {:ok, %{space: @space, jtis: ["a"]}} =
+             Credential.decode_revocation(%{"space" => @space, "credentials" => ["a"]})
+
+    assert {:error, :invalid_revocation} =
+             Credential.decode_revocation(%{"space" => @space, "credentials" => []})
+
+    assert {:error, :invalid_revocation} = Credential.decode_revocation(%{"credentials" => ["a"]})
+  end
+
   test "mint passes transport errors through instead of crashing" do
     Process.put(:post_response, {:error, :econnrefused})
 

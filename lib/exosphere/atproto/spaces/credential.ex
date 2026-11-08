@@ -51,7 +51,7 @@ defmodule Exosphere.ATProto.Spaces.Credential do
   alias Exosphere.ATProto.{Crypto, HTTP}
   alias Exosphere.ATProto.Identity.Document
   alias Exosphere.ATProto.OAuth.{Request, Session}
-  alias Exosphere.ATProto.Spaces.{HttpSignature, Token}
+  alias Exosphere.ATProto.Spaces.{HttpSignature, Token, XRPC}
 
   @delegation_nsid "com.atproto.space.getDelegationToken"
   @credential_nsid "com.atproto.space.getSpaceCredential"
@@ -200,12 +200,22 @@ defmodule Exosphere.ATProto.Spaces.Credential do
     `Token.verify/3`. The `kid` it receives has already been checked to be
     `"#atproto"`.
 
-  Options: `:sub` (the expected space URI), `:now`.
+  Options: `:sub` (the expected space URI), `:now`, and `:revoked?` — see
+  "Revocation" in `verify_request/2`.
   """
   @spec verify(String.t(), Document.t() | keyword()) :: {:ok, map()} | {:error, term()}
   def verify(jwt, %Document{} = doc), do: verify(jwt, document: doc)
 
   def verify(jwt, opts) when is_list(opts) do
+    {revoked?, opts} = Keyword.pop(opts, :revoked?)
+
+    with {:ok, %{payload: payload} = verified} <- verify_token(jwt, opts),
+         :ok <- check_revoked(revoked?, payload) do
+      {:ok, verified}
+    end
+  end
+
+  defp verify_token(jwt, opts) do
     case Keyword.pop(opts, :document) do
       {%Document{} = doc, opts} ->
         # Resolved up front rather than inside the callback so an unresolvable
@@ -240,9 +250,20 @@ defmodule Exosphere.ATProto.Spaces.Credential do
      from the request (the repo owner, or the authority for host methods).
 
   `headers` is the request's headers (`[{name, value}]` or a lowercase-keyed
-  map). Options: `:audience` (required), `:sub`, `:now`, and the key source —
-  `document: %Identity.Document{}` or `get_signing_key: fun` as for
-  `verify/2`. Returns `{:ok, %{header:, payload:}}`.
+  map). Options: `:audience` (required), `:sub`, `:now`, `:revoked?`, and the
+  key source — `document: %Identity.Document{}` or `get_signing_key: fun` as
+  for `verify/2`. Returns `{:ok, %{header:, payload:}}`.
+
+  ## Revocation
+
+  A space authority may revoke outstanding credentials early with
+  `com.atproto.space.notifyCredentialRevoked` (atproto `a571a93fc`;
+  `notify_credential_revoked/5` sends it, `decode_revocation/1` reads it). A
+  repo host MUST then reject a credential whose `jti` was revoked for that
+  space, and keep the revocation for at least 60 minutes — after which no
+  credential carrying that `jti` can still be valid (the 3600-second lifetime
+  cap). Pass `revoked?: fn space, jti -> boolean end` backed by that store;
+  a revoked credential is `{:error, :credential_revoked}`.
   """
   @spec verify_request(HttpSignature.headers(), keyword()) :: {:ok, map()} | {:error, term()}
   def verify_request(headers, opts) do
@@ -256,6 +277,64 @@ defmodule Exosphere.ATProto.Spaces.Credential do
          :ok <- check_audience(headers["atproto-space-audience"], audience) do
       {:ok, verified}
     end
+  end
+
+  @doc """
+  Notify a repo host that the authority revoked credentials
+  (`com.atproto.space.notifyCredentialRevoked`), identified by `jti` — 1 to
+  100 per call. Revocation is idempotent, so retrying delivery is safe.
+
+  The call is authenticated with service auth from the space authority,
+  addressed to the repo DID: pass it as
+  `headers: [{"authorization", "Bearer " <> service_jwt}]`. Fanning
+  revocations out to the repo hosts of a space is the authority's job and its
+  prerogative.
+  """
+  @spec notify_credential_revoked(String.t(), String.t(), [String.t()], keyword(), keyword()) ::
+          :ok | {:error, term()}
+  def notify_credential_revoked(repo_host, space_ref, jtis, auth, opts \\ []) do
+    with :ok <- check_jtis(jtis) do
+      body = %{"space" => space_ref, "credentials" => jtis}
+
+      case XRPC.procedure(
+             repo_host,
+             "com.atproto.space.notifyCredentialRevoked",
+             body,
+             auth,
+             opts
+           ) do
+        {:ok, _} -> :ok
+        error -> error
+      end
+    end
+  end
+
+  @doc """
+  Decode a received `notifyCredentialRevoked` body into
+  `{:ok, %{space: space_ref, jtis: [jti]}}`, validating its shape (1–100
+  non-empty `jti` strings). Checking the request's service auth — that it is
+  from the space's authority and addressed to this repo — is the host's job.
+  """
+  @spec decode_revocation(map()) ::
+          {:ok, %{space: String.t(), jtis: [String.t()]}} | {:error, term()}
+  def decode_revocation(%{"space" => space, "credentials" => jtis}) when is_binary(space) do
+    with :ok <- check_jtis(jtis), do: {:ok, %{space: space, jtis: jtis}}
+  end
+
+  def decode_revocation(_), do: {:error, :invalid_revocation}
+
+  defp check_jtis(jtis) when is_list(jtis) and jtis != [] and length(jtis) <= 100 do
+    if Enum.all?(jtis, &(is_binary(&1) and &1 != "")),
+      do: :ok,
+      else: {:error, :invalid_revocation}
+  end
+
+  defp check_jtis(_), do: {:error, :invalid_revocation}
+
+  defp check_revoked(nil, _payload), do: :ok
+
+  defp check_revoked(revoked?, %{"sub" => space, "jti" => jti}) when is_function(revoked?, 2) do
+    if revoked?.(space, jti), do: {:error, :credential_revoked}, else: :ok
   end
 
   defp credential_from_authorization(value) when is_binary(value) do
