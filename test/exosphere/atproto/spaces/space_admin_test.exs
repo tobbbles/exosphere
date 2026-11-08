@@ -228,6 +228,64 @@ defmodule Exosphere.ATProto.Spaces.SpaceAdminTest do
     end
   end
 
+  describe "writer set, migration and discovery" do
+    test "remove_writer posts the DID to space.removeWriter" do
+      Process.put(:post_response, ok(%{}))
+      assert :ok = Space.remove_writer(@pds, @space, "did:plc:spammer", @headers, http: SpaceHTTP)
+      {url, opts} = Process.get({:post, self()})
+      assert url == @pds <> "/xrpc/com.atproto.space.removeWriter"
+      assert opts[:json] == %{"space" => @space, "did" => "did:plc:spammer"}
+    end
+
+    test "export_space_meta returns the archive bytes; import_space_meta uploads them" do
+      star = <<0x2A, 0x6C, 0x01, 0x00, 9>>
+      Process.put(:get_response, {:ok, %{status: 200, headers: [], body: star}})
+      assert {:ok, ^star} = Space.export_space_meta(@pds, @space, @headers, http: SpaceHTTP)
+      {url, _} = Process.get({:get, self()})
+      assert url =~ "/xrpc/com.atproto.space.exportSpaceMeta?space="
+
+      Process.put(:post_response, ok(%{}))
+      assert :ok = Space.import_space_meta(@pds, star, @headers, http: SpaceHTTP)
+      {url, opts} = Process.get({:post, self()})
+      assert url == @pds <> "/xrpc/com.atproto.space.importSpaceMeta"
+      assert opts[:body] == star
+      assert opts[:content_type] == "application/octet-stream"
+
+      Process.put(
+        :post_response,
+        {:ok, %{status: 400, headers: [], body: %{"error" => "UnsupportedPolicy"}}}
+      )
+
+      assert {:error, {:http_error, 400, "UnsupportedPolicy"}} =
+               Space.import_space_meta(@pds, star, @headers, http: SpaceHTTP)
+    end
+
+    test "spaces_alpha?/2 reads describeServer's flag" do
+      Process.put(:get_response, ok(%{"did" => "did:web:pds", "spacesAlpha" => true}))
+      assert {:ok, true} = Space.spaces_alpha?(@pds, http: SpaceHTTP)
+      {url, _} = Process.get({:get, self()})
+      assert url == @pds <> "/xrpc/com.atproto.server.describeServer"
+
+      Process.put(:get_response, ok(%{"did" => "did:web:pds"}))
+      assert {:ok, false} = Space.spaces_alpha?(@pds, http: SpaceHTTP)
+    end
+
+    test "the published policy and member records" do
+      assert Policy.record(Policy.personal()) == %{
+               "$type" => "com.atproto.space.policy",
+               "policy" => %{"$type" => "com.atproto.personalspace.policy"}
+             }
+
+      assert Policy.record_key() == "self"
+
+      assert Memberspace.member_record(true, false) == %{
+               "$type" => "com.atproto.memberspace.member",
+               "read" => true,
+               "write" => false
+             }
+    end
+  end
+
   describe "Memberspace" do
     test "put_member sends read/write (default true) to memberspace.putMember" do
       Process.put(:post_response, ok(%{}))

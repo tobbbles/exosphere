@@ -105,4 +105,62 @@ defmodule Exosphere.ATProto.Spaces.Space do
 
     XRPC.query(pds, "#{@nsid}.listSpaces", params, auth, opts)
   end
+
+  @doc """
+  Remove an account from the space's writer set (`com.atproto.space.removeWriter`,
+  atproto `937ddb9`), so `listRepos` no longer lists it. Idempotent; the
+  account is tracked again if it later writes while still authorized. Requires
+  auth as an account that may manage the space (`manage=update`).
+  """
+  @spec remove_writer(String.t(), String.t(), String.t(), keyword(), keyword()) ::
+          :ok | {:error, term()}
+  def remove_writer(host, space_ref, did, auth, opts \\ []) do
+    body = %{"space" => space_ref, "did" => did}
+
+    with {:ok, _} <- XRPC.procedure(host, "#{@nsid}.removeWriter", body, auth, opts), do: :ok
+  end
+
+  @doc """
+  Download a space's host-side state as a space meta archive
+  (`com.atproto.space.exportSpaceMeta`, atproto `35c0cf1`), for account
+  migration: `{:ok, star_bytes}`, decodable with `Spaces.SpaceMeta.decode/1`.
+  Requires the owner's `read_self` grant.
+  """
+  @spec export_space_meta(String.t(), String.t(), keyword(), keyword()) ::
+          {:ok, binary()} | {:error, term()}
+  def export_space_meta(host, space_ref, auth, opts \\ []) do
+    XRPC.query_bytes(host, "#{@nsid}.exportSpaceMeta", %{"space" => space_ref}, auth, opts)
+  end
+
+  @doc """
+  Import a space from a space meta archive (`com.atproto.space.importSpaceMeta`)
+  on the account's new host, replacing whatever it holds for that space. The
+  space must be anchored on the authenticated account; this must come before
+  importing the account's own repo in the space (`Spaces.Writes.import_repo/4`).
+  Requires `manage=create` and `manage=update`. A policy the host does not
+  implement is refused with `UnsupportedPolicy`.
+  """
+  @spec import_space_meta(String.t(), binary(), keyword(), keyword()) :: :ok | {:error, term()}
+  def import_space_meta(pds, star, auth, opts \\ []) when is_binary(star) do
+    with {:ok, _} <- XRPC.procedure_bytes(pds, "#{@nsid}.importSpaceMeta", star, auth, opts),
+         do: :ok
+  end
+
+  @doc """
+  Whether a PDS advertises the Spaces alpha: `spacesAlpha: true` in its
+  unauthenticated `com.atproto.server.describeServer` response (atproto
+  `fb2cf00`). The flag is an implementation signal, not a lexicon field, and
+  will go away when spaces leave alpha; treat `{:ok, false}` as "unknown or
+  no", not as a refusal.
+  """
+  @spec spaces_alpha?(String.t(), keyword()) :: {:ok, boolean()} | {:error, term()}
+  def spaces_alpha?(pds, opts \\ []) do
+    http = Keyword.get(opts, :http, Exosphere.ATProto.HTTP)
+    url = "#{String.trim_trailing(pds, "/")}/xrpc/com.atproto.server.describeServer"
+
+    case XRPC.classify(http.get(url, Exosphere.ATProto.HTTP.take_request_opts(opts))) do
+      {:ok, body} -> {:ok, Map.get(body, "spacesAlpha") == true}
+      error -> error
+    end
+  end
 end

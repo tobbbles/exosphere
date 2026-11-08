@@ -24,6 +24,7 @@ defmodule Exosphere.ATProto.Spaces.Writes do
 
   alias Exosphere.ATProto.HTTP
   alias Exosphere.ATProto.OAuth.{Request, Session}
+  alias Exosphere.ATProto.Spaces.XRPC
 
   @nsid "com.atproto.space"
 
@@ -118,6 +119,37 @@ defmodule Exosphere.ATProto.Spaces.Writes do
       auth,
       opts
     )
+  end
+
+  @doc """
+  Delete every record in the caller's repo in the space
+  (`com.atproto.space.clearRecords`, atproto `840c41e`). The repo advances to
+  a new rev with the empty repo's digest and its oplog is cleared; in the
+  authority's own repo the records the host publishes from the space's
+  configuration (`com.atproto.space.policy`, `com.atproto.memberspace.member`)
+  are kept. Succeeds whether or not there was anything to delete.
+  """
+  @spec clear_records(String.t(), String.t(), String.t(), auth(), keyword()) ::
+          :ok | {:error, term()}
+  def clear_records(pds, space_ref, repo_did, auth, opts \\ []) do
+    body = %{"space" => space_ref, "repo" => repo_did}
+
+    with {:ok, _} <- XRPC.procedure(pds, "#{@nsid}.clearRecords", body, auth, opts), do: :ok
+  end
+
+  @doc """
+  Import the caller's repo in a space from a STAR archive as `getRepo` serves
+  it (`com.atproto.space.importRepo`, atproto `35c0cf1`), during account
+  migration, replacing whatever the host holds for that repo. The archive's
+  commit names the space and must name the account as its repo; check it
+  locally first with `Spaces.Repo.read/1`. If the account is the space's
+  authority, import the space meta archive first
+  (`Spaces.Space.import_space_meta/4`). Blobs are uploaded separately.
+  Requires a `create` grant for every collection in the archive.
+  """
+  @spec import_repo(String.t(), binary(), auth(), keyword()) :: :ok | {:error, term()}
+  def import_repo(pds, star, auth, opts \\ []) when is_binary(star) do
+    with {:ok, _} <- XRPC.procedure_bytes(pds, "#{@nsid}.importRepo", star, auth, opts), do: :ok
   end
 
   @doc """

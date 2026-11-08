@@ -41,7 +41,7 @@ regeneration diff on any other file means the reference moved.
 | `commit-mac.json` | KEM shared secrets (RFC 9180 DHKEM(P-256) via the reference's `decapsulate`, from fixed ephemeral keys), `defs#commit` fields and `data`, commit MACs (incl. a 532-byte space URI), record MACs over URI + binary CID, and the exact `Atproto-Space-Want-Mac` / `Atproto-Space-Mac` header strings | `Spaces.{Kem,Commit,Mac}`, second encoder |
 | `repo-star.json` | The `atproto-space-repo` STAR archive: metadata, strict key-byte pair order (the record set contains a pair whose length-first and bytewise orders differ), per-record DRISL bytes, the empty repo | `Spaces.Repo`, `Star`, second encoder |
 | `credentials.json` | The three token classes (`typ`/`kid`, claims, TTLs, `cnf.kid`, `jti`, `#atproto_pds` audience) by shape and signature; the RFC 9421 HTTP message signature presenting a credential, byte-for-byte | `Spaces.{Token,HttpSignature}` |
-| `space-meta.json` | An `atproto-space-meta` archive: policy, memberspace policy state, writer set | second encoder |
+| `space-meta.json` | An `atproto-space-meta` archive: policy, memberspace policy state, writer set | `Spaces.SpaceMeta`, second encoder |
 
 The corpus is checked in (not fetched) so the suite runs offline and
 deterministically in CI, mirroring the `fixtures/interop` convention. The

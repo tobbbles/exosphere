@@ -125,6 +125,20 @@ defmodule Exosphere.ATProto.Spaces.Policy do
   def decode(%{"$type" => type} = policy) when is_binary(type), do: {:ok, {:unknown, policy}}
   def decode(_), do: {:error, :invalid_policy}
 
+  @doc """
+  The `com.atproto.space.policy` record (key `self`) a PDS publishes in the
+  authority's own repo when the policy sets `publish_policy` (proposal 0016,
+  "Publishing to readers"; atproto `7992095`). Only authoritative in the
+  authority's repo — any member can write a record of this type to their own.
+  """
+  @spec record(t()) :: map()
+  def record(%{"$type" => _} = policy),
+    do: %{"$type" => "com.atproto.space.policy", "policy" => policy}
+
+  @doc "The record key of the published policy record."
+  @spec record_key() :: String.t()
+  def record_key, do: "self"
+
   defp put_opt(map, _key, nil), do: map
   defp put_opt(map, key, value), do: Map.put(map, key, value)
 end

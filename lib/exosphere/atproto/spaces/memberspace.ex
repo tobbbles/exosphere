@@ -43,6 +43,15 @@ defmodule Exosphere.ATProto.Spaces.Memberspace do
     with {:ok, _} <- XRPC.procedure(pds, "#{@nsid}.putMember", body, auth, opts), do: :ok
   end
 
+  @doc """
+  The `com.atproto.memberspace.member` record a PDS publishes (keyed by the
+  member's DID) in the authority's repo when the policy sets
+  `publish_members`. Only authoritative in the authority's repo.
+  """
+  @spec member_record(boolean(), boolean()) :: map()
+  def member_record(read, write) when is_boolean(read) and is_boolean(write),
+    do: %{"$type" => "#{@nsid}.member", "read" => read, "write" => write}
+
   @doc "Remove a member (`com.atproto.memberspace.removeMember`)."
   @spec remove_member(String.t(), String.t(), String.t(), keyword(), keyword()) ::
           :ok | {:error, term()}
