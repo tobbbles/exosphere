@@ -182,8 +182,12 @@ defmodule Exosphere.ATProto.Firehose.Message do
 
   Takes the same structured shape `decode/2` produces and returns
   `{:ok, type, payload}`, so `decode/2` and `encode/1` round-trip. Bytes fields
-  (`blocks`) are tagged as CBOR byte strings; `nil` optional fields are written
-  as CBOR null rather than omitted, matching what the reference producer emits.
+  (`blocks`) are tagged as CBOR byte strings. A `nil` *optional* field
+  (`prevData` on `#commit`, `handle` on `#identity`, `status` on `#account`,
+  `message` on `#info`) is omitted from the payload, as the reference producer
+  does: those fields are not nullable in the lexicon, so a validating consumer
+  rejects an explicit CBOR null. `since` on `#commit` is the exception — it is
+  required *and* nullable, so a first commit carries `since: null`.
 
   ## Examples
 
@@ -206,7 +210,6 @@ defmodule Exosphere.ATProto.Firehose.Message do
         "since" => Map.get(message, :since),
         "blocks" => bytes(Map.get(message, :blocks, <<>>)),
         "ops" => ops,
-        "prevData" => Map.get(message, :prev_data),
         # All three deprecated but still required by the lexicon: a producer
         # sets rebase and tooBig false and blobs empty, as the reference
         # sequencer does. A consumer validating against the lexicon (the
@@ -217,7 +220,7 @@ defmodule Exosphere.ATProto.Firehose.Message do
         "time" => Map.get(message, :time)
       }
 
-      {:ok, "#commit", payload}
+      {:ok, "#commit", put_present(payload, "prevData", Map.get(message, :prev_data))}
     end
   end
 
@@ -234,31 +237,34 @@ defmodule Exosphere.ATProto.Firehose.Message do
 
   def encode(%{type: :identity} = message) do
     {:ok, "#identity",
-     %{
-       "seq" => Map.get(message, :seq),
-       "did" => Map.get(message, :did),
-       "handle" => Map.get(message, :handle),
-       "time" => Map.get(message, :time)
-     }}
+     put_present(
+       %{
+         "seq" => Map.get(message, :seq),
+         "did" => Map.get(message, :did),
+         "time" => Map.get(message, :time)
+       },
+       "handle",
+       Map.get(message, :handle)
+     )}
   end
 
   def encode(%{type: :account} = message) do
     {:ok, "#account",
-     %{
-       "seq" => Map.get(message, :seq),
-       "did" => Map.get(message, :did),
-       "active" => Map.get(message, :active),
-       "status" => Map.get(message, :status),
-       "time" => Map.get(message, :time)
-     }}
+     put_present(
+       %{
+         "seq" => Map.get(message, :seq),
+         "did" => Map.get(message, :did),
+         "active" => Map.get(message, :active),
+         "time" => Map.get(message, :time)
+       },
+       "status",
+       Map.get(message, :status)
+     )}
   end
 
   def encode(%{type: :info} = message) do
     {:ok, "#info",
-     %{
-       "name" => Map.get(message, :name),
-       "message" => Map.get(message, :message)
-     }}
+     put_present(%{"name" => Map.get(message, :name)}, "message", Map.get(message, :message))}
   end
 
   def encode(%{type: type}), do: {:error, {:unencodable_message, type}}
@@ -300,6 +306,10 @@ defmodule Exosphere.ATProto.Firehose.Message do
   end
 
   defp encode_op(op), do: {:error, {:invalid_op, op}}
+
+  # Optional, non-nullable lexicon fields: absent means omitted, never null.
+  defp put_present(payload, _key, nil), do: payload
+  defp put_present(payload, key, value), do: Map.put(payload, key, value)
 
   defp bytes(value) when is_binary(value), do: %CBOR.Tag{tag: :bytes, value: value}
   defp bytes(%CBOR.Tag{tag: :bytes} = tagged), do: tagged

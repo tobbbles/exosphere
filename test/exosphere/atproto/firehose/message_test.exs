@@ -212,6 +212,40 @@ defmodule Exosphere.ATProto.Firehose.MessageTest do
       end
     end
 
+    test "omits absent optional fields instead of writing null" do
+      # prevData, handle, status and message are optional but not nullable in
+      # the lexicon: a validating consumer rejects an explicit null.
+      {:ok, "#commit", commit} =
+        Message.encode(%{type: :commit, seq: 1, repo: "did:plc:a", ops: [], prev_data: nil})
+
+      {:ok, "#identity", identity} =
+        Message.encode(%{type: :identity, seq: 2, did: "did:plc:a", handle: nil, time: "t"})
+
+      {:ok, "#account", account} =
+        Message.encode(%{type: :account, seq: 3, did: "did:plc:a", active: true, time: "t"})
+
+      {:ok, "#info", info} = Message.encode(%{type: :info, name: "OutdatedCursor"})
+
+      refute Map.has_key?(commit, "prevData")
+      refute Map.has_key?(identity, "handle")
+      refute Map.has_key?(account, "status")
+      refute Map.has_key?(info, "message")
+
+      # ...and the absent fields still decode to nil.
+      assert {:ok, %{prev_data: nil}} = Message.decode("#commit", transcode(commit))
+      assert {:ok, %{handle: nil}} = Message.decode("#identity", transcode(identity))
+      assert {:ok, %{status: nil}} = Message.decode("#account", transcode(account))
+      assert {:ok, %{message: nil}} = Message.decode("#info", transcode(info))
+    end
+
+    test "keeps since as an explicit null on a first commit" do
+      # `since` is required and nullable: absent and null are different.
+      {:ok, "#commit", payload} =
+        Message.encode(%{type: :commit, seq: 1, repo: "did:plc:a", ops: [], since: nil})
+
+      assert Map.fetch(payload, "since") == {:ok, nil}
+    end
+
     test "refuses a message it cannot put on the wire" do
       # `#handle` and `#tombstone` are decode-only: they are deprecated, and a
       # producer emitting them today would be wrong.
