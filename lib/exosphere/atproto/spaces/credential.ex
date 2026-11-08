@@ -154,13 +154,12 @@ defmodule Exosphere.ATProto.Spaces.Credential do
   Two key sources:
 
   - `verify(jwt, %Identity.Document{})` — resolve through the authority's DID
-    document, honouring the credential's `kid`: the verification method the
-    header names, and only `#atproto` or `#atproto_space` (via
-    `Document.get_space_signing_key/2`). A credential carrying no `kid` at all
-    falls back to guessing — space key, then `#atproto`.
+    document: the `#atproto` key, which is the only `kid` a credential may
+    carry since atproto `432ef66` (`Document.get_space_signing_key/2`).
   - `verify(jwt, get_signing_key: fun)` — an `(iss, kid, force_refresh)`
     callback for hosts with their own (cached) key source; see
-    `Token.verify/3`. Honour the `kid` there too.
+    `Token.verify/3`. The `kid` it receives has already been checked to be
+    `"#atproto"`.
 
   Options: `:sub` (the expected space URI), `:now`.
   """

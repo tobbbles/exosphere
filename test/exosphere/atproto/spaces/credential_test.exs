@@ -319,29 +319,12 @@ defmodule Exosphere.ATProto.Spaces.CredentialTest do
 
   # -- the credential's `kid` -----------------------------------------------
   #
-  # `kid` is the class *default*, not a constant: the header must name the
-  # fragment the signing key was published under, because a verifier that
-  # honours `kid` resolves that verification method and nothing else. The
-  # authority in these tests publishes both, which is the only configuration
-  # where guessing and honouring differ.
+  # Since atproto `432ef66` a credential's `kid` is exactly `#atproto`: the
+  # dedicated `#atproto_space` key is gone, and a verifier resolves the
+  # authority's account key and nothing else.
 
-  test "a credential signed with a published space key names #atproto_space", ctx do
-    {:ok, space_jwk} = JWK.generate(:secp256k1)
-    credential = signed_credential(space_jwk, ctx.dpop_key, kid: "#atproto_space")
-
-    assert {:ok, %{header: header}} = Token.parse(:credential, credential)
-    assert header["kid"] == "#atproto_space"
-
-    doc = did_document(@authority, ctx.authority, [{"#atproto_space", space_jwk}])
-    assert {:ok, %{payload: payload}} = Credential.verify(credential, doc)
-    assert payload["sub"] == @space
-  end
-
-  test "verify resolves #atproto when that is the key the credential names", ctx do
-    # An authority whose space signing key *is* its account key — every
-    # authority hosted on a PDS, and what the reference does — signs with
-    # `#atproto` even where a space key is also published. Preferring the
-    # space key would fail a perfectly good signature.
+  test "verify resolves the #atproto key even where a stale #atproto_space is published",
+       ctx do
     {:ok, space_jwk} = JWK.generate(:secp256k1)
     credential = credential_jwt(ctx, ctx.dpop_key)
     doc = did_document(@authority, ctx.authority, [{"#atproto_space", space_jwk}])
@@ -349,9 +332,7 @@ defmodule Exosphere.ATProto.Spaces.CredentialTest do
     assert {:ok, %{payload: %{"iss" => @authority}}} = Credential.verify(credential, doc)
   end
 
-  test "verify rejects a credential whose kid names a key it was not signed with", ctx do
-    # Signed with the space key, stamped `#atproto`: the mismatch a verifier
-    # that ignores `kid` never notices.
+  test "verify rejects a credential signed with a key other than #atproto", ctx do
     {:ok, space_jwk} = JWK.generate(:secp256k1)
     credential = signed_credential(space_jwk, ctx.dpop_key, [])
     doc = did_document(@authority, ctx.authority, [{"#atproto_space", space_jwk}])
@@ -359,29 +340,39 @@ defmodule Exosphere.ATProto.Spaces.CredentialTest do
     assert {:error, :invalid_signature} = Credential.verify(credential, doc)
   end
 
-  test "verify refuses a kid naming an unrelated verification method", ctx do
-    credential = signed_credential(ctx.authority, ctx.dpop_key, kid: "#atproto_labeler")
+  test "sign refuses a kid override for a credential", ctx do
+    {:ok, jkt} = JWK.thumbprint(JWK.to_public(ctx.dpop_key))
 
-    assert {:error, :unsupported_space_kid} =
-             Credential.verify(credential, did_document(@authority, ctx.authority))
+    assert {:error, :fixed_kid} =
+             Token.sign(
+               :credential,
+               [iss: @authority, sub: @space, dpop_jkt: jkt, kid: "#atproto_space"],
+               ctx.authority
+             )
   end
 
-  test "verify reports a kid the authority never published", ctx do
-    {:ok, space_jwk} = JWK.generate(:secp256k1)
-    credential = signed_credential(space_jwk, ctx.dpop_key, kid: "#atproto_space")
+  test "verify refuses a credential whose header names any other kid", ctx do
+    {:ok, jkt} = JWK.thumbprint(JWK.to_public(ctx.dpop_key))
 
-    assert {:error, :not_found} =
-             Credential.verify(credential, did_document(@authority, ctx.authority))
-  end
+    for kid <- ["#atproto_space", "#atproto_labeler", @authority <> "#atproto", nil] do
+      header =
+        %{"alg" => "ES256K", "typ" => "atproto-space-credential+jwt"}
+        |> then(&if(kid, do: Map.put(&1, "kid", kid), else: &1))
 
-  test "verify accepts an absolute kid, not only a bare fragment", ctx do
-    {:ok, space_jwk} = JWK.generate(:secp256k1)
+      payload = %{
+        "iss" => @authority,
+        "sub" => @space,
+        "cnf" => %{"jkt" => jkt},
+        "iat" => @now,
+        "exp" => @now + 600,
+        "jti" => "j"
+      }
 
-    credential =
-      signed_credential(space_jwk, ctx.dpop_key, kid: @authority <> "#atproto_space")
+      {:ok, jwt} = Exosphere.ATProto.OAuth.JWS.sign(ctx.authority, header, payload)
 
-    doc = did_document(@authority, ctx.authority, [{"#atproto_space", space_jwk}])
-    assert {:ok, _} = Credential.verify(credential, doc)
+      assert {:error, :invalid_kid} =
+               Credential.verify(jwt, did_document(@authority, ctx.authority))
+    end
   end
 
   # -- request options reach the transport ----------------------------------

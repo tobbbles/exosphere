@@ -7,29 +7,22 @@ defmodule Exosphere.ATProto.Spaces.Token do
   | Class | typ | signed by | TTL | aud | binding |
   |-------|-----|-----------|-----|-----|---------|
   | `:delegation` | `atproto-space-delegation+jwt` | the user's PDS (`#atproto` key) | 60s, single-use | required (the space host) | — |
-  | `:credential` | `atproto-space-credential+jwt` | the space authority (`#atproto` by default — see below) | 2h, multi-use | none (it is presented to every repo host in the space) | DPoP key via `cnf.jkt` |
+  | `:credential` | `atproto-space-credential+jwt` | the space authority (`#atproto` key) | 2h, multi-use | none (it is presented to every repo host in the space) | DPoP key via `cnf.jkt` |
   | `:client_attestation` | `atproto-client-attestation+jwt` | the app's client-authentication key | 60s, single-use | required (the space host) | — |
 
-  ## The `kid` is a default, not a constant
+  ## The `kid` is fixed for user and authority tokens
 
-  The key ids above are what `sign/3` stamps when the caller says nothing.
-  They are not a property of the token class, and `sign/3` does not inspect
-  the key it was handed: **a header's `kid` must name the fragment its signing
-  key was actually published under**, because a verifier that honours `kid`
-  resolves that verification method and nothing else.
+  Delegation tokens and space credentials are signed with the issuer's
+  account signing key and carry `kid: "#atproto"` — exactly that string.
+  Until atproto `432ef66` (2026-10-20) an authority could sign credentials
+  with a dedicated `#atproto_space` key and say so in the `kid`; upstream
+  dropped that key, and the reference verifier now rejects any other `kid`.
+  So does this module: `sign/3` refuses a `:kid` option for those two classes
+  (`{:error, :fixed_kid}`), and `parse/2` refuses a header whose `kid` is not
+  `"#atproto"` (`{:error, :invalid_kid}`).
 
-  `#atproto` is the credential default because a space authority's signing key
-  usually *is* the account's `#atproto` key — the case for any authority
-  hosted on a PDS, and what the reference implementation does. `#atproto_space`
-  is an optional, space-tokens-only verification method; an authority that
-  publishes one and signs with it must say so:
-
-      Token.sign(:credential, [iss: authority, sub: space, dpop_jkt: jkt,
-                               kid: "#atproto_space"], space_jwk)
-
-  Getting this wrong is invisible against a verifier that ignores `kid` (as
-  passing `fn _iss, _kid, _refresh -> ... end` does) and fails against one
-  that does not.
+  Client attestations are the exception: their `kid` names a key in the
+  client's published JWKS, and is the caller's to pass (or omit).
 
   Signing and verification go through the OAuth client's JWS machinery
   (`Exosphere.ATProto.OAuth.JWS`, built for `private_key_jwt` client
@@ -83,9 +76,6 @@ defmodule Exosphere.ATProto.Spaces.Token do
       require_cnf: false,
       single_use: true
     },
-    # An authority that publishes a dedicated `#atproto_space` key signs with
-    # it and passes that `kid`. Absent one, the space signing key is the
-    # account's `#atproto` key — the case for any authority on a PDS.
     credential: %{
       typ: "atproto-space-credential+jwt",
       kid: "#atproto",
@@ -106,11 +96,14 @@ defmodule Exosphere.ATProto.Spaces.Token do
 
   @doc """
   How a space authority is addressed as the audience of a delegation token or
-  client attestation: the authority DID plus the space-host service fragment.
-  This names the *audience*, not necessarily where requests are sent.
+  client attestation: the authority DID plus its PDS service fragment. The
+  space host is the authority's PDS, like any other atproto account.
+
+  This was `#atproto_space_host` until atproto `432ef66` (2026-10-20); a
+  current host refuses a token addressed to the old fragment.
   """
   @spec space_host_aud(String.t()) :: String.t()
-  def space_host_aud(space_did), do: space_did <> "#atproto_space_host"
+  def space_host_aud(space_did), do: space_did <> "#atproto_pds"
 
   @doc """
   Sign a space token of `class` with a private JWK.
@@ -120,16 +113,18 @@ defmodule Exosphere.ATProto.Spaces.Token do
   thumbprint of the DPoP key the credential binds to). `:iat`, `:jti`, and
   `:expires_in` may be pinned for tests.
 
-  `:kid` overrides the class default, and must be passed whenever
-  `private_jwk` was published under some other fragment — see "The `kid` is a
-  default, not a constant" above. `kid: nil` omits the header entirely.
+  `:kid` is accepted for client attestations only (the JWKS key id, omitted
+  when not given); delegation tokens and credentials always carry
+  `"#atproto"` and refuse the option with `{:error, :fixed_kid}` — see "The
+  `kid` is fixed for user and authority tokens" above.
   """
   @spec sign(class(), sign_opts(), private_jwk()) :: {:ok, binary()} | {:error, term()}
   def sign(class, opts, private_jwk) when is_map_key(@classes, class) do
     spec = @classes[class]
     opts = Map.new(opts)
 
-    with :ok <- require_opt(opts, :aud, spec.require_aud, :missing_aud),
+    with :ok <- check_kid_opt(opts, spec.kid),
+         :ok <- require_opt(opts, :aud, spec.require_aud, :missing_aud),
          :ok <- require_opt(opts, :dpop_jkt, spec.require_cnf, :missing_cnf),
          :ok <- require_opt(opts, :iss, true, :missing_iss),
          :ok <- require_opt(opts, :sub, true, :missing_sub) do
@@ -138,7 +133,7 @@ defmodule Exosphere.ATProto.Spaces.Token do
 
       header =
         %{"typ" => spec.typ, "alg" => alg(private_jwk)}
-        |> maybe_put("kid", Map.get(opts, :kid, spec.kid))
+        |> maybe_put("kid", spec.kid || Map.get(opts, :kid))
 
       payload =
         %{
@@ -169,7 +164,8 @@ defmodule Exosphere.ATProto.Spaces.Token do
 
     with {:ok, header, payload} <- JWS.decode(jwt),
          :ok <- check_typ(header, spec.typ),
-         :ok <- check_alg(header) do
+         :ok <- check_alg(header),
+         :ok <- check_kid(header, spec.kid) do
       with :ok <- required_string(payload, "iss", :missing_iss),
            :ok <- required_string(payload, "sub", :missing_sub),
            :ok <- required_int(payload, "exp", :missing_exp),
@@ -270,6 +266,15 @@ defmodule Exosphere.ATProto.Spaces.Token do
   end
 
   defp attestation_subject(_, _), do: :ok
+
+  # A class with a fixed kid (delegation, credential) carries exactly it.
+  defp check_kid(_header, nil), do: :ok
+  defp check_kid(%{"kid" => kid}, expected) when kid == expected, do: :ok
+  defp check_kid(_header, _expected), do: {:error, :invalid_kid}
+
+  defp check_kid_opt(opts, nil) when is_map(opts), do: :ok
+  defp check_kid_opt(opts, _fixed) when is_map_key(opts, :kid), do: {:error, :fixed_kid}
+  defp check_kid_opt(_opts, _fixed), do: :ok
 
   defp check_typ(%{"typ" => typ}, expected) when typ == expected, do: :ok
   defp check_typ(_, _), do: {:error, :wrong_token_type}

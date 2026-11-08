@@ -37,7 +37,7 @@ defmodule Exosphere.ATProto.Spaces.TokenTest do
   end
 
   test "space_host_aud/1 addresses the authority's space host" do
-    assert Token.space_host_aud("did:plc:abc") == "did:plc:abc#atproto_space_host"
+    assert Token.space_host_aud("did:plc:abc") == "did:plc:abc#atproto_pds"
   end
 
   describe "delegation token" do
@@ -69,7 +69,7 @@ defmodule Exosphere.ATProto.Spaces.TokenTest do
       assert {:error, :bad_audience} =
                Token.verify(:delegation, delegation(user),
                  get_signing_key: key_fn(user),
-                 aud: "did:example:other#atproto_space_host",
+                 aud: "did:example:other#atproto_pds",
                  now: @now
                )
     end
@@ -147,7 +147,7 @@ defmodule Exosphere.ATProto.Spaces.TokenTest do
       {:ok, jwt} =
         Token.sign(
           :credential,
-          [iss: @authority, sub: @space, dpop_jkt: @dpop_jkt, iat: @now, kid: "#atproto_space"],
+          [iss: @authority, sub: @space, dpop_jkt: @dpop_jkt, iat: @now],
           authority
         )
 
@@ -155,7 +155,7 @@ defmodule Exosphere.ATProto.Spaces.TokenTest do
                Token.verify(:credential, jwt, get_signing_key: key_fn(authority), now: @now)
 
       assert header["typ"] == "atproto-space-credential+jwt"
-      assert header["kid"] == "#atproto_space"
+      assert header["kid"] == "#atproto"
       assert header["alg"] == "ES256K"
       assert payload["cnf"] == %{"jkt" => @dpop_jkt}
       assert payload["exp"] - payload["iat"] == 7200
