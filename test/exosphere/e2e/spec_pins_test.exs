@@ -30,37 +30,44 @@ defmodule Exosphere.SpecPinsTest do
   @raw "https://raw.githubusercontent.com/bluesky-social/atproto/#{@branch}/lexicons"
 
   # What `spaces/alpha` pinned against, recorded so drift is legible.
-  @pinned_commit "679724a"
+  @pinned_commit "98ef3a6"
 
   # Every space method this library calls, with the parameters it sends. Kept
   # here by hand rather than derived from the source: the point is to state
   # what we believe the wire contract to be, and have the lexicon disagree.
   @calls [
     {"com.atproto.space.getDelegationToken", :query, ["space"]},
-    {"com.atproto.space.getSpaceCredential", :procedure, ["space", "clientAttestation"]},
+    {"com.atproto.space.getSpaceCredential", :procedure,
+     ["space", "credentialKid", "delegationToken", "clientAttestation"]},
     {"com.atproto.space.listRepos", :query, ["space", "limit", "cursor"]},
     {"com.atproto.space.getLatestCommit", :query, ["space", "repo"]},
     {"com.atproto.space.listRepoOps", :query,
      ["space", "repo", "since", "cursor", "limit", "excludeValues"]},
-    {"com.atproto.space.listRecords", :query, ["space", "repo", "collection", "cursor", "limit"]},
+    {"com.atproto.space.listRecords", :query,
+     ["space", "repo", "collection", "cursor", "limit", "reverse", "excludeValues"]},
     {"com.atproto.space.getRecord", :query, ["space", "repo", "collection", "rkey"]},
     {"com.atproto.space.getRepo", :query, ["space", "repo"]},
     {"com.atproto.space.registerNotify", :procedure, ["space", "service"]},
     {"com.atproto.space.unregisterNotify", :procedure, ["space", "service"]},
+    {"com.atproto.space.notifyCredentialRevoked", :procedure, ["space", "credentials"]},
     {"com.atproto.space.createRecord", :procedure, ["space", "collection", "rkey", "record"]},
     {"com.atproto.space.putRecord", :procedure, ["space", "collection", "rkey", "record"]},
     {"com.atproto.space.deleteRecord", :procedure, ["space", "collection", "rkey"]},
     {"com.atproto.space.applyWrites", :procedure, ["space", "writes"]},
-    {"com.atproto.simplespace.createSpace", :procedure,
-     ["spaceType", "skey", "readPolicy", "writePolicy", "appAccess"]},
-    {"com.atproto.simplespace.updateSpace", :procedure,
-     ["space", "readPolicy", "writePolicy", "appAccess"]},
-    {"com.atproto.simplespace.deleteSpace", :procedure, ["space"]},
-    {"com.atproto.simplespace.getSpace", :query, ["space"]},
-    {"com.atproto.simplespace.putMember", :procedure, ["space", "did", "read", "write"]},
-    {"com.atproto.simplespace.removeMember", :procedure, ["space", "did"]},
-    {"com.atproto.simplespace.listMembers", :query, ["space", "limit", "cursor"]},
-    {"com.atproto.simplespace.checkUserAccess", :query, ["space", "user", "clientId"]}
+    {"com.atproto.space.clearRecords", :procedure, ["space", "repo"]},
+    {"com.atproto.space.importRepo", :procedure, []},
+    {"com.atproto.space.createSpace", :procedure, ["spaceType", "skey", "policy"]},
+    {"com.atproto.space.updateSpace", :procedure, ["space", "policy"]},
+    {"com.atproto.space.deleteSpace", :procedure, ["space"]},
+    {"com.atproto.space.getSpace", :query, ["space"]},
+    {"com.atproto.space.listSpaces", :query, ["spaceType", "did", "limit", "cursor"]},
+    {"com.atproto.space.removeWriter", :procedure, ["space", "did"]},
+    {"com.atproto.space.exportSpaceMeta", :query, ["space"]},
+    {"com.atproto.space.importSpaceMeta", :procedure, []},
+    {"com.atproto.memberspace.putMember", :procedure, ["space", "did", "read", "write"]},
+    {"com.atproto.memberspace.removeMember", :procedure, ["space", "did"]},
+    {"com.atproto.memberspace.listMembers", :query, ["space", "limit", "cursor"]},
+    {"com.atproto.managedspace.checkUserAccess", :query, ["space", "user", "access", "clientId"]}
   ]
 
   test "every space method this library calls still exists, with the parameters it sends" do
@@ -85,17 +92,35 @@ defmodule Exosphere.SpecPinsTest do
   test "the listRepos fields this library reads are still the ones the lexicon returns" do
     # The parameter check above only sees what we *send*. `Sync.list_repos/4`
     # also *reads* named fields off each entry, and a rename there is silent on
-    # our side — the old name simply decodes to nil. It has happened once
-    # (`rev` → `repoRev` + `spaceRev`, atproto 357c4cee9), so it is checked.
+    # our side — the old name simply decodes to nil. It has happened twice
+    # (`rev` → `repoRev` + `spaceRev`, atproto 357c4cee9; `hash` → `data`,
+    # 5791385), so it is checked.
     assert {:ok, lexicon} = fetch_lexicon("com.atproto.space.listRepos")
     repo = get_in(lexicon, ["defs", "repo"])
 
-    for field <- ["did", "repoRev", "spaceRev", "hash"] do
+    for field <- ["did", "repoRev", "spaceRev", "data"] do
       assert field in repo["required"],
              "com.atproto.space.listRepos#repo no longer requires `#{field}`, which list_repos/4 reads"
     end
 
-    assert repo["properties"]["hash"]["type"] == "bytes"
+    assert repo["properties"]["data"]["type"] == "bytes"
+  end
+
+  test "the commit fields this library reads are still the ones defs#commit requires" do
+    assert {:ok, lexicon} = fetch_lexicon("com.atproto.space.defs")
+    commit = get_in(lexicon, ["defs", "commit"])
+
+    assert Enum.sort(commit["required"]) == Enum.sort(~w(ver repo space rev data)),
+           "com.atproto.space.defs#commit changed shape: #{inspect(commit["required"])}"
+
+    assert commit["properties"]["data"]["type"] == "bytes"
+  end
+
+  test "the policy union still names the three baseline policies" do
+    assert {:ok, lexicon} = fetch_lexicon("com.atproto.space.createSpace")
+    refs = get_in(lexicon, ["defs", "main", "input", "schema", "properties", "policy", "refs"])
+
+    assert Enum.sort(refs) == Enum.sort(Exosphere.ATProto.Spaces.Policy.baseline_types())
   end
 
   test "the LtHash parameters in the proposal still match the implementation" do
