@@ -11,7 +11,7 @@ defmodule Exosphere.ATProto.Spaces.Policy do
   |---|---|---|
   | `personal/0` | `com.atproto.personalspace.policy` | only the authority |
   | `member/1` | `com.atproto.memberspace.policy` | members on the PDS's list (`Spaces.Memberspace`), or anyone with `public_read: true` |
-  | `managed/2` | `com.atproto.managedspace.policy` | whoever the managing app approves (`Spaces.Managedspace.check_user_access/6`) |
+  | `managed/2` | `com.atproto.managedspace.policy` | whoever the managing app approves (`Spaces.Managedspace.check_access/4`) |
 
   Until atproto `7992095` (2026-10-29) a simplespace had separate
   `readPolicy`/`writePolicy`/`appAccess` axes; they are folded into these
@@ -66,8 +66,9 @@ defmodule Exosphere.ATProto.Spaces.Policy do
 
   - `:public_read` — issue a credential to anyone, no delegation token needed
   - `:public_write` — track and forward any user's writes
-  - `:allowed_apps` — OAuth client IDs; when set, a credential is minted only
-    for a listed app, checked against the *attested* `client_id`
+  - `:allowed_apps` — OAuth client IDs (URIs, `format: uri` since atproto
+    4037310); when set, a credential is minted only for a listed app,
+    checked against the *attested* `client_id`
   - `:publish_policy` — publish the policy as a `com.atproto.space.policy`
     record in the authority's repo in the space
   - `:publish_members` — publish the member list as
@@ -85,8 +86,11 @@ defmodule Exosphere.ATProto.Spaces.Policy do
 
   @doc """
   `com.atproto.managedspace.policy`: each access decision is deferred to the
-  managing app — a service identifier (a DID with an optional fragment, e.g.
-  `"did:web:app.example.com#forum"`). Option: `:publish_policy`.
+  managing app — a `did#serviceId` reference, e.g.
+  `"did:web:app.example.com#forum"`. Since atproto `atproto-spaces-cleanup`
+  (4037310) the reference PDS resolves only the fragment form: a bare DID no
+  longer falls back to the DID's `#atproto_pds`, so every check against it
+  is denied. Option: `:publish_policy`.
   """
   @spec managed(String.t(), keyword()) :: t()
   def managed(managing_app, opts \\ []) when is_binary(managing_app) do

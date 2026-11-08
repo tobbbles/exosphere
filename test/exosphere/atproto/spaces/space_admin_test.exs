@@ -90,9 +90,9 @@ defmodule Exosphere.ATProto.Spaces.SpaceAdminTest do
 
   describe "Space" do
     test "create_space sends spaceType, skey and the policy union" do
-      Process.put(:post_response, ok(%{"uri" => @space}))
+      Process.put(:post_response, ok(%{"space" => @space}))
 
-      assert {:ok, %{"uri" => @space}} =
+      assert {:ok, %{"space" => @space}} =
                Space.create_space(
                  @pds,
                  "com.example.group",
@@ -118,7 +118,7 @@ defmodule Exosphere.ATProto.Spaces.SpaceAdminTest do
     end
 
     test "create_space omits an unset skey" do
-      Process.put(:post_response, ok(%{"uri" => @space}))
+      Process.put(:post_response, ok(%{"space" => @space}))
 
       assert {:ok, _} =
                Space.create_space(@pds, "com.example.group", Policy.personal(), @headers,
@@ -150,9 +150,9 @@ defmodule Exosphere.ATProto.Spaces.SpaceAdminTest do
     end
 
     test "get_space, delete_space and list_spaces hit the space namespace" do
-      Process.put(:get_response, ok(%{"uri" => @space, "policy" => Policy.personal()}))
+      Process.put(:get_response, ok(%{"space" => @space, "policy" => Policy.personal()}))
 
-      assert {:ok, %{"policy" => policy}} =
+      assert {:ok, %{"space" => @space, "policy" => policy}} =
                Space.get_space(@pds, @space, @headers, http: SpaceHTTP)
 
       assert {:ok, {:personal, _}} = Policy.decode(policy)
@@ -165,20 +165,69 @@ defmodule Exosphere.ATProto.Spaces.SpaceAdminTest do
       assert url == @pds <> "/xrpc/com.atproto.space.deleteSpace"
       assert opts[:json] == %{"space" => @space}
 
-      Process.put(:get_response, ok(%{"spaces" => [%{"uri" => @space}]}))
+      view = %{
+        "space" => @space,
+        "repoRev" => "3kbcq3p7ad2c2",
+        "spaceRev" => "3kbcq3p7ad3a2",
+        "data" => %{"$bytes" => Base.encode64(<<0::256>>)}
+      }
 
-      assert {:ok, %{"spaces" => [_]}} =
+      Process.put(:get_response, ok(%{"spaces" => [view]}))
+
+      assert {:ok, %{"spaces" => [^view]}} =
                Space.list_spaces(@pds, @headers,
                  http: SpaceHTTP,
                  space_type: "com.example.group",
+                 space_did: "did:plc:owner",
                  limit: 10
                )
 
       {url, _} = Process.get({:get, self()})
       assert url =~ "/xrpc/com.atproto.space.listSpaces?"
       assert url =~ "spaceType=com.example.group"
+      # The authority filter is `spaceDid` since atproto 4037310 (was `did`).
+      assert url =~ "spaceDid=did%3Aplc%3Aowner"
+      refute url =~ "&did="
       assert url =~ "limit=10"
       refute url =~ "cursor="
+    end
+
+    test "the 4037310 error names are typed" do
+      for {code, expected} <- [
+            {"NotAuthorized", :not_authorized},
+            {"InvalidCursor", :invalid_cursor}
+          ] do
+        Process.put(:get_response, {:ok, %{status: 400, headers: [], body: %{"error" => code}}})
+        assert {:error, ^expected} = Space.list_spaces(@pds, @headers, http: SpaceHTTP)
+      end
+
+      Process.put(
+        :post_response,
+        {:ok, %{status: 400, headers: [], body: %{"error" => "NotAuthorized"}}}
+      )
+
+      assert {:error, :not_authorized} =
+               Space.delete_space(@pds, @space, @headers, http: SpaceHTTP)
+
+      # The pre-rename name is just another error code now.
+      Process.put(
+        :post_response,
+        {:ok, %{status: 400, headers: [], body: %{"error" => "NotSpaceOwner"}}}
+      )
+
+      assert {:error, {:http_error, 400, "NotSpaceOwner"}} =
+               Space.delete_space(@pds, @space, @headers, http: SpaceHTTP)
+
+      for {code, expected} <- [
+            {"InvalidSpaceMeta", :invalid_space_meta},
+            {"InvalidRepoFile", :invalid_repo_file},
+            {"RepoMismatch", :repo_mismatch}
+          ] do
+        Process.put(:post_response, {:ok, %{status: 400, headers: [], body: %{"error" => code}}})
+
+        assert {:error, ^expected} =
+                 Space.import_space_meta(@pds, "star", @headers, http: SpaceHTTP)
+      end
     end
 
     test "refusals surface the host's error code; transport errors pass through" do
@@ -197,7 +246,7 @@ defmodule Exosphere.ATProto.Spaces.SpaceAdminTest do
     end
 
     test "request options reach the transport" do
-      Process.put(:get_response, ok(%{"uri" => @space, "policy" => Policy.personal()}))
+      Process.put(:get_response, ok(%{"space" => @space, "policy" => Policy.personal()}))
 
       assert {:ok, _} = Space.get_space(@pds, @space, @headers, http: SpaceHTTP, timeout: 1_500)
 
@@ -229,12 +278,13 @@ defmodule Exosphere.ATProto.Spaces.SpaceAdminTest do
   end
 
   describe "writer set, migration and discovery" do
-    test "remove_writer posts the DID to space.removeWriter" do
+    test "remove_writer posts the repo DID to space.removeWriter" do
       Process.put(:post_response, ok(%{}))
       assert :ok = Space.remove_writer(@pds, @space, "did:plc:spammer", @headers, http: SpaceHTTP)
       {url, opts} = Process.get({:post, self()})
       assert url == @pds <> "/xrpc/com.atproto.space.removeWriter"
-      assert opts[:json] == %{"space" => @space, "did" => "did:plc:spammer"}
+      # `repo`, not `did`, since atproto-spaces-lexicon-review.
+      assert opts[:json] == %{"space" => @space, "repo" => "did:plc:spammer"}
     end
 
     test "export_space_meta returns the archive bytes; import_space_meta uploads them" do
@@ -287,43 +337,69 @@ defmodule Exosphere.ATProto.Spaces.SpaceAdminTest do
   end
 
   describe "Memberspace" do
-    test "put_member sends read/write (default true) to memberspace.putMember" do
+    test "put_members sends a batch of defs#member entries (read/write default true)" do
       Process.put(:post_response, ok(%{}))
 
       assert :ok =
-               Memberspace.put_member(@pds, @space, "did:plc:friend", @headers, http: SpaceHTTP)
-
-      {url, opts} = Process.get({:post, self()})
-      assert url == @pds <> "/xrpc/com.atproto.memberspace.putMember"
-
-      assert opts[:json] == %{
-               "space" => @space,
-               "did" => "did:plc:friend",
-               "read" => true,
-               "write" => true
-             }
-
-      assert :ok =
-               Memberspace.put_member(@pds, @space, "did:plc:friend", @headers,
-                 http: SpaceHTTP,
-                 write: false
-               )
-
-      {_url, opts} = Process.get({:post, self()})
-      assert opts[:json]["write"] == false
-    end
-
-    test "remove_member and list_members" do
-      Process.put(:post_response, ok(%{}))
-
-      assert :ok =
-               Memberspace.remove_member(@pds, @space, "did:plc:friend", @headers,
+               Memberspace.put_members(
+                 @pds,
+                 @space,
+                 ["did:plc:friend", %{did: "did:plc:reader", write: false}],
+                 @headers,
                  http: SpaceHTTP
                )
 
       {url, opts} = Process.get({:post, self()})
-      assert url == @pds <> "/xrpc/com.atproto.memberspace.removeMember"
-      assert opts[:json] == %{"space" => @space, "did" => "did:plc:friend"}
+      assert url == @pds <> "/xrpc/com.atproto.memberspace.putMembers"
+
+      assert opts[:json] == %{
+               "space" => @space,
+               "members" => [
+                 %{"did" => "did:plc:friend", "read" => true, "write" => true},
+                 %{"did" => "did:plc:reader", "read" => true, "write" => false}
+               ]
+             }
+    end
+
+    test "put_members and remove_members refuse empty, oversized or malformed batches" do
+      dids = for i <- 1..101, do: "did:plc:m#{i}"
+
+      for bad <- [[], dids, ["not-a-did"], [%{did: "did:plc:x", read: "yes"}], "did:plc:x"] do
+        assert {:error, :invalid_members} =
+                 Memberspace.put_members(@pds, @space, bad, @headers, http: SpaceHTTP)
+      end
+
+      for bad <- [[], dids, ["not-a-did"]] do
+        assert {:error, :invalid_members} =
+                 Memberspace.remove_members(@pds, @space, bad, @headers, http: SpaceHTTP)
+      end
+
+      refute Process.get({:post, self()})
+
+      # 100 is the most a batch may hold.
+      Process.put(:post_response, ok(%{}))
+
+      assert :ok =
+               Memberspace.put_members(@pds, @space, Enum.take(dids, 100), @headers,
+                 http: SpaceHTTP
+               )
+    end
+
+    test "remove_members and list_members" do
+      Process.put(:post_response, ok(%{}))
+
+      assert :ok =
+               Memberspace.remove_members(
+                 @pds,
+                 @space,
+                 ["did:plc:friend", "did:plc:other"],
+                 @headers,
+                 http: SpaceHTTP
+               )
+
+      {url, opts} = Process.get({:post, self()})
+      assert url == @pds <> "/xrpc/com.atproto.memberspace.removeMembers"
+      assert opts[:json] == %{"space" => @space, "dids" => ["did:plc:friend", "did:plc:other"]}
 
       Process.put(
         :get_response,
@@ -345,73 +421,79 @@ defmodule Exosphere.ATProto.Spaces.SpaceAdminTest do
       )
 
       assert {:error, {:http_error, 400, "PolicyMismatch"}} =
-               Memberspace.put_member(@pds, @space, "did:plc:friend", @headers, http: SpaceHTTP)
+               Memberspace.put_members(@pds, @space, ["did:plc:friend"], @headers,
+                 http: SpaceHTTP
+               )
     end
   end
 
   describe "Managedspace" do
-    test "check_user_access sends user and access, returns the verdict" do
-      Process.put(:get_response, ok(%{"authorized" => true}))
+    test "check_access sends repo and client, returns read and write" do
+      Process.put(:get_response, ok(%{"read" => true, "write" => false}))
 
-      assert {:ok, true} =
-               Managedspace.check_user_access(
-                 "https://app.example.com",
-                 @space,
-                 "did:plc:user",
-                 :read,
-                 @headers,
+      assert {:ok, %{read: true, write: false}} =
+               Managedspace.check_access("https://app.example.com", @space, @headers,
                  http: SpaceHTTP,
+                 repo: "did:plc:user",
                  client_id: @client_id
                )
 
       {url, _} = Process.get({:get, self()})
-      assert url =~ "/xrpc/com.atproto.managedspace.checkUserAccess?"
-      assert url =~ "user=did%3Aplc%3Auser"
-      assert url =~ "access=read"
+      assert url =~ "/xrpc/com.atproto.managedspace.checkAccess?"
+      assert url =~ "repo=did%3Aplc%3Auser"
       assert url =~ "clientId=https%3A%2F%2Fapp.example.com%2Fclient-metadata.json"
+      refute url =~ "user="
+      refute url =~ "access="
     end
 
-    test "write checks carry no client" do
-      Process.put(:get_response, ok(%{"authorized" => false}))
+    test "an anonymous read check omits the repo" do
+      Process.put(:get_response, ok(%{"read" => true, "write" => false}))
 
-      assert {:ok, false} =
-               Managedspace.check_user_access(
-                 "https://app.example.com",
-                 @space,
-                 "did:plc:user",
-                 :write,
-                 @headers,
+      assert {:ok, %{read: true}} =
+               Managedspace.check_access("https://app.example.com", @space, @headers,
                  http: SpaceHTTP
                )
 
       {url, _} = Process.get({:get, self()})
-      assert url =~ "access=write"
+      refute url =~ "repo="
       refute url =~ "clientId"
-
-      assert {:error, :client_id_on_write} =
-               Managedspace.check_user_access(
-                 "https://app.example.com",
-                 @space,
-                 "did:plc:user",
-                 :write,
-                 @headers,
-                 http: SpaceHTTP,
-                 client_id: @client_id
-               )
     end
 
-    test "a response without a boolean verdict is invalid" do
-      Process.put(:get_response, ok(%{"authorized" => "yes"}))
+    test "the authority's service auth can be minted per request" do
+      {:ok, key} = Exosphere.ATProto.OAuth.JWK.generate(:secp256k1)
+      Process.put(:get_response, ok(%{"read" => false, "write" => false}))
 
-      assert {:error, :invalid_response} =
-               Managedspace.check_user_access(
-                 "https://app.example.com",
-                 @space,
-                 "did:plc:user",
-                 :read,
-                 @headers,
-                 http: SpaceHTTP
+      auth = [
+        service_auth: [iss: "did:plc:owner", aud: "did:web:app.example.com#forum", key: key]
+      ]
+
+      assert {:ok, %{read: false, write: false}} =
+               Managedspace.check_access("https://app.example.com", @space, auth,
+                 http: SpaceHTTP,
+                 repo: "did:plc:user"
                )
+
+      {_url, opts} = Process.get({:get, self()})
+      {_, "Bearer " <> jwt} = List.keyfind(opts[:headers], "authorization", 0)
+      {:ok, _header, payload} = Exosphere.ATProto.OAuth.JWS.decode(jwt)
+      assert payload["lxm"] == "com.atproto.managedspace.checkAccess"
+      assert payload["aud"] == "did:web:app.example.com#forum"
+      assert payload["iss"] == "did:plc:owner"
+    end
+
+    test "a response without both booleans is invalid" do
+      for body <- [
+            %{"authorized" => true},
+            %{"read" => true},
+            %{"read" => "yes", "write" => false}
+          ] do
+        Process.put(:get_response, ok(body))
+
+        assert {:error, :invalid_response} =
+                 Managedspace.check_access("https://app.example.com", @space, @headers,
+                   http: SpaceHTTP
+                 )
+      end
     end
   end
 end

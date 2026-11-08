@@ -79,20 +79,20 @@ defmodule Exosphere.ExternalSpaceTest do
                Credential.mint(space_host, space_ref, delegation, key: key)
 
       # 4. The writer set.
-      assert {:ok, %{repos: repos}} = Sync.list_repos(space_host, space_ref, credential)
+      assert {:ok, %{repos: repos}} = Sync.list_writers(space_host, space_ref, credential)
       assert is_list(repos)
 
       # 5. Each member's repo, verified: a synced copy that is also an
       #    authenticated one. This is the claim the whole design rests on, and
       #    the only place it meets bytes the reference implementation produced.
       for repo <- repos do
-        {:ok, author_doc} = DID.resolve(repo.did)
+        {:ok, author_doc} = DID.resolve(repo.repo)
 
         {:ok, kem_key} = Document.get_kem_key(author_doc)
 
         assert {:ok, verified} =
-                 Sync.get_repo(pds, space_ref, repo.did, credential, kem_key: kem_key),
-               "full-archive verification failed for #{repo.did}"
+                 Sync.get_repo(pds, space_ref, repo.repo, credential, kem_key: kem_key),
+               "full-archive verification failed for #{repo.repo}"
 
         assert Sync.synced?(verified.lthash, repo.data),
                "the verified set hash does not match the writer set's commit data"

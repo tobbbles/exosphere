@@ -10,22 +10,27 @@ defmodule Exosphere.ATProto.Spaces.Space do
   memberspace member list). A host that does not implement the policy answers
   `UnsupportedPolicy`.
 
-      {:ok, %{"uri" => space}} =
+      {:ok, %{"space" => space}} =
         Space.create_space(pds, "com.example.group", Policy.member(publish_policy: true),
           session: session, skey: "general")
 
   Policy-specific methods live with their policy: the member list in
   `Spaces.Memberspace`, the managing-app check in `Spaces.Managedspace`.
 
-  These methods are OAuth-authenticated as the space owner: pass
+  These methods are OAuth-authenticated as the space authority: pass
   `session: %OAuth.Session{}` (DPoP-bound, with nonce retries) or
   `headers: [{"authorization", ...}]`. The covering `space:` scope grant is
   `manage=create`/`update`/`delete`, or `read_self` for `get_space/4`.
 
   XRPC errors surface as `{:error, {:http_error, status, name}}` — e.g.
-  `"SpaceAlreadyExists"`, `"UnsupportedPolicy"`, `"NotSpaceOwner"`,
-  `"SpaceNotFound"`. Request options (`:timeout`, `:follow_redirects`) and
-  `:http` travel in the same keyword list as the auth.
+  `"SpaceAlreadyExists"`, `"UnsupportedPolicy"`, `"SpaceNotFound"` — except
+  the names atproto `atproto-spaces-lexicon-review` / `atproto-spaces-cleanup`
+  (4037310) introduced, which are typed: a caller that is not the space
+  authority gets `{:error, :not_authorized}` (`NotAuthorized`, which was
+  `NotSpaceOwner`), a bad listing cursor `{:error, :invalid_cursor}`, and a
+  malformed import `{:error, :invalid_space_meta}`. Request options
+  (`:timeout`, `:follow_redirects`) and `:http` travel in the same keyword
+  list as the auth.
 
   This replaces `Spaces.SimpleSpace` and the `com.atproto.simplespace`
   namespace, which upstream removed.
@@ -41,7 +46,8 @@ defmodule Exosphere.ATProto.Spaces.Space do
   space is anchored on the authenticated user's DID, who becomes its owner.
 
   `space_type` is the space type's NSID. Option `:skey` sets the space key
-  (a TID is generated when omitted). Returns `{:ok, %{"uri" => space_ref}}`.
+  (a TID is generated when omitted). Returns `{:ok, %{"space" => space_ref}}`
+  (the output field was `uri` until atproto `atproto-spaces-lexicon-review`).
   """
   @spec create_space(String.t(), String.t(), Policy.t(), keyword(), keyword()) ::
           {:ok, map()} | {:error, term()}
@@ -76,9 +82,11 @@ defmodule Exosphere.ATProto.Spaces.Space do
   end
 
   @doc """
-  Describe a space (`com.atproto.space.getSpace`): `{:ok, %{"uri" => …,
-  "policy" => …}}`. Requires the owner's `read_self` grant — a space
-  credential is not accepted. Decode the policy with `Spaces.Policy.decode/1`.
+  Describe a space (`com.atproto.space.getSpace`): `{:ok, %{"space" => …,
+  "policy" => …}}` (the space ref was `uri` until atproto
+  `atproto-spaces-lexicon-review`). Requires the authority's `read_self`
+  grant — a space credential is not accepted. Decode the policy with
+  `Spaces.Policy.decode/1`.
   """
   @spec get_space(String.t(), String.t(), keyword(), keyword()) ::
           {:ok, map()} | {:error, term()}
@@ -91,14 +99,21 @@ defmodule Exosphere.ATProto.Spaces.Space do
   (`com.atproto.space.listSpaces`) — not "spaces I'm a member of": a member's
   PDS only tracks spaces its user has written to.
 
-  Options: `:space_type` (NSID filter), `:did` (authority filter), `:limit`,
-  `:cursor`. Returns `{:ok, %{"spaces" => [%{"uri" => …}], "cursor" => …}}`.
+  Options: `:space_type` (NSID filter), `:space_did` (authority filter; the
+  parameter was `did`, and this option `:did`, until atproto
+  `atproto-spaces-cleanup` 4037310), `:limit`, `:cursor`.
+
+  Returns `{:ok, %{"spaces" => [view], "cursor" => …}}`, each view a
+  `listSpaces#spaceView` in its wire shape: `"space"` (the space ref; it was
+  `"uri"`), and — when the account holds a repo in the space — that repo's
+  `"repoRev"`, `"spaceRev"` and commit `"data"` (lexicon `bytes`, i.e.
+  `%{"$bytes" => base64}`), new at 4037310.
   """
   @spec list_spaces(String.t(), keyword(), keyword()) :: {:ok, map()} | {:error, term()}
   def list_spaces(pds, auth, opts \\ []) do
     params = %{
       "spaceType" => Keyword.get(opts, :space_type),
-      "did" => Keyword.get(opts, :did),
+      "spaceDid" => Keyword.get(opts, :space_did),
       "limit" => Keyword.get(opts, :limit),
       "cursor" => Keyword.get(opts, :cursor)
     }
@@ -107,15 +122,17 @@ defmodule Exosphere.ATProto.Spaces.Space do
   end
 
   @doc """
-  Remove an account from the space's writer set (`com.atproto.space.removeWriter`,
-  atproto `937ddb9`), so `listRepos` no longer lists it. Idempotent; the
-  account is tracked again if it later writes while still authorized. Requires
-  auth as an account that may manage the space (`manage=update`).
+  Remove an account's repo from the space's writer set
+  (`com.atproto.space.removeWriter`, atproto `937ddb9`), so `listWriters` no
+  longer lists it. The repo DID is sent as `repo` (it was `did` until atproto
+  `atproto-spaces-lexicon-review`). Idempotent; the account is tracked again
+  if it later writes while still authorized. Requires auth as an account that
+  may manage the space (`manage=update`).
   """
   @spec remove_writer(String.t(), String.t(), String.t(), keyword(), keyword()) ::
           :ok | {:error, term()}
-  def remove_writer(host, space_ref, did, auth, opts \\ []) do
-    body = %{"space" => space_ref, "did" => did}
+  def remove_writer(host, space_ref, repo, auth, opts \\ []) do
+    body = %{"space" => space_ref, "repo" => repo}
 
     with {:ok, _} <- XRPC.procedure(host, "#{@nsid}.removeWriter", body, auth, opts), do: :ok
   end
@@ -123,8 +140,9 @@ defmodule Exosphere.ATProto.Spaces.Space do
   @doc """
   Download a space's host-side state as a space meta archive
   (`com.atproto.space.exportSpaceMeta`, atproto `35c0cf1`), for account
-  migration: `{:ok, star_bytes}`, decodable with `Spaces.SpaceMeta.decode/1`.
-  Requires the owner's `read_self` grant.
+  migration: `{:ok, star_bytes}` (served as `application/vnd.dasl.star` since
+  4037310), decodable with `Spaces.SpaceMeta.decode/1`. Requires the
+  authority's `read_self` grant.
   """
   @spec export_space_meta(String.t(), String.t(), keyword(), keyword()) ::
           {:ok, binary()} | {:error, term()}
@@ -138,7 +156,9 @@ defmodule Exosphere.ATProto.Spaces.Space do
   space must be anchored on the authenticated account; this must come before
   importing the account's own repo in the space (`Spaces.Writes.import_repo/4`).
   Requires `manage=create` and `manage=update`. A policy the host does not
-  implement is refused with `UnsupportedPolicy`.
+  implement is refused with `UnsupportedPolicy`, and a malformed archive with
+  `InvalidSpaceMeta` (`{:error, :invalid_space_meta}`). The archive is sent
+  as `application/vnd.dasl.star`.
   """
   @spec import_space_meta(String.t(), binary(), keyword(), keyword()) :: :ok | {:error, term()}
   def import_space_meta(pds, star, auth, opts \\ []) when is_binary(star) do
