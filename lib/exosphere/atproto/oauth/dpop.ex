@@ -96,11 +96,12 @@ defmodule Exosphere.ATProto.OAuth.DPoP do
 
   ## Options
 
-  - `:credential` - the access token / space credential being presented; its
+  - `:credential` - the access token being presented; its
     hash must be bound into the proof as `ath`, and `ath` must be *absent*
     when no credential is given (e.g. the token-endpoint leg)
-  - `:jkt` - an RFC 7638 thumbprint the presenting key must match (a space
-    credential's `cnf.jkt` binding)
+  - `:jkt` - an RFC 7638 thumbprint the presenting key must match (a
+    token's `cnf.jkt` binding). Space credentials no longer use DPoP — they
+    are presented with HTTP message signatures (`Spaces.HttpSignature`).
   - `:now` - pin the clock for tests
 
   Returns `{:ok, %{jti: ..., jkt: ...}}`, where `jkt` is the proof key's own
