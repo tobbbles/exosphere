@@ -185,12 +185,12 @@ defmodule Exosphere.ATProto.Spaces.SyncTest do
            status: 200,
            headers: [],
            body: %{
-             "repos" => [%{"did" => @author, "repoRev" => "r", "spaceRev" => "s", "hash" => wire}]
+             "repos" => [%{"did" => @author, "repoRev" => "r", "spaceRev" => "s", "data" => wire}]
            }
          }}
       end)
 
-      assert {:ok, %{repos: [%{hash: ^hash}]}} =
+      assert {:ok, %{repos: [%{data: ^hash}]}} =
                Sync.list_repos(@space_host, @space, ctx.cred, http: SyncHTTP)
     end
 
@@ -208,14 +208,14 @@ defmodule Exosphere.ATProto.Spaces.SyncTest do
                "did" => @author,
                "repoRev" => "r",
                "spaceRev" => "s",
-               "hash" => %{"$bytes" => urlsafe}
+               "data" => %{"$bytes" => urlsafe}
              }
            ]
          }
        }}
     end)
 
-    assert {:error, {:invalid_bytes, "hash"}} =
+    assert {:error, {:invalid_bytes, "data"}} =
              Sync.list_repos(@space_host, @space, ctx.cred, http: SyncHTTP)
   end
 
@@ -273,7 +273,7 @@ defmodule Exosphere.ATProto.Spaces.SyncTest do
                  "did" => @author,
                  "repoRev" => "3kbcq3p7ad400",
                  "spaceRev" => "3kbcq3p7ad4zz",
-                 "hash" => bytes(hash)
+                 "data" => bytes(hash)
                }
              ],
              "cursor" => "3kbcq3p7ad4zz"
@@ -292,7 +292,7 @@ defmodule Exosphere.ATProto.Spaces.SyncTest do
              did: @author,
              repo_rev: "3kbcq3p7ad400",
              space_rev: "3kbcq3p7ad4zz",
-             hash: hash
+             data: hash
            }
 
     # limit/cursor reach the wire
@@ -307,10 +307,11 @@ defmodule Exosphere.ATProto.Spaces.SyncTest do
     assert Process.get(:last_url) =~ "cursor=next"
   end
 
-  test "list_repos does not read a pre-rename host's `rev` as `repoRev`", ctx do
-    # A host on the lexicon before atproto 357c4cee9 still says `rev`. The
-    # client answers "unknown" rather than guessing the old field means the new
-    # one — `nil` is a value every caller already handles, a wrong guess is not.
+  test "list_repos does not read a pre-rename host's `rev`/`hash` as `repoRev`/`data`", ctx do
+    # A host on the lexicon before atproto 357c4cee9 still says `rev`, and one
+    # before 5791385 still says `hash`. The client answers "unknown" rather than
+    # guessing the old field means the new one — `nil` is a value every caller
+    # already handles, a wrong guess is not.
     Process.put(:get, fn _url ->
       {:ok,
        %{
@@ -320,8 +321,39 @@ defmodule Exosphere.ATProto.Spaces.SyncTest do
        }}
     end)
 
-    assert {:ok, %{repos: [%{repo_rev: nil, space_rev: nil, hash: "h"}], cursor: nil}} =
+    assert {:ok, %{repos: [%{repo_rev: nil, space_rev: nil, data: nil}], cursor: nil}} =
              Sync.list_repos(@space_host, @space, ctx.cred, http: SyncHTTP)
+  end
+
+  test "decode_notify_write/1 shapes a forwarded notification" do
+    data = :crypto.hash(:sha256, "state")
+
+    assert {:ok,
+            %{
+              space: @space,
+              repo: @author,
+              repo_rev: "3kbcq3p7ad400",
+              data: ^data,
+              space_rev: "3kbcq3p7ad4zz",
+              prev_space_rev: "3kbcq3p7ad4yy"
+            }} =
+             Sync.decode_notify_write(%{
+               "space" => @space,
+               "repo" => @author,
+               "repoRev" => "3kbcq3p7ad400",
+               "data" => bytes(data),
+               "spaceRev" => "3kbcq3p7ad4zz",
+               "prevSpaceRev" => "3kbcq3p7ad4yy"
+             })
+
+    # A pre-5791385 body (`hash`, no `data`) is missing a required field.
+    assert {:error, {:missing_field, "data"}} =
+             Sync.decode_notify_write(%{
+               "space" => @space,
+               "repo" => @author,
+               "repoRev" => "3kbcq3p7ad400",
+               "hash" => bytes(data)
+             })
   end
 
   test "list_repo_ops pages ops with the head commit", ctx do

@@ -48,13 +48,16 @@ defmodule Exosphere.ATProto.Spaces.Sync do
 
   @doc """
   The space host's writer set (`com.atproto.space.listRepos`): each member
-  repo with its current `repo_rev` and commit `hash` as last reported to the
-  authority, and the `space_rev` at which the host last saw it move. The
-  authority may lag the repo hosts, which are the source of truth.
+  repo with its current `repo_rev` and commit `data` (the sha256 of its
+  LtHash state) as last reported to the authority, and the `space_rev` at
+  which the host last saw it move. The authority may lag the repo hosts,
+  which are the source of truth.
 
-  Returns `{:ok, %{repos: [%{did:, repo_rev:, space_rev:, hash:}], cursor:
-  cursor | nil}}`. The `hash` values are base64-decoded from the lexicon
-  `bytes` wire form (`{"$bytes": …}`).
+  Returns `{:ok, %{repos: [%{did:, repo_rev:, space_rev:, data:}], cursor:
+  cursor | nil}}`. The `data` values are base64-decoded from the lexicon
+  `bytes` wire form (`{"$bytes": …}`). The wire field was `hash` until atproto
+  `5791385` (2026-10-27) renamed it alongside the commit's own digest field;
+  a pre-rename host's `hash` is not read across (`data` decodes to `nil`).
 
   ## Two revisions, and why they are not the same thing
 
@@ -249,6 +252,46 @@ defmodule Exosphere.ATProto.Spaces.Sync do
   end
 
   @doc """
+  Decode a forwarded write notification (`com.atproto.space.notifyWrite`, the
+  JSON body a space host POSTs to a registered syncer) into
+  `%{space:, repo:, repo_rev:, data:, space_rev:, prev_space_rev:}`.
+
+  `data` is the repo's commit digest after the write, base64-decoded from the
+  lexicon `bytes` form (the field was `hash` until atproto `5791385`).
+  `space_rev`/`prev_space_rev` sequence the space: a `prev_space_rev` that is
+  not the last `space_rev` you processed means notifications were missed —
+  recover with `list_repos/4`'s `cursor:` set to the last one you did
+  process. The notification carries no record data and authenticates
+  nothing about the repo: sync the repo itself from its host.
+
+  Receiving the POST (and checking its service auth) is the app's job; this
+  only gives the body a shape. Missing required fields are
+  `{:error, {:missing_field, name}}`.
+  """
+  @spec decode_notify_write(map()) :: {:ok, map()} | {:error, term()}
+  def decode_notify_write(%{} = body) do
+    with :ok <- require_fields(body, ~w(space repo repoRev data)),
+         {:ok, data} <- decode_field(body, "data") do
+      {:ok,
+       %{
+         space: body["space"],
+         repo: body["repo"],
+         repo_rev: body["repoRev"],
+         data: data,
+         space_rev: body["spaceRev"],
+         prev_space_rev: body["prevSpaceRev"]
+       }}
+    end
+  end
+
+  defp require_fields(body, fields) do
+    case Enum.find(fields, &(not Map.has_key?(body, &1))) do
+      nil -> :ok
+      missing -> {:error, {:missing_field, missing}}
+    end
+  end
+
+  @doc """
   Fold a page of oplog ops into the running set hash (remove `prev`, add
   `cid` — deletes carry `cid: null`). Ops are maps in the wire shape with
   string keys.
@@ -384,8 +427,8 @@ defmodule Exosphere.ATProto.Spaces.Sync do
 
   defp decode_repos(repos) when is_list(repos) do
     Enum.reduce_while(repos, {:ok, []}, fn repo, {:ok, acc} ->
-      case decode_field(repo, "hash") do
-        {:ok, hash} -> {:cont, {:ok, [decode_repo(repo, hash) | acc]}}
+      case decode_field(repo, "data") do
+        {:ok, data} -> {:cont, {:ok, [decode_repo(repo, data) | acc]}}
         {:error, _} = error -> {:halt, error}
       end
     end)
@@ -402,8 +445,8 @@ defmodule Exosphere.ATProto.Spaces.Sync do
   # one stale host and nobody else. A `nil` `repo_rev` is a value every caller
   # already has to handle (the lexicon says the entry may lag), and "I do not
   # know, go and look" is the safe reading of it.
-  defp decode_repo(repo, hash) do
-    %{did: repo["did"], repo_rev: repo["repoRev"], space_rev: repo["spaceRev"], hash: hash}
+  defp decode_repo(repo, data) do
+    %{did: repo["did"], repo_rev: repo["repoRev"], space_rev: repo["spaceRev"], data: data}
   end
 
   defp maybe_put(map, _key, nil), do: map
