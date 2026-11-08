@@ -270,7 +270,7 @@ defmodule Exosphere.ATProto.Spaces.WritesTest do
     assert opts[:json] == %{"space" => @space, "repo" => @repo}
   end
 
-  test "import_repo uploads a STAR archive as octet-stream" do
+  test "import_repo uploads a STAR archive as application/vnd.dasl.star" do
     star = <<0x2A, 0x6C, 0x01, 0x00, 1, 2, 3>>
 
     assert :ok =
@@ -279,7 +279,7 @@ defmodule Exosphere.ATProto.Spaces.WritesTest do
     {url, opts} = Process.get({:last, :post})
     assert url == @pds <> "/xrpc/com.atproto.space.importRepo"
     assert opts[:body] == star
-    assert opts[:content_type] == "application/octet-stream"
+    assert opts[:content_type] == "application/vnd.dasl.star"
     refute Keyword.has_key?(opts, :json)
   end
 end

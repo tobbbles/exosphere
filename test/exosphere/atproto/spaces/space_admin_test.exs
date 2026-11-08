@@ -249,7 +249,7 @@ defmodule Exosphere.ATProto.Spaces.SpaceAdminTest do
       {url, opts} = Process.get({:post, self()})
       assert url == @pds <> "/xrpc/com.atproto.space.importSpaceMeta"
       assert opts[:body] == star
-      assert opts[:content_type] == "application/octet-stream"
+      assert opts[:content_type] == "application/vnd.dasl.star"
 
       Process.put(
         :post_response,
