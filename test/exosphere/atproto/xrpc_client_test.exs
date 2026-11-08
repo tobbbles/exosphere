@@ -86,6 +86,50 @@ defmodule Exosphere.ATProto.XRPC.ClientTest do
     assert Keyword.get(opts, :json) == %{repo: "did:plc:123"}
   end
 
+  test "procedure/2 sends no body for a procedure without input" do
+    # A conforming XRPC server rejects any body (even `{}`) on a procedure
+    # whose lexicon declares no input.
+    client = Client.new("https://example.com", access_token: "t0k", http: FakeHTTP)
+
+    assert {:ok, _} = Client.procedure(client, "com.atproto.server.deleteSession")
+    assert_received {:http, :post, _url, opts}
+    refute Keyword.has_key?(opts, :json)
+    refute Keyword.has_key?(opts, :body)
+
+    assert {:ok, _} = Client.procedure(client, "x.test", nil, since: "3l")
+    assert_received {:http, :post, "https://example.com/xrpc/x.test?since=3l", opts}
+    refute Keyword.has_key?(opts, :json)
+  end
+
+  test "procedure/3 still sends an explicit empty map as {}" do
+    client = Client.new("https://example.com", http: FakeHTTP)
+
+    assert {:ok, _} = Client.procedure(client, "x.test", %{})
+    assert_received {:http, :post, _url, opts}
+    assert Keyword.fetch(opts, :json) == {:ok, %{}}
+  end
+
+  test "procedure/2 on a DPoP session sends no body either" do
+    {:ok, key} = Exosphere.ATProto.OAuth.DPoP.generate_key()
+
+    client =
+      Client.new("https://example.com", access_token: "t0k", dpop: key, http: FakeHTTP)
+
+    assert {:ok, _} = Client.procedure(client, "com.atproto.server.activateAccount")
+    assert_received {:http, :post, _url, opts}
+    refute Keyword.has_key?(opts, :json)
+    refute Keyword.has_key?(opts, :body)
+    assert {"authorization", "DPoP t0k"} in Keyword.get(opts, :headers)
+  end
+
+  test "the public wrapper defaults to no body too" do
+    client = Exosphere.XRPC.Client.new("https://example.com", http: FakeHTTP)
+
+    assert {:ok, _} = Exosphere.XRPC.Client.procedure(client, "com.atproto.server.deleteSession")
+    assert_received {:http, :post, _url, opts}
+    refute Keyword.has_key?(opts, :json)
+  end
+
   test "refresh_session/1 errors when refresh token is missing" do
     client = Client.new("https://example.com", http: FakeHTTP)
     assert {:error, :no_refresh_token} = Client.refresh_session(client)

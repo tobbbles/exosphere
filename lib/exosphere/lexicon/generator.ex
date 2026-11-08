@@ -519,6 +519,11 @@ defmodule Exosphere.Lexicon.Generator do
     # Endpoints with no params skip validation entirely
     skip_validation = fields == []
 
+    # A procedure whose lexicon declares no input sends no body by default:
+    # a conforming XRPC server rejects any body on such a procedure.
+    {body_default, body_spec} =
+      if Map.get(main, :input), do: {"%{}", "map()"}, else: {"nil", "map() | nil"}
+
     {args, spec_args, call} =
       case {main.kind, fields == []} do
         {:query, false} ->
@@ -529,11 +534,12 @@ defmodule Exosphere.Lexicon.Generator do
           {"client", "Client.t()", "Client.query(#{inspect(nsid)})"}
 
         {:procedure, true} ->
-          {"client, body \\\\ %{}", "Client.t(), map()",
+          {"client, body \\\\ #{body_default}", "Client.t(), #{body_spec}",
            "Client.procedure(#{inspect(nsid)}, body)"}
 
         {:procedure, false} ->
-          {"client, params \\\\ [], body \\\\ %{}", "Client.t(), map() | keyword(), map()",
+          {"client, params \\\\ [], body \\\\ #{body_default}",
+           "Client.t(), map() | keyword(), #{body_spec}",
            "Client.procedure(#{inspect(nsid)}, body, Runtime.encode_query_params(validated, @fields_#{fn_name}))"}
       end
 

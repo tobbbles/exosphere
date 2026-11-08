@@ -42,7 +42,7 @@ defmodule Exosphere.ATProto.XRPC.Client do
         }
 
   @type query_params :: keyword() | map()
-  @type procedure_body :: map()
+  @type procedure_body :: map() | nil
 
   # `Error.t()` for XRPC error responses; anything else is a transport failure
   # (timeout, too_many_redirects, adapter error) passed through from the HTTP
@@ -121,6 +121,16 @@ defmodule Exosphere.ATProto.XRPC.Client do
 
   Procedures are for mutations and may not be idempotent.
 
+  `body` is the procedure's JSON input. Omit it (or pass `nil`) for a
+  procedure whose lexicon declares no input — `com.atproto.server.deleteSession`,
+  `activateAccount`, `requestEmailConfirmation` and the like: the request then
+  goes out with no body and no `content-type`, which is what a conforming
+  XRPC server requires (the reference server answers any body on an input-less
+  procedure with `400 InvalidRequest`). An explicit map, including `%{}`, is
+  always sent as a JSON body — an empty object is a legitimate input for a
+  procedure whose schema has no required fields. A keyword list is converted
+  to a map first.
+
   ## Examples
 
       {:ok, %{"uri" => "at://...", "cid" => "bafyrei..."}} =
@@ -132,14 +142,19 @@ defmodule Exosphere.ATProto.XRPC.Client do
   """
   @spec procedure(t(), String.t(), procedure_body() | keyword(), query_params()) ::
           {:ok, HTTP.json_term()} | {:error, error()}
-  def procedure(%__MODULE__{} = client, nsid, body \\ %{}, params \\ []) do
+  def procedure(%__MODULE__{} = client, nsid, body \\ nil, params \\ []) do
     url = build_url(client, nsid, params)
-    json_body = if is_list(body), do: Map.new(body), else: body
 
     client
-    |> execute(:post, url, json: json_body)
+    |> execute(:post, url, procedure_body_opts(body))
     |> map_response()
   end
+
+  # No input → no body at all (and so no content-type); anything else is
+  # JSON-encoded, as before (other terms pass through to the encoder unchanged).
+  defp procedure_body_opts(nil), do: []
+  defp procedure_body_opts(body) when is_list(body), do: [json: Map.new(body)]
+  defp procedure_body_opts(body), do: [json: body]
 
   @doc """
   Upload a blob to the PDS.

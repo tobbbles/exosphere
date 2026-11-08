@@ -141,6 +141,48 @@ defmodule Exosphere.Lexicon.GeneratorTest do
     assert [%{module: Oysters.Lexicons.Comment, path: "lexicons/comment.ex"}] = specs
   end
 
+  test "a procedure with no input sends no body by default" do
+    # A conforming XRPC server rejects any body on an input-less procedure, so
+    # the generated default must be "no body", not an empty JSON object.
+    {:ok, corpus} = Parser.parse_dir("priv/lexicons")
+
+    {:ok, bare} =
+      Parser.parse(%{
+        "lexicon" => 1,
+        "id" => "app.bsky.zztest.ping",
+        "defs" => %{"main" => %{"type" => "procedure"}}
+      })
+
+    {:ok, with_input} =
+      Parser.parse(%{
+        "lexicon" => 1,
+        "id" => "app.bsky.zztest.say",
+        "defs" => %{
+          "main" => %{
+            "type" => "procedure",
+            "input" => %{
+              "encoding" => "application/json",
+              "schema" => %{"type" => "object", "properties" => %{}}
+            }
+          }
+        }
+      })
+
+    lexicons =
+      corpus
+      |> Map.put("app.bsky.zztest.ping", bare)
+      |> Map.put("app.bsky.zztest.say", with_input)
+
+    [%{code: code}] =
+      Generator.generate(lexicons,
+        base: Oysters,
+        seeds: ["app.bsky.zztest.ping", "app.bsky.zztest.say"]
+      )
+
+    assert code =~ "def ping(client, body \\\\ nil)"
+    assert code =~ "def say(client, body \\\\ %{})"
+  end
+
   test "default base and seeds are unchanged (no opts)" do
     {:ok, lexicons} = Parser.parse_dir("priv/lexicons")
 
