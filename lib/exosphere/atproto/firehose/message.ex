@@ -207,7 +207,11 @@ defmodule Exosphere.ATProto.Firehose.Message do
         "blocks" => bytes(Map.get(message, :blocks, <<>>)),
         "ops" => ops,
         "prevData" => Map.get(message, :prev_data),
-        # Both deprecated: a producer sets tooBig false and blobs empty.
+        # All three deprecated but still required by the lexicon: a producer
+        # sets rebase and tooBig false and blobs empty, as the reference
+        # sequencer does. A consumer validating against the lexicon (the
+        # reference `@atproto/sync` does) drops a commit missing any of them.
+        "rebase" => false,
         "tooBig" => false,
         "blobs" => [],
         "time" => Map.get(message, :time)

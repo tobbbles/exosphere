@@ -159,8 +159,17 @@ defmodule Exosphere.ATProto.Firehose.MessageTest do
       {:ok, "#commit", payload} =
         Message.encode(%{type: :commit, seq: 1, repo: "did:plc:abc", ops: [], blocks: <<>>})
 
+      assert payload["rebase"] == false
       assert payload["tooBig"] == false
       assert payload["blobs"] == []
+    end
+
+    test "decodes a commit with or without the deprecated rebase flag" do
+      base = %{"seq" => 1, "repo" => "did:plc:abc", "ops" => [], "blocks" => <<>>}
+
+      assert {:ok, with_flag} = Message.decode("#commit", Map.put(base, "rebase", false))
+      assert {:ok, without_flag} = Message.decode("#commit", base)
+      assert with_flag == without_flag
     end
 
     test "omits prev on a create and keeps it on update and delete" do
