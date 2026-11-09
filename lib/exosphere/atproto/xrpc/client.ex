@@ -42,7 +42,10 @@ defmodule Exosphere.ATProto.XRPC.Client do
         }
 
   @type query_params :: keyword() | map()
-  @type procedure_body :: map()
+
+  # `nil` sends no request body at all, for procedures whose lexicon
+  # declares no `input`.
+  @type procedure_body :: map() | keyword() | nil
 
   # `Error.t()` for XRPC error responses; anything else is a transport failure
   # (timeout, too_many_redirects, adapter error) passed through from the HTTP
@@ -121,6 +124,17 @@ defmodule Exosphere.ATProto.XRPC.Client do
 
   Procedures are for mutations and may not be idempotent.
 
+  `body` is the JSON input: a map, or a keyword list (converted to a map).
+  It defaults to `%{}`, which is sent as `{}`.
+
+  Pass `nil` for a procedure whose lexicon declares no `input`. The request
+  then goes out with no body and no `content-type` header. The reference
+  PDS rejects any body for such procedures, `{}` included, with
+  `400 InvalidRequest` ("A request body was provided when none was
+  expected"). Examples are `com.atproto.identity.requestPlcOperationSignature`,
+  `com.atproto.server.requestEmailConfirmation` and
+  `com.atproto.server.deleteSession`.
+
   ## Examples
 
       {:ok, %{"uri" => "at://...", "cid" => "bafyrei..."}} =
@@ -129,17 +143,28 @@ defmodule Exosphere.ATProto.XRPC.Client do
           collection: "app.bsky.feed.post",
           record: %{"$type" => "app.bsky.feed.post", "text" => "Hello!"}
         )
+
+      # No input: ask the PDS to email a PLC operation signing token
+      {:ok, _} =
+        Exosphere.ATProto.XRPC.Client.procedure(
+          client,
+          "com.atproto.identity.requestPlcOperationSignature",
+          nil
+        )
   """
-  @spec procedure(t(), String.t(), procedure_body() | keyword(), query_params()) ::
+  @spec procedure(t(), String.t(), procedure_body(), query_params()) ::
           {:ok, HTTP.json_term()} | {:error, error()}
   def procedure(%__MODULE__{} = client, nsid, body \\ %{}, params \\ []) do
-    url = build_url(client, nsid, params)
-    json_body = if is_list(body), do: Map.new(body), else: body
-
     client
-    |> execute(:post, url, json: json_body)
+    |> execute(:post, build_url(client, nsid, params), body_opts(body))
     |> map_response()
   end
+
+  # No `:json` (or `:body`) option at all for nil: the HTTP adapter then sends
+  # neither a body nor a content-type, on both the Bearer and DPoP paths.
+  defp body_opts(nil), do: []
+  defp body_opts(body) when is_list(body), do: [json: Map.new(body)]
+  defp body_opts(body), do: [json: body]
 
   @doc """
   Upload a blob to the PDS.

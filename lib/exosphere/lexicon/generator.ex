@@ -519,22 +519,33 @@ defmodule Exosphere.Lexicon.Generator do
     # Endpoints with no params skip validation entirely
     skip_validation = fields == []
 
+    # A procedure whose lexicon declares no `input` takes no body argument
+    # and sends none: the PDS rejects even `{}` for those.
+    input? = main.kind == :procedure and Map.get(main, :input) != nil
+
     {args, spec_args, call} =
-      case {main.kind, fields == []} do
-        {:query, false} ->
+      case {main.kind, fields == [], input?} do
+        {:query, false, _} ->
           {"client, params \\\\ []", "Client.t(), map() | keyword()",
            "Client.query(#{inspect(nsid)}, Runtime.encode_query_params(validated, @fields_#{fn_name}))"}
 
-        {:query, true} ->
+        {:query, true, _} ->
           {"client", "Client.t()", "Client.query(#{inspect(nsid)})"}
 
-        {:procedure, true} ->
+        {:procedure, true, true} ->
           {"client, body \\\\ %{}", "Client.t(), map()",
            "Client.procedure(#{inspect(nsid)}, body)"}
 
-        {:procedure, false} ->
+        {:procedure, true, false} ->
+          {"client", "Client.t()", "Client.procedure(#{inspect(nsid)}, nil)"}
+
+        {:procedure, false, true} ->
           {"client, params \\\\ [], body \\\\ %{}", "Client.t(), map() | keyword(), map()",
            "Client.procedure(#{inspect(nsid)}, body, Runtime.encode_query_params(validated, @fields_#{fn_name}))"}
+
+        {:procedure, false, false} ->
+          {"client, params \\\\ []", "Client.t(), map() | keyword()",
+           "Client.procedure(#{inspect(nsid)}, nil, Runtime.encode_query_params(validated, @fields_#{fn_name}))"}
       end
 
     validate =

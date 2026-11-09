@@ -31,8 +31,11 @@ defmodule Exosphere.XRPC.Client do
 
   @doc """
   Make an XRPC procedure (HTTP POST).
+
+  Pass `nil` as `body` for a procedure with no `input`; see
+  `Exosphere.ATProto.XRPC.Client.procedure/4`.
   """
-  @spec procedure(t(), String.t(), map() | keyword()) ::
+  @spec procedure(t(), String.t(), ATClient.procedure_body()) ::
           {:ok, HTTP.json_term()} | {:error, ATClient.error()}
   defdelegate procedure(client, nsid, body \\ %{}), to: ATClient
 
