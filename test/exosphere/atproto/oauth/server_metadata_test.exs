@@ -158,4 +158,57 @@ defmodule Exosphere.ATProto.OAuth.ServerMetadataTest do
            ]) ==
              ["atproto"]
   end
+
+  describe "supported_scopes/2 with granular permission scopes" do
+    @granular [
+      "include:pub.example.authFull?aud=did:web:api.example.com%23svc_appview",
+      "repo:pub.example.post?action=create&action=delete",
+      "repo:pub.example.comment",
+      "rpc:pub.example.getFeed?aud=*",
+      "blob:image/*",
+      "account:email?action=read",
+      "identity:handle"
+    ]
+
+    test "keeps them although no server can list them" do
+      {:ok, metadata} = ServerMetadata.validate(valid_metadata(), @origin)
+
+      assert ServerMetadata.supported_scopes(metadata, ["atproto" | @granular]) ==
+               ["atproto" | @granular]
+    end
+
+    test "still filters static scopes the server does not list" do
+      {:ok, metadata} = ServerMetadata.validate(valid_metadata(), @origin)
+
+      assert ServerMetadata.supported_scopes(metadata, [
+               "atproto",
+               "repo:pub.example.post",
+               "transition:chat.bsky",
+               "made.up:thing"
+             ]) == ["atproto", "repo:pub.example.post"]
+    end
+
+    test "drops them when the server does not speak atproto at all" do
+      {:ok, metadata} = ServerMetadata.validate(valid_metadata(), @origin)
+      metadata = %{metadata | scopes_supported: ["openid"]}
+
+      assert ServerMetadata.supported_scopes(metadata, ["atproto" | @granular]) == []
+    end
+  end
+
+  describe "granular?/1" do
+    test "recognises each permission resource" do
+      for scope <- @granular, do: assert(ServerMetadata.granular?(scope), scope)
+    end
+
+    test "a bare resource name is not a scope" do
+      refute ServerMetadata.granular?("repo")
+      refute ServerMetadata.granular?("include")
+    end
+
+    test "static scopes are not granular" do
+      for scope <- ["atproto", "transition:generic", "transition:email", "openid"],
+          do: refute(ServerMetadata.granular?(scope), scope)
+    end
+  end
 end

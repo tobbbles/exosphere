@@ -36,8 +36,9 @@ defmodule Exosphere.ATProto.OAuth.Flow do
 
   ## Options
 
-  - `:scope` - scopes to request (default: the client metadata scope,
-    filtered to what the server supports)
+  - `:scope` - scopes to request (default: the client metadata scope).
+    Filtered by `ServerMetadata.supported_scopes/2`: static scopes the server
+    does not list are dropped, and granular permission scopes are kept
   - `:state` - explicit state value (default: generated)
   - `:http` - HTTP module implementing `HTTP.Behaviour` (testing)
   - `:timeout` - request timeout in milliseconds
