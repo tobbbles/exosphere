@@ -7,6 +7,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- encode event-stream frames, to serve subscribeLabels (#38)
+
 ## [0.7.0] - 2026-11-09
 
 ### Added
