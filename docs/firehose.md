@@ -151,3 +151,19 @@ end
 
 For collection-level checks, `Message.has_collection?(msg, "app.bsky.feed.post")`
 is a cheap pre-filter before pulling records.
+
+## Serving a stream
+
+The other direction: if your app runs a labeler, it serves
+`com.atproto.label.subscribeLabels` itself. `Exosphere.ATProto.Firehose.Frame`
+builds the binary frames, and your app's WebSocket handler sends them:
+
+```elixir
+{:ok, frame} = Frame.encode_labels(seq, signed_labels)   # #labels
+{:ok, frame} = Frame.encode_info("OutdatedCursor")       # #info
+{:ok, frame} = Frame.encode_error("FutureCursor")        # error, then close
+```
+
+Labels can carry `sig` as raw bytes or `{"$bytes": …}`; it goes on the wire as
+a CBOR byte string. For `queryLabels`, `Exosphere.ATProto.Label.to_json/1`
+gives each label's JSON form. The `Frame` module docs have a handler sketch.
