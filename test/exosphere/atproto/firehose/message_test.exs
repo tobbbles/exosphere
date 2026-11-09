@@ -57,6 +57,15 @@ defmodule Exosphere.ATProto.Firehose.MessageTest do
     assert {:ok, %{type: :tombstone}} = Message.decode("#tombstone", %{"seq" => 1, "did" => "x"})
   end
 
+  test "decodes #labels from a labeler's subscribeLabels stream" do
+    label = %{"src" => "did:plc:labeler", "uri" => "at://x/y/z", "val" => "spam"}
+
+    assert {:ok, %{type: :labels, seq: 7, labels: [^label]}} =
+             Message.decode("#labels", %{"seq" => 7, "labels" => [label]})
+
+    assert {:ok, %{type: :labels, labels: []}} = Message.decode("#labels", %{"seq" => 8})
+  end
+
   describe "verify_commit/1" do
     setup do
       f = TestRepoCar.build()

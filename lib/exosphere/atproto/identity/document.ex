@@ -116,8 +116,23 @@ defmodule Exosphere.ATProto.Identity.Document do
   Returns the public key bytes and curve type.
   """
   @spec get_signing_key(t()) :: {:ok, binary(), atom()} | {:error, :not_found}
-  def get_signing_key(%__MODULE__{verification_method: methods}) when is_list(methods) do
-    case Enum.find(methods, &atproto_key?/1) do
+  def get_signing_key(doc), do: get_key(doc, "atproto")
+
+  @doc """
+  Get the label signing key from a DID Document.
+
+  Looks for a verification method with id ending in `#atproto_label`, which is
+  what a labeler signs `com.atproto.label.defs#label` objects with. Returns the
+  public key bytes and curve type.
+
+  There is deliberately no fallback to `#atproto`: the label spec says a
+  document without `#atproto_label` cannot validate any label.
+  """
+  @spec get_label_key(t()) :: {:ok, binary(), atom()} | {:error, :not_found}
+  def get_label_key(doc), do: get_key(doc, "atproto_label")
+
+  defp get_key(%__MODULE__{verification_method: methods}, fragment) when is_list(methods) do
+    case Enum.find(methods, &key_with_fragment?(&1, fragment)) do
       %{public_key_multibase: multibase, type: type} when is_binary(multibase) ->
         parse_multibase_key(multibase, type)
 
@@ -126,13 +141,33 @@ defmodule Exosphere.ATProto.Identity.Document do
     end
   end
 
-  def get_signing_key(_), do: {:error, :not_found}
+  defp get_key(_, _fragment), do: {:error, :not_found}
 
-  defp atproto_key?(%{id: id}) do
-    String.ends_with?(id || "", "#atproto") or id == "#atproto"
+  defp key_with_fragment?(%{id: id}, fragment) when is_binary(id) do
+    String.ends_with?(id, "#" <> fragment)
   end
 
-  defp atproto_key?(_), do: false
+  defp key_with_fragment?(_, _fragment), do: false
+
+  @doc """
+  Get the labeler endpoint from a DID Document: the service with id ending in
+  `#atproto_labeler` and type `AtprotoLabeler`. This is where the labeler
+  serves `com.atproto.label.subscribeLabels` and `queryLabels`.
+  """
+  @spec get_labeler_endpoint(t()) :: {:ok, String.t()} | {:error, :not_found}
+  def get_labeler_endpoint(%__MODULE__{service: services}) when is_list(services) do
+    case Enum.find(services, &labeler_service?/1) do
+      %{service_endpoint: endpoint} when is_binary(endpoint) -> {:ok, endpoint}
+      _ -> {:error, :not_found}
+    end
+  end
+
+  def get_labeler_endpoint(_), do: {:error, :not_found}
+
+  defp labeler_service?(%{id: id, type: "AtprotoLabeler"}) when is_binary(id),
+    do: String.ends_with?(id, "#atproto_labeler")
+
+  defp labeler_service?(_), do: false
 
   defp parse_multibase_key("z" <> encoded, type) do
     # Base58btc encoded
