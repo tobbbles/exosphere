@@ -141,6 +141,49 @@ defmodule Exosphere.Lexicon.GeneratorTest do
     assert [%{module: Oysters.Lexicons.Comment, path: "lexicons/comment.ex"}] = specs
   end
 
+  # app.bsky.* so the endpoint generator picks them up; no corpus procedure in
+  # those namespaces lacks an `input` today, so these stand in for one.
+  @no_input_procedure %{
+    "lexicon" => 1,
+    "id" => "app.bsky.nobodytest.ping",
+    "defs" => %{"main" => %{"type" => "procedure", "description" => "No input."}}
+  }
+
+  @no_input_procedure_with_params %{
+    "lexicon" => 1,
+    "id" => "app.bsky.nobodytest.pingWith",
+    "defs" => %{
+      "main" => %{
+        "type" => "procedure",
+        "parameters" => %{
+          "type" => "params",
+          "properties" => %{"actor" => %{"type" => "string"}}
+        }
+      }
+    }
+  }
+
+  test "procedures with no lexicon input send a nil body and take no body argument" do
+    {:ok, corpus} = Parser.parse_dir("priv/lexicons")
+    {:ok, ping} = Parser.parse(@no_input_procedure)
+    {:ok, ping_with} = Parser.parse(@no_input_procedure_with_params)
+
+    lexicons =
+      corpus
+      |> Map.put("app.bsky.nobodytest.ping", ping)
+      |> Map.put("app.bsky.nobodytest.pingWith", ping_with)
+
+    assert %{code: code} =
+             lexicons
+             |> Generator.generate()
+             |> Enum.find(&(&1.module == Exosphere.Bsky.Nobodytest))
+
+    assert code =~ "def ping(client) do"
+    assert code =~ ~s|Client.procedure("app.bsky.nobodytest.ping", nil)|
+    assert code =~ "def ping_with(client, params \\\\ []) do"
+    assert code =~ ~r/Client\.procedure\(\s*"app\.bsky\.nobodytest\.pingWith",\s*nil,/
+  end
+
   test "default base and seeds are unchanged (no opts)" do
     {:ok, lexicons} = Parser.parse_dir("priv/lexicons")
 

@@ -86,8 +86,12 @@ defmodule Exosphere.OAuth.Session do
   @doc """
   An XRPC procedure (POST) through the session's DPoP-bound client, with the
   same refresh handling as `query/3`.
+
+  Pass `nil` as `body` for a procedure with no `input`; see
+  `Exosphere.ATProto.XRPC.Client.procedure/4`.
   """
-  @spec procedure(server(), String.t(), map()) :: {:ok, map()} | {:error, term()}
+  @spec procedure(server(), String.t(), XRPCClient.procedure_body()) ::
+          {:ok, map()} | {:error, term()}
   def procedure(server, nsid, body \\ %{}),
     do: GenServer.call(server, {:xrpc, :procedure, nsid, body})
 
