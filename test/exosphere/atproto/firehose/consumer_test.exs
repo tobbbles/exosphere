@@ -14,6 +14,7 @@ defmodule Exosphere.ATProto.Firehose.ConsumerTest do
   defp state(opts \\ []) do
     %Consumer{
       relay_url: Keyword.get(opts, :relay_url, "wss://relay.example.com"),
+      method: Keyword.get(opts, :method),
       cursor: Keyword.get(opts, :cursor),
       on_event: fn _msg, state -> state end,
       stats: %{frames: 0, messages: 0, errors: 0, started_at: 0}
@@ -59,6 +60,22 @@ defmodule Exosphere.ATProto.Firehose.ConsumerTest do
                Consumer.handle_disconnect(%{reason: :test, attempt_number: 1}, tracked)
 
       assert conn.query == "cursor=5678"
+    end
+
+    test "re-targets a labeler stream at its own method" do
+      labeler =
+        state(
+          relay_url: "wss://mod.bsky.app",
+          method: "com.atproto.label.subscribeLabels",
+          cursor: 42
+        )
+
+      assert {:reconnect, %WebSockex.Conn{} = conn, _state} =
+               Consumer.handle_disconnect(%{reason: :test, attempt_number: 1}, labeler)
+
+      assert conn.host == "mod.bsky.app"
+      assert conn.path == "/xrpc/com.atproto.label.subscribeLabels"
+      assert conn.query == "cursor=42"
     end
   end
 end

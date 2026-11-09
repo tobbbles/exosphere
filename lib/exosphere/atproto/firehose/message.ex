@@ -15,6 +15,11 @@ defmodule Exosphere.ATProto.Firehose.Message do
 
   - `#handle` - Handle change (superseded by `#identity`)
   - `#tombstone` - Repository deletion (superseded by `#account`)
+
+  From a labeler's `com.atproto.label.subscribeLabels`:
+  - `#labels` - A batch of labels (and negations) at one `seq`. Each label is a
+    string-keyed map; verify it with `Exosphere.ATProto.Label.verify/2`
+  - `#info` - As above
   """
 
   alias Exosphere.ATProto.CAR
@@ -91,10 +96,24 @@ defmodule Exosphere.ATProto.Firehose.Message do
           message: String.t() | nil
         }
 
+  @type labels :: %{
+          type: :labels,
+          seq: integer(),
+          labels: [Exosphere.ATProto.Label.t()]
+        }
+
   # Unknown message headers pass through as raw maps (with `:type` attached),
   # keeping consumers forward-compatible with new relay event types.
   @type message ::
-          commit() | sync() | identity() | account() | handle() | tombstone() | info() | map()
+          commit()
+          | sync()
+          | identity()
+          | account()
+          | handle()
+          | tombstone()
+          | info()
+          | labels()
+          | map()
 
   @doc """
   Decode a message payload based on its type.
@@ -166,6 +185,15 @@ defmodule Exosphere.ATProto.Firehose.Message do
        type: :info,
        name: Map.get(payload, "name"),
        message: Map.get(payload, "message")
+     }}
+  end
+
+  def decode("#labels", payload) do
+    {:ok,
+     %{
+       type: :labels,
+       seq: Map.get(payload, "seq"),
+       labels: Map.get(payload, "labels", [])
      }}
   end
 

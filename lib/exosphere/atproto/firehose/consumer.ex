@@ -2,9 +2,20 @@ defmodule Exosphere.ATProto.Firehose.Consumer do
   @moduledoc """
   Generic WebSocket consumer for the Exosphere.ATProto firehose using WebSockex.
 
-  This module connects to a relay's `com.atproto.sync.subscribeRepos` endpoint,
-  decodes frames into structured messages, and dispatches those messages via an
-  `:on_event` callback.
+  By default this module connects to a relay's `com.atproto.sync.subscribeRepos`
+  endpoint, decodes frames into structured messages, and dispatches those
+  messages via an `:on_event` callback.
+
+  The same frame format and `seq` cursor serve other event streams. Pass
+  `:method` to subscribe to one of those instead, for example a labeler's
+  stream:
+
+      Consumer.start_link(
+        relay_url: "wss://mod.bsky.app",
+        method: "com.atproto.label.subscribeLabels",
+        cursor: 0,
+        on_event: fn %{type: :labels, labels: labels}, state -> ... end
+      )
 
   See the [Firehose guide](firehose.html) for a full walkthrough —
   message types, record extraction, verification, cursors, and production tips.
@@ -31,6 +42,7 @@ defmodule Exosphere.ATProto.Firehose.Consumer do
   alias Exosphere.ATProto.Firehose.{Frame, Message}
 
   @default_relay "wss://bsky.network"
+  @default_method "com.atproto.sync.subscribeRepos"
 
   @type stats :: %{
           frames: non_neg_integer(),
@@ -41,12 +53,13 @@ defmodule Exosphere.ATProto.Firehose.Consumer do
 
   @type t :: %__MODULE__{
           relay_url: String.t(),
+          method: String.t() | nil,
           cursor: integer() | nil,
           on_event: (map(), t() -> t()),
           stats: stats()
         }
 
-  defstruct [:relay_url, :cursor, :on_event, :stats]
+  defstruct [:relay_url, :method, :cursor, :on_event, :stats]
 
   @doc """
   Start the firehose consumer.
@@ -54,6 +67,8 @@ defmodule Exosphere.ATProto.Firehose.Consumer do
   ## Options
 
   - `:relay_url` - Relay WebSocket URL (default: `"wss://bsky.network"`)
+  - `:method` - The subscription NSID to open
+    (default: `"com.atproto.sync.subscribeRepos"`)
   - `:cursor` - Starting cursor for resumption (optional)
   - `:on_event` - Callback invoked with each decoded message (required)
   - `:name` - Process name (optional)
@@ -61,6 +76,7 @@ defmodule Exosphere.ATProto.Firehose.Consumer do
   @spec start_link(keyword()) :: GenServer.on_start()
   def start_link(opts) do
     relay_url = Keyword.get(opts, :relay_url, @default_relay)
+    method = Keyword.get(opts, :method, @default_method)
     cursor = Keyword.get(opts, :cursor)
 
     on_event =
@@ -73,10 +89,11 @@ defmodule Exosphere.ATProto.Firehose.Consumer do
                 "Exosphere.ATProto.Firehose.Consumer requires an :on_event function (arity 2)"
       end
 
-    uri = build_subscription_url(relay_url, cursor)
+    uri = build_subscription_url(relay_url, method, cursor)
 
     state = %__MODULE__{
       relay_url: relay_url,
+      method: method,
       cursor: cursor,
       on_event: on_event,
       stats: %{
@@ -146,7 +163,7 @@ defmodule Exosphere.ATProto.Firehose.Consumer do
     # where the stream left off instead of replaying from the original
     # starting cursor. {:reconnect, state} alone would re-open the original
     # URL, cursor and all.
-    case WebSockex.Conn.new(build_subscription_url(state.relay_url, state.cursor)) do
+    case WebSockex.Conn.new(build_subscription_url(state.relay_url, state.method, state.cursor)) do
       %WebSockex.Conn{} = conn ->
         {:reconnect, conn, state}
 
@@ -174,11 +191,14 @@ defmodule Exosphere.ATProto.Firehose.Consumer do
     Process.sleep(backoff + jitter)
   end
 
-  defp build_subscription_url(relay, nil),
-    do: "#{relay}/xrpc/com.atproto.sync.subscribeRepos"
+  # A state built before :method existed has nil there; it means the default.
+  defp build_subscription_url(relay, nil, cursor),
+    do: build_subscription_url(relay, @default_method, cursor)
 
-  defp build_subscription_url(relay, cursor),
-    do: "#{relay}/xrpc/com.atproto.sync.subscribeRepos?cursor=#{cursor}"
+  defp build_subscription_url(relay, method, nil), do: "#{relay}/xrpc/#{method}"
+
+  defp build_subscription_url(relay, method, cursor),
+    do: "#{relay}/xrpc/#{method}?cursor=#{cursor}"
 
   defp process_frame(data, state) do
     stats = %{state.stats | frames: state.stats.frames + 1}
