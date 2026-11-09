@@ -103,14 +103,48 @@ defmodule Exosphere.ATProto.OAuth.ServerMetadata do
     end
   end
 
+  # Resources of the atproto permission scope syntax
+  # (https://atproto.com/specs/permission). A scope naming one of these is
+  # parameterised (`repo:pub.example.post?action=create`), so no server can list
+  # it in `scopes_supported`.
+  @granular_resources ~w(repo rpc blob account identity include)
+
   @doc """
-  The scopes to request: the intersection of the client's desired scopes
-  with those the server supports.
+  The scopes to request, given the client's desired scopes.
+
+  Static scopes (`atproto`, `transition:*`, anything else) are kept only if the
+  server lists them in `scopes_supported`.
+
+  Granular permission scopes (`repo:…`, `rpc:…`, `blob:…`, `account:…`,
+  `identity:…`, `include:…`) take parameters, so servers never list them. They
+  are kept whenever the server lists `atproto`. If the server does not actually
+  support one, it rejects the pushed authorization request with
+  `invalid_scope`, and the caller can retry with a narrower set.
   """
   @spec supported_scopes(t(), [String.t()]) :: [String.t()]
   def supported_scopes(%__MODULE__{scopes_supported: supported}, desired)
       when is_list(desired) do
-    Enum.filter(desired, &(&1 in supported))
+    atproto? = "atproto" in supported
+
+    Enum.filter(desired, fn scope ->
+      scope in supported or (atproto? and granular?(scope))
+    end)
+  end
+
+  @doc """
+  Whether `scope` is a granular permission scope, as opposed to a static one
+  like `atproto` or `transition:generic`.
+
+      iex> Exosphere.ATProto.OAuth.ServerMetadata.granular?("repo:pub.example.post?action=create")
+      true
+
+      iex> Exosphere.ATProto.OAuth.ServerMetadata.granular?("transition:generic")
+      false
+  """
+  @spec granular?(String.t()) :: boolean()
+  def granular?(scope) when is_binary(scope) do
+    [resource | _] = String.split(scope, [":", "?"], parts: 2)
+    resource in @granular_resources and resource != scope
   end
 
   @doc """
