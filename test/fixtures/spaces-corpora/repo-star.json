@@ -1,0 +1,97 @@
+{
+  "generator": {
+    "repository": "https://github.com/bluesky-social/atproto",
+    "branch": "atproto-spaces-cleanup",
+    "commit": "4037310976201ee057f1b06aeef04a3cdc080258",
+    "includes": "atproto-spaces-lexicon-review@7089c42",
+    "star": "packages/star from permissioned-data@98ef3a6b9d1364f0543f137dd024de9651b21c4c (graft-star.mjs)",
+    "package": "@atproto/space@0.0.1, @atproto/star (MIT)",
+    "generatedAt": "2026-11-08"
+  },
+  "ctx": {
+    "space": "at://did:plc:spaceauthority/space/com.example.group/default",
+    "repo": "did:plc:author",
+    "rev": "3kbcq3p7ad2c2"
+  },
+  "commit": {
+    "ver": 1,
+    "repo": "did:plc:author",
+    "space": "at://did:plc:spaceauthority/space/com.example.group/default",
+    "rev": "3kbcq3p7ad2c2",
+    "data": "e520afb6cb3ed072eab5810c920850ac09bfa945fe213982e9e715140ef80091"
+  },
+  "kemVector": 0,
+  "mac": "874cced2cd2f7238f64b7b393c6165e338381a7234fc47e64688572687c74009",
+  "recordsInputOrder": [
+    "com.example.thread/3jzfcgty2a2h",
+    "z.foo.bar/a",
+    "a.foo.bar/abcdefgh"
+  ],
+  "records": [
+    {
+      "collection": "com.example.thread",
+      "rkey": "3jzfcgty2a2h",
+      "record": {
+        "$type": "com.example.thread",
+        "text": "spaces interop corpus",
+        "createdAt": "2026-11-06T00:00:00.000Z",
+        "counts": {
+          "likes": 3,
+          "shares": 0
+        },
+        "tags": [
+          "interop",
+          "lthash"
+        ],
+        "pinned": true
+      }
+    },
+    {
+      "collection": "z.foo.bar",
+      "rkey": "a",
+      "record": {
+        "$type": "z.foo.bar",
+        "note": "short path, sorts last bytewise"
+      }
+    },
+    {
+      "collection": "a.foo.bar",
+      "rkey": "abcdefgh",
+      "record": {
+        "$type": "a.foo.bar",
+        "note": "longer path, sorts first bytewise"
+      }
+    }
+  ],
+  "setHashElements": [
+    "com.example.thread/3jzfcgty2a2h/bafyreif3yocxbdfb4pyhwtvdkwpwi4cb6xe6a6l2b7ddn4gkhsrv57ivuq",
+    "z.foo.bar/a/bafyreihywetr4ti43cik6b5yavzickocu6otyhybf3nw7ufoerjfuhkrkm",
+    "a.foo.bar/abcdefgh/bafyreid3mag6k2cduzpakj43plgfyya55nld5h55wokdjadnrsloygawta"
+  ],
+  "pairs": [
+    {
+      "key": "a.foo.bar/abcdefgh",
+      "value": "a2646e6f746578216c6f6e67657220706174682c20736f72747320666972737420627974657769736565247479706569612e666f6f2e626172"
+    },
+    {
+      "key": "com.example.thread/3jzfcgty2a2h",
+      "value": "a664746167738267696e7465726f70666c746861736864746578747573706163657320696e7465726f7020636f7270757365247479706572636f6d2e6578616d706c652e74687265616466636f756e7473a2656c696b65730366736861726573006670696e6e6564f5696372656174656441747818323032362d31312d30365430303a30303a30302e3030305a"
+    },
+    {
+      "key": "z.foo.bar/a",
+      "value": "a2646e6f7465781f73686f727420706174682c20736f727473206c617374206279746577697365652474797065697a2e666f6f2e626172"
+    }
+  ],
+  "star": "KmwBAK8BpmNyZXZtM2tiY3EzcDdhZDJjMmN2ZXIBZGRhdGFYIOUgr7bLPtBy6rWBDJIIUKwJv6lF/iE5gunnFRQO+ACRZHJlcG9uZGlkOnBsYzphdXRob3JlJHR5cGVyYXRwcm90by1zcGFjZS1yZXBvZXNwYWNleDthdDovL2RpZDpwbGM6c3BhY2VhdXRob3JpdHkvc3BhY2UvY29tLmV4YW1wbGUuZ3JvdXAvZGVmYXVsdAESYS5mb28uYmFyL2FiY2RlZmdoOaJkbm90ZXghbG9uZ2VyIHBhdGgsIHNvcnRzIGZpcnN0IGJ5dGV3aXNlZSR0eXBlaWEuZm9vLmJhcgEfY29tLmV4YW1wbGUudGhyZWFkLzNqemZjZ3R5MmEyaI0BpmR0YWdzgmdpbnRlcm9wZmx0aGFzaGR0ZXh0dXNwYWNlcyBpbnRlcm9wIGNvcnB1c2UkdHlwZXJjb20uZXhhbXBsZS50aHJlYWRmY291bnRzomVsaWtlcwNmc2hhcmVzAGZwaW5uZWT1aWNyZWF0ZWRBdHgYMjAyNi0xMS0wNlQwMDowMDowMC4wMDBaAQt6LmZvby5iYXIvYTeiZG5vdGV4H3Nob3J0IHBhdGgsIHNvcnRzIGxhc3QgYnl0ZXdpc2VlJHR5cGVpei5mb28uYmFyAA==",
+  "empty": {
+    "commit": {
+      "ver": 1,
+      "repo": "did:plc:author",
+      "space": "at://did:plc:spaceauthority/space/com.example.group/default",
+      "rev": "3kbcq3p7ad2c2",
+      "data": "e5a00aa9991ac8a5ee3109844d84a55583bd20572ad3ffcd42792f3c36b183ad"
+    },
+    "mac": "966247cd5d20e775dbc320755d44d51b9fb280207015828db8f7085335f4680b",
+    "star": "KmwBAK8BpmNyZXZtM2tiY3EzcDdhZDJjMmN2ZXIBZGRhdGFYIOWgCqmZGsil7jEJhE2EpVWDvSBXKtP/zUJ5Lzw2sYOtZHJlcG9uZGlkOnBsYzphdXRob3JlJHR5cGVyYXRwcm90by1zcGFjZS1yZXBvZXNwYWNleDthdDovL2RpZDpwbGM6c3BhY2VhdXRob3JpdHkvc3BhY2UvY29tLmV4YW1wbGUuZ3JvdXAvZGVmYXVsdAA="
+  }
+}

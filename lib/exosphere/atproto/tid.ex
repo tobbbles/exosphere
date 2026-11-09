@@ -84,7 +84,7 @@ defmodule Exosphere.ATProto.TID do
   silently fresh TID would hide it.
 
   The atproto Spaces alpha uses this for a space host's `spaceRev` sequence
-  (`com.atproto.space.listRepos`, `notifyWrite`), where every accepted update
+  (`com.atproto.space.listWriters`, `notifyRepoUpdate`), where every accepted update
   is stamped `next(previous spaceRev)`.
 
       iex> prev = Exosphere.ATProto.TID.generate()

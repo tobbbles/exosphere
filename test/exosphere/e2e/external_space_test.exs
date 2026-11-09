@@ -1,6 +1,6 @@
 defmodule Exosphere.ExternalSpaceTest do
   @moduledoc """
-  A live Spaces round trip: delegation → credential → writer set → verified CAR.
+  A live Spaces round trip: delegation → credential → writer set → verified STAR archive.
 
   This is the `spaces/alpha` promotion checklist's "one `@tag :external` round
   trip against a stable alpha PDS", written so it can be run the moment such a
@@ -29,8 +29,7 @@ defmodule Exosphere.ExternalSpaceTest do
 
   alias Exosphere.ATProto.AtUri
   alias Exosphere.ATProto.Identity.{DID, Document}
-  alias Exosphere.ATProto.OAuth.DPoP
-  alias Exosphere.ATProto.Spaces.{Credential, Sync}
+  alias Exosphere.ATProto.Spaces.{Credential, HttpSignature, Sync}
 
   @moduletag :external
   @moduletag timeout: 300_000
@@ -72,33 +71,31 @@ defmodule Exosphere.ExternalSpaceTest do
                  headers: [{"authorization", "Bearer " <> token}]
                )
 
-      # 3. Exchange it at the space host for a DPoP-bound credential.
-      assert {:ok, dpop_key} = DPoP.generate_key()
+      # 3. Exchange it at the space host for a credential bound to a fresh
+      #    P-256 key; every later request is signed by that key.
+      assert {:ok, key} = HttpSignature.generate_key()
 
-      assert {:ok, %{credential: jwt}} =
-               Credential.mint(space_host, space_ref, delegation, dpop_key: dpop_key)
-
-      credential = %{credential: jwt, dpop_key: dpop_key}
+      assert {:ok, credential} =
+               Credential.mint(space_host, space_ref, delegation, key: key)
 
       # 4. The writer set.
-      assert {:ok, %{repos: repos}} = Sync.list_repos(space_host, space_ref, credential)
+      assert {:ok, %{repos: repos}} = Sync.list_writers(space_host, space_ref, credential)
       assert is_list(repos)
 
       # 5. Each member's repo, verified: a synced copy that is also an
       #    authenticated one. This is the claim the whole design rests on, and
       #    the only place it meets bytes the reference implementation produced.
       for repo <- repos do
-        {:ok, author_doc} = DID.resolve(repo.did)
-        {:ok, author_key, curve} = Document.get_space_signing_key(author_doc)
+        {:ok, author_doc} = DID.resolve(repo.repo)
 
-        ctx = %{space: space_ref, author: repo.did}
+        {:ok, kem_key} = Document.get_kem_key(author_doc)
 
         assert {:ok, verified} =
-                 Sync.get_repo(pds, space_ref, repo.did, ctx, author_key, curve, credential),
-               "full-CAR verification failed for #{repo.did}"
+                 Sync.get_repo(pds, space_ref, repo.repo, credential, kem_key: kem_key),
+               "full-archive verification failed for #{repo.repo}"
 
-        assert Sync.synced?(verified.lthash, %{"hash" => repo.hash}),
-               "the verified set hash does not match the writer set's commit hash"
+        assert Sync.synced?(verified.lthash, repo.data),
+               "the verified set hash does not match the writer set's commit data"
       end
     end
   end

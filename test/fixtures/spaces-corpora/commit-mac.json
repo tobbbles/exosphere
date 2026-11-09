@@ -1,0 +1,175 @@
+{
+  "generator": {
+    "repository": "https://github.com/bluesky-social/atproto",
+    "branch": "atproto-spaces-cleanup",
+    "commit": "4037310976201ee057f1b06aeef04a3cdc080258",
+    "includes": "atproto-spaces-lexicon-review@7089c42",
+    "star": "packages/star from permissioned-data@98ef3a6b9d1364f0543f137dd024de9651b21c4c (graft-star.mjs)",
+    "package": "@atproto/space@0.0.1, @atproto/star (MIT)",
+    "generatedAt": "2026-11-08"
+  },
+  "kem": {
+    "author": {
+      "privateKey": "5f8a4c3b2e1d0f9a8b7c6d5e4f3a2b1c0d9e8f7a6b5c4d3e2f1a0b9c8d7e6f51",
+      "publicKeyCompressed": "035c36ed5cfdcfc0be82be4f09b3c136ef23728b5852dd3495d63df64762e38a08",
+      "publicKeyUncompressed": "045c36ed5cfdcfc0be82be4f09b3c136ef23728b5852dd3495d63df64762e38a08b07fb1229072e110f16cfdd184cf06bece455f11d48f9702d422f2cf17db36b3",
+      "didKey": "did:key:zDnaeosFW7zwgCDCb4opqUui1SfD3X6Wvnm2fTpWEatJhyey5"
+    },
+    "vectors": [
+      {
+        "ephemeralPrivateKey": "0f1e2d3c4b5a69788796a5b4c3d2e1f00112233445566778899aabbccddeeff1",
+        "ephemeralPublicKeyUncompressed": "04ab201a720deda6bc2688aed86e650bcc7dff06792b56095c31b0f2d7ecb87148ecdb85320b508b54c68d9376403ef3ce66aa3d7c39ce68f3e8e7a6c57976fce6",
+        "keyShare": "did:key:zDnaebwy9w5UeubggbQeJZhoG8jpp6rP9MKT42XonaS8WSZz7",
+        "sharedSecret": "5d1d5efbb29294e7bbf7325b1049bd1ac35190c20c3afe465abec4fa84565059"
+      },
+      {
+        "ephemeralPrivateKey": "a1b2c3d4e5f60718293a4b5c6d7e8f90a1b2c3d4e5f60718293a4b5c6d7e8f91",
+        "ephemeralPublicKeyUncompressed": "04524ccb93d1bf2c512f9de286baa59641bb83802ae92bb5ff2b5a125aef2ee0e47c09b740067b73aa21a33bc2e6e180004ba3516c377fe30af4e901a6c357ad82",
+        "keyShare": "did:key:zDnaeVyEPtfMbVj2PYJTzy8TQkvcgCW8D5dx3GMkiPp6GdJcb",
+        "sharedSecret": "d652fb1e42609ae32a5eb5c531b294eaacce352dfe87cca78b56ace5d42ee19d"
+      },
+      {
+        "ephemeralPrivateKey": "3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c",
+        "ephemeralPublicKeyUncompressed": "04480011fd860eae308cc4291ee974eaa40ded6e99e1a51cca5d1e694fdb855afbbf66413c95d399ca88e58c6238166dcb3c07f6c17509af8ed1b8bb15ce4a49fd",
+        "keyShare": "did:key:zDnaenWLqH8nddvKvYSgjaUsCJkuoxXhbXSqdmf8eM946nBQe",
+        "sharedSecret": "8510b5a81600a8b5957a314b68c356f83fa4d01d425195fa38acd31c6cba2183"
+      }
+    ]
+  },
+  "commits": [
+    {
+      "name": "basic",
+      "ctx": {
+        "space": "at://did:plc:spaceauthority/space/com.example.group/default",
+        "repo": "did:plc:author",
+        "rev": "3kbcq3p7ad2c2"
+      },
+      "kemVector": 0,
+      "sharedSecret": "5d1d5efbb29294e7bbf7325b1049bd1ac35190c20c3afe465abec4fa84565059",
+      "elements": [
+        "com.example.thread/3jzfcgty2a2h/bafyreif3yocxbdfb4pyhwtvdkwpwi4cb6xe6a6l2b7ddn4gkhsrv57ivuq",
+        "z.foo.bar/a/bafyreihywetr4ti43cik6b5yavzickocu6otyhybf3nw7ufoerjfuhkrkm",
+        "a.foo.bar/abcdefgh/bafyreid3mag6k2cduzpakj43plgfyya55nld5h55wokdjadnrsloygawta"
+      ],
+      "commit": {
+        "ver": 1,
+        "repo": "did:plc:author",
+        "space": "at://did:plc:spaceauthority/space/com.example.group/default",
+        "rev": "3kbcq3p7ad2c2",
+        "data": "e520afb6cb3ed072eab5810c920850ac09bfa945fe213982e9e715140ef80091"
+      },
+      "mac": "874cced2cd2f7238f64b7b393c6165e338381a7234fc47e64688572687c74009",
+      "macHeader": "type=\"atproto-space-repo\", ver=1, mac=:h0zO0s0vcjj2S3s5PGFl4zg4GnI0/EfmRohXJofHQAk=:",
+      "wantMacHeader": "type=\"atproto-space-repo\", ver=1, key_share=\"did:key:zDnaebwy9w5UeubggbQeJZhoG8jpp6rP9MKT42XonaS8WSZz7\""
+    },
+    {
+      "name": "next-rev",
+      "ctx": {
+        "space": "at://did:plc:spaceauthority/space/com.example.group/default",
+        "repo": "did:plc:author",
+        "rev": "3kbcq3p7ad2k4"
+      },
+      "kemVector": 1,
+      "sharedSecret": "d652fb1e42609ae32a5eb5c531b294eaacce352dfe87cca78b56ace5d42ee19d",
+      "elements": [
+        "com.example.thread/3jzfcgty2a2h/bafyreif3yocxbdfb4pyhwtvdkwpwi4cb6xe6a6l2b7ddn4gkhsrv57ivuq",
+        "z.foo.bar/a/bafyreihywetr4ti43cik6b5yavzickocu6otyhybf3nw7ufoerjfuhkrkm",
+        "a.foo.bar/abcdefgh/bafyreid3mag6k2cduzpakj43plgfyya55nld5h55wokdjadnrsloygawta"
+      ],
+      "commit": {
+        "ver": 1,
+        "repo": "did:plc:author",
+        "space": "at://did:plc:spaceauthority/space/com.example.group/default",
+        "rev": "3kbcq3p7ad2k4",
+        "data": "e520afb6cb3ed072eab5810c920850ac09bfa945fe213982e9e715140ef80091"
+      },
+      "mac": "011aebbf6510d398e12233170db49cfeddeb28696e4fb460d7c7655cb59caaf6",
+      "macHeader": "type=\"atproto-space-repo\", ver=1, mac=:ARrrv2UQ05jhIjMXDbSc/t3rKGluT7Rg18dlXLWcqvY=:",
+      "wantMacHeader": "type=\"atproto-space-repo\", ver=1, key_share=\"did:key:zDnaeVyEPtfMbVj2PYJTzy8TQkvcgCW8D5dx3GMkiPp6GdJcb\""
+    },
+    {
+      "name": "empty-repo",
+      "ctx": {
+        "space": "at://did:plc:spaceauthority/space/com.example.group/default",
+        "repo": "did:plc:author",
+        "rev": "3kbcq3p7ad2c2"
+      },
+      "kemVector": 0,
+      "sharedSecret": "5d1d5efbb29294e7bbf7325b1049bd1ac35190c20c3afe465abec4fa84565059",
+      "elements": [],
+      "commit": {
+        "ver": 1,
+        "repo": "did:plc:author",
+        "space": "at://did:plc:spaceauthority/space/com.example.group/default",
+        "rev": "3kbcq3p7ad2c2",
+        "data": "e5a00aa9991ac8a5ee3109844d84a55583bd20572ad3ffcd42792f3c36b183ad"
+      },
+      "mac": "966247cd5d20e775dbc320755d44d51b9fb280207015828db8f7085335f4680b",
+      "macHeader": "type=\"atproto-space-repo\", ver=1, mac=:lmJHzV0g53XbwyB1XUTVG5+ygCBwFYKNuPcIUzX0aAs=:",
+      "wantMacHeader": "type=\"atproto-space-repo\", ver=1, key_share=\"did:key:zDnaebwy9w5UeubggbQeJZhoG8jpp6rP9MKT42XonaS8WSZz7\""
+    },
+    {
+      "name": "edge-length-space-uri",
+      "ctx": {
+        "space": "at://did:plc:spaceauthority/space/com.example.group/kkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkk",
+        "repo": "did:plc:author",
+        "rev": "3kbcq3p7ad2c2"
+      },
+      "kemVector": 2,
+      "sharedSecret": "8510b5a81600a8b5957a314b68c356f83fa4d01d425195fa38acd31c6cba2183",
+      "elements": [
+        "z.foo.bar/a/bafyreihywetr4ti43cik6b5yavzickocu6otyhybf3nw7ufoerjfuhkrkm"
+      ],
+      "commit": {
+        "ver": 1,
+        "repo": "did:plc:author",
+        "space": "at://did:plc:spaceauthority/space/com.example.group/kkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkk",
+        "rev": "3kbcq3p7ad2c2",
+        "data": "dbdf396a32c8a54905c7ba6beaeff1370b7f7954764a33e219c0caef52d10bcb"
+      },
+      "mac": "6591d6c5200b3e6f16cb0472ad4a163997f021515f23120469e704f621a0d5dc",
+      "macHeader": "type=\"atproto-space-repo\", ver=1, mac=:ZZHWxSALPm8WywRyrUoWOZfwIVFfIxIEaecE9iGg1dw=:",
+      "wantMacHeader": "type=\"atproto-space-repo\", ver=1, key_share=\"did:key:zDnaenWLqH8nddvKvYSgjaUsCJkuoxXhbXSqdmf8eM946nBQe\""
+    }
+  ],
+  "records": [
+    {
+      "name": "thread",
+      "uri": "at://did:plc:spaceauthority/space/com.example.group/default/did:plc:author/com.example.thread/3jzfcgty2a2h",
+      "cid": "bafyreif3yocxbdfb4pyhwtvdkwpwi4cb6xe6a6l2b7ddn4gkhsrv57ivuq",
+      "cidBytes": "01711220bbc385708ca1e3f07b4ea3559f647041f5c9e0797a0fc636f0ca3ca35efd15a4",
+      "value": {
+        "$type": "com.example.thread",
+        "text": "spaces interop corpus",
+        "createdAt": "2026-11-06T00:00:00.000Z",
+        "counts": {
+          "likes": 3,
+          "shares": 0
+        },
+        "tags": [
+          "interop",
+          "lthash"
+        ],
+        "pinned": true
+      },
+      "kemVector": 0,
+      "mac": "39d7fece5377884e79c249871796700156b750b9d5407de5997a473ed44d5677",
+      "macHeader": "type=\"atproto-space-record\", ver=1, mac=:Odf+zlN3iE55wkmHF5ZwAVa3ULnVQH3lmXpHPtRNVnc=:",
+      "wantMacHeader": "type=\"atproto-space-record\", ver=1, key_share=\"did:key:zDnaebwy9w5UeubggbQeJZhoG8jpp6rP9MKT42XonaS8WSZz7\""
+    },
+    {
+      "name": "short-path",
+      "uri": "at://did:plc:spaceauthority/space/com.example.group/default/did:plc:author/z.foo.bar/a",
+      "cid": "bafyreihywetr4ti43cik6b5yavzickocu6otyhybf3nw7ufoerjfuhkrkm",
+      "cidBytes": "01711220f8b1271e4d1cd890af07b805728129c2a79d3c1f012edb6fd0ae24525a1d5153",
+      "value": {
+        "$type": "z.foo.bar",
+        "note": "short path, sorts last bytewise"
+      },
+      "kemVector": 2,
+      "mac": "cf12407cbcb6c3ca3e1f0a0ebae95f1751645c9f0379cf5ad9174a192f6a1f9f",
+      "macHeader": "type=\"atproto-space-record\", ver=1, mac=:zxJAfLy2w8o+HwoOuulfF1FkXJ8Dec9a2RdKGS9qH58=:",
+      "wantMacHeader": "type=\"atproto-space-record\", ver=1, key_share=\"did:key:zDnaenWLqH8nddvKvYSgjaUsCJkuoxXhbXSqdmf8eM946nBQe\""
+    }
+  ]
+}

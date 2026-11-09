@@ -1,21 +1,28 @@
 // Generates the exosphere spaces conformance corpus from the official
-// reference implementation (@atproto/space, the `permissioned-data` branch of
+// reference implementation (@atproto/space and @atproto/star from
 // bluesky-social/atproto).
 //
-// Everything byte-deterministic below is fixed here (keys, ikm, contexts,
-// records) so re-running the script reproduces the committed fixtures exactly;
-// the one exception (credential JWTs carry a fresh `iat`/`jti`) is marked
-// `nondeterministic` in its fixture and asserted by shape, not by bytes.
+// The pinned tree is the `atproto-spaces-cleanup` branch at 4037310 (which
+// carries `atproto-spaces-lexicon-review` at 7089c42) with `packages/star`
+// from `permissioned-data` at 98ef3a6 grafted in by `graft-star.mjs` — the
+// cleanup branch forked before STAR moved into its own package and gained its
+// control byte, so neither upstream tip has both. See SOURCE.md.
 //
-// Usage (from a checkout of atproto with deps installed and packages built):
+// Everything below is fixed here (keys, ephemeral keys, contexts, records) so
+// re-running the script reproduces the committed fixtures exactly. The one
+// exception is the token JWTs (fresh `iat`/`jti` per run), marked
+// `nondeterministic` in credentials.json and asserted by shape, never bytes.
+// HTTP message signatures ARE deterministic (RFC 6979 P-256 in the reference)
+// and are pinned byte-for-byte.
 //
-//   cd /path/to/atproto
+// Usage (from the grafted tree, deps installed and `packages/space` built —
+// see SOURCE.md):
+//
 //   node /path/to/exosphere/test/fixtures/spaces-corpora/generate.mjs \
-//     --out /path/to/exosphere/test/fixtures/spaces-corpora
+//     --atproto /path/to/atproto --out /path/to/exosphere/test/fixtures/spaces-corpora
 //
-// The atproto checkout defaults to $ATPROTO_PD or /tmp/atproto-pd. The script
-// imports each package's built dist directly, so workspace dependencies
-// resolve from the checkout's own node_modules.
+// The script imports each package's built dist directly, so workspace
+// dependencies resolve from the checkout's own node_modules.
 
 import { parseArgs } from 'node:util'
 import { pathToFileURL } from 'node:url'
@@ -36,29 +43,44 @@ const fromDist = (rel) => import(pathToFileURL(resolve(atprotoDir, rel)))
 
 const space = await fromDist('packages/space/dist/index.js')
 const crypto = await fromDist('packages/crypto/dist/index.js')
-const car = await fromDist('packages/car/dist/car-block.js')
-const k256 = (await fromDist('packages/crypto/node_modules/@noble/curves/esm/secp256k1.js')).secp256k1
-const p256 = (await fromDist('packages/crypto/node_modules/@noble/curves/esm/p256.js')).p256
+const star = await fromDist('packages/star/dist/index.js')
 
 const {
   LtHash,
   RepoCommit,
-  encodeCommitCtx,
-  verifyCommit,
-  formatSetHashElement,
-  serializeRepo,
+  writeRepoStar,
   serializeRecord,
-  verifyRepoCarFull,
-  createSpaceToken,
+  verifyRepoStarFull,
+  verifyCommit,
+  computeCommitMac,
+  computeRecordMac,
+  formatWantMacHeader,
+  formatMacHeader,
+  decapsulate,
+  createDelegationToken,
+  createSpaceCredential,
+  createClientAttestation,
+  createSpaceSigHeaders,
+  verifyCredentialSig,
+  spaceHostAud,
+  writeSpaceMetaStar,
+  readSpaceMetaStar,
 } = space
-const { Secp256k1Keypair, P256Keypair, hkdfSha256, hmacSha256 } = crypto
-const { buildCarBlock } = car
+const { Secp256k1Keypair, P256Keypair } = crypto
+const { readStar } = star
+
+// `${collection}/${rkey}/${cid}` — the set-hash element, as the reference's
+// `formatSetHashElement` builds it (no longer exported since the cleanup
+// branch; `formatRecordPath` still is).
+const formatSetHashElement = (collection, rkey, cid) => `${space.formatRecordPath(collection, rkey)}/${cid.toString()}`
 
 const REFERENCE = {
   repository: 'https://github.com/bluesky-social/atproto',
-  branch: 'permissioned-data',
-  commit: '787a730fcd22ed7791e2636beb509a943017ba1c',
-  package: '@atproto/space@0.0.1 (MIT)',
+  branch: 'atproto-spaces-cleanup',
+  commit: '4037310976201ee057f1b06aeef04a3cdc080258',
+  includes: 'atproto-spaces-lexicon-review@7089c42',
+  star: 'packages/star from permissioned-data@98ef3a6b9d1364f0543f137dd024de9651b21c4c (graft-star.mjs)',
+  package: '@atproto/space@0.0.1, @atproto/star (MIT)',
   generatedAt: new Date().toISOString().slice(0, 10),
 }
 
@@ -72,23 +94,29 @@ const assert = (cond, msg) => {
   if (!cond) throw new Error(`assertion failed: ${msg}`)
 }
 
-// An uncompressed point (0x04||x||y) as the x/y pair of an EC JWK.
+const collect = async (chunks) => {
+  const parts = []
+  for await (const chunk of chunks) parts.push(chunk)
+  return Uint8Array.from(Buffer.concat(parts.map((p) => Buffer.from(p))))
+}
+
+const uncompressed = (curve, compressed) => curve.ProjectivePoint.fromHex(compressed).toRawBytes(false)
+
+const p256 = (await fromDist('packages/crypto/node_modules/@noble/curves/esm/p256.js')).p256
+const k256 = (await fromDist('packages/crypto/node_modules/@noble/curves/esm/secp256k1.js')).secp256k1
+
 const jwkFromCompressed = (curve, compressed) => {
-  const full = curve.ProjectivePoint.fromHex(compressed).toRawBytes(false)
+  const full = uncompressed(curve, compressed)
   return {
     kty: 'EC',
-    crv: compressed.length === 33 && curve === k256 ? 'secp256k1' : 'P-256',
+    crv: curve === k256 ? 'secp256k1' : 'P-256',
     x: Buffer.from(full.subarray(1, 33)).toString('base64url'),
     y: Buffer.from(full.subarray(33, 65)).toString('base64url'),
   }
 }
 
-// -- fixture 1: LtHash -------------------------------------------------------------
+// -- fixture 1: LtHash (unchanged since 787a730) ---------------------------------
 
-// Fixed elements: the two strings the reference test suite itself uses (also
-// pinned in exosphere's lthash_test snapshot vectors), realistic record
-// elements across three collections, and a 512-byte rkey at the grammar's
-// length limit.
 const ELEMENTS = {
   one: 'one',
   two: 'two',
@@ -157,39 +185,58 @@ const lthash = {
   ],
 }
 
-// -- fixed key, contexts, records (fixtures 2 and 3) --------------------------------
-
-// A fixed secp256k1 keypair, recorded so exosphere can both verify these
-// signatures and reproduce them (RFC 6979 deterministic ECDSA on both sides).
-const PRIV = unhex('d1a92a44ff780b5f9e2f3e94a06fbcbcb31a1f5a4df8e3d9c2d1a5a1c9d3aab1')
-const keypair = await Secp256k1Keypair.import(PRIV)
-assert(keypair.publicKeyBytes().length === 33, 'expected a compressed pubkey')
-
-const KEY = {
-  curve: 'secp256k1',
-  privateKey: hex(PRIV),
-  publicKeyCompressed: hex(keypair.publicKeyBytes()), // what Crypto.verify takes
-  didKey: keypair.did(), // what the reference's verifyCommit takes
-  jwk: jwkFromCompressed(k256, keypair.publicKeyBytes()), // what Token.verify takes
-}
+// -- fixed keys, spaces and records ---------------------------------------------------
 
 const SPACE = 'at://did:plc:spaceauthority/space/com.example.group/default'
 const AUTHOR = 'did:plc:author'
 const LONG_SPACE = `at://did:plc:spaceauthority/space/com.example.group/${'k'.repeat(512)}`
 
-const CAR_RECORDS = [
-  // Deliberately fed in NON-canonical order: the index order must come from
-  // the canonical (shortest-path-first) rule, not from input order. "z.foo.bar/a"
-  // (10 bytes) sorts before "a.foo.bar/abcdefgh" (19) under length-first
-  // ordering but AFTER it under plain bytewise ordering — the pair exists to
-  // tell the two rules apart.
+// The author's #atproto_kem keypair (held by the repo host) and fixed syncer
+// ephemeral keys. The reference's own `encapsulate` draws a random ephemeral
+// key, so the shared secrets are derived with its exported host-side
+// `decapsulate(authorKemKeypair, keyShare)` from the fixed ephemeral did:keys —
+// the same RFC 9180 derivation, reproducible.
+const KEM_PRIV = unhex('5f8a4c3b2e1d0f9a8b7c6d5e4f3a2b1c0d9e8f7a6b5c4d3e2f1a0b9c8d7e6f51')
+const kemKeypair = await P256Keypair.import(KEM_PRIV)
+const EPHEMERAL_PRIVS = [
+  '0f1e2d3c4b5a69788796a5b4c3d2e1f00112233445566778899aabbccddeeff1',
+  'a1b2c3d4e5f60718293a4b5c6d7e8f90a1b2c3d4e5f60718293a4b5c6d7e8f91',
+  '3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c',
+]
+
+const kemVector = async (ephPrivHex) => {
+  const eph = await P256Keypair.import(unhex(ephPrivHex))
+  const keyShare = eph.did()
+  const sharedSecret = decapsulate(kemKeypair, keyShare)
+  return {
+    ephemeralPrivateKey: ephPrivHex,
+    ephemeralPublicKeyUncompressed: hex(uncompressed(p256, eph.publicKeyBytes())),
+    keyShare,
+    sharedSecret: hex(sharedSecret),
+  }
+}
+
+const KEM = {
+  author: {
+    privateKey: hex(KEM_PRIV),
+    publicKeyCompressed: hex(kemKeypair.publicKeyBytes()),
+    publicKeyUncompressed: hex(uncompressed(p256, kemKeypair.publicKeyBytes())),
+    didKey: kemKeypair.did(),
+  },
+  vectors: await Promise.all(EPHEMERAL_PRIVS.map(kemVector)),
+}
+
+const RECORDS = [
+  // Deliberately fed in non-sorted order; "z.foo.bar/a" sorts after
+  // "a.foo.bar/abcdefgh" bytewise but before it by length — the old CAR
+  // index's rule. The STAR profile is strict bytewise order.
   {
     collection: 'com.example.thread',
     rkey: '3jzfcgty2a2h',
     record: {
       $type: 'com.example.thread',
       text: 'spaces interop corpus',
-      createdAt: '2026-09-22T00:00:00.000Z',
+      createdAt: '2026-11-06T00:00:00.000Z',
       counts: { likes: 3, shares: 0 },
       tags: ['interop', 'lthash'],
       pinned: true,
@@ -198,205 +245,169 @@ const CAR_RECORDS = [
   {
     collection: 'z.foo.bar',
     rkey: 'a',
-    record: { $type: 'z.foo.bar', note: 'short path, sorts first by length' },
+    record: { $type: 'z.foo.bar', note: 'short path, sorts last bytewise' },
   },
   {
     collection: 'a.foo.bar',
     rkey: 'abcdefgh',
-    record: { $type: 'a.foo.bar', note: 'longer path, sorts second by length' },
+    record: { $type: 'a.foo.bar', note: 'longer path, sorts first bytewise' },
   },
 ]
 
-const serializedRecords = []
-for (const { collection, rkey, record } of CAR_RECORDS) {
-  serializedRecords.push(await serializeRecord(collection, rkey, record))
+const serialized = []
+for (const { collection, rkey, record } of RECORDS) {
+  serialized.push(await serializeRecord(collection, rkey, record))
 }
-
-const CAR_ELEMENTS = serializedRecords.map((rec) =>
-  formatSetHashElement(rec.collection, rec.rkey, rec.cid),
+const sortedRecords = [...serialized].sort((a, b) =>
+  Buffer.compare(Buffer.from(`${a.collection}/${a.rkey}`), Buffer.from(`${b.collection}/${b.rkey}`)),
 )
 
-// -- fixture 2: signedCommit ---------------------------------------------------------
+const ELEMENTS_OF_RECORDS = serialized.map((r) => formatSetHashElement(r.collection, r.rkey, r.cid))
 
-// RepoCommit.sign() draws a fresh random ikm; for byte-determinism the commits
-// are assembled from the same exported primitives sign() itself uses
-// (encodeCommitCtx, keypair.sign, hkdfSha256, hmacSha256) with fixed ikm, then
-// double-checked with verifyCommit.
-const buildCommit = async (name, ctx, ikm, elements) => {
-  const repo = new RepoCommit()
-  for (const element of elements) repo.setHash.add(element)
-  const hash = repo.setHash.digest()
-  const ctxBytes = encodeCommitCtx(ctx, ikm)
-  const commit = {
-    ver: 1,
-    hash,
-    ikm,
-    mac: hmacSha256(hkdfSha256(ikm, ctxBytes), hash),
-    sig: await keypair.sign(ctxBytes),
-    rev: ctx.rev,
-  }
-  assert(await verifyCommit(commit, ctx, KEY.didKey), `verifyCommit rejected ${name}`)
+const commitOver = (ctx, records) => RepoCommit.fromRecords(records).toCommit(ctx)
+
+// -- fixture 2: commit and record MACs ---------------------------------------------
+
+const secretOf = (i) => unhex(KEM.vectors[i].sharedSecret)
+
+const commitVariant = (name, ctx, records, secretIndex) => {
+  const commit = commitOver(ctx, records)
+  const sharedSecret = secretOf(secretIndex)
+  const mac = computeCommitMac(sharedSecret, commit)
+  // Throws on any mismatch (it returned a boolean before the cleanup branch).
+  verifyCommit(commit, { space: ctx.space, repo: ctx.repo, sharedSecret, mac })
   return {
     name,
     ctx,
-    ikm: hex(ikm),
-    ctxBytes: hex(ctxBytes),
-    // The set-hash elements folded into this commit's hash, so consumers can
-    // rebuild the exact LtHash input.
-    elements,
-    commit: {
-      ver: 1,
-      hash: hex(hash),
-      ikm: hex(ikm),
-      sig: hex(commit.sig),
-      mac: hex(commit.mac),
-      rev: ctx.rev,
-    },
+    kemVector: secretIndex,
+    sharedSecret: hex(sharedSecret),
+    elements: records.map((r) => formatSetHashElement(r.collection, r.rkey, r.cid)),
+    commit: { ...commit, data: hex(commit.data) },
+    mac: hex(mac),
+    macHeader: formatMacHeader('atproto-space-repo', mac),
+    wantMacHeader: formatWantMacHeader('atproto-space-repo', KEM.vectors[secretIndex].keyShare),
   }
 }
 
-const signedCommit = {
+const recordVariant = (name, uri, rec, secretIndex) => {
+  const sharedSecret = secretOf(secretIndex)
+  const mac = computeRecordMac(sharedSecret, uri, rec.cid)
+  return {
+    name,
+    uri,
+    cid: rec.cid.toString(),
+    cidBytes: hex(rec.cid.bytes),
+    value: rec.record ?? null,
+    kemVector: secretIndex,
+    mac: hex(mac),
+    macHeader: formatMacHeader('atproto-space-record', mac),
+    wantMacHeader: formatWantMacHeader('atproto-space-record', KEM.vectors[secretIndex].keyShare),
+  }
+}
+
+const commitMac = {
   generator: REFERENCE,
-  key: KEY,
-  variants: [
-    await buildCommit(
-      'basic',
-      { space: SPACE, author: AUTHOR, rev: '3kbcq3p7ad2c2' },
-      unhex('2f9a1b77c11e4f0fde13b8a29d1c47e56a33f2ac1d0e7b44c9a2f6b3d5e8f701'),
-      CAR_ELEMENTS,
-    ),
-    await buildCommit(
-      'next-rev',
-      { space: SPACE, author: AUTHOR, rev: '3kbcq3p7ad2k4' },
-      unhex('101112131415161718191a1b1c1d1e1f202122232425262728292a2b2c2d2e2f'),
-      CAR_ELEMENTS,
-    ),
-    await buildCommit(
-      'empty-repo',
-      { space: SPACE, author: AUTHOR, rev: '3kbcq3p7ad2c2' },
-      unhex('000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f'),
-      [],
-    ),
-    await buildCommit(
+  kem: KEM,
+  commits: [
+    commitVariant('basic', { space: SPACE, repo: AUTHOR, rev: '3kbcq3p7ad2c2' }, serialized, 0),
+    commitVariant('next-rev', { space: SPACE, repo: AUTHOR, rev: '3kbcq3p7ad2k4' }, serialized, 1),
+    commitVariant('empty-repo', { space: SPACE, repo: AUTHOR, rev: '3kbcq3p7ad2c2' }, [], 0),
+    commitVariant(
       'edge-length-space-uri',
-      { space: LONG_SPACE, author: AUTHOR, rev: '3kbcq3p7ad2c2' },
-      unhex('f0e0d0c0b0a09080706050403020100112233445566778899aabbccddeeff0f0e'),
-      [CAR_ELEMENTS[1]],
+      { space: LONG_SPACE, repo: AUTHOR, rev: '3kbcq3p7ad2c2' },
+      [serialized[1]],
+      2,
     ),
+  ],
+  records: [
+    recordVariant(
+      'thread',
+      `${SPACE}/${AUTHOR}/com.example.thread/3jzfcgty2a2h`,
+      { ...serialized[0], record: RECORDS[0].record },
+      0,
+    ),
+    recordVariant('short-path', `${SPACE}/${AUTHOR}/z.foo.bar/a`, { ...serialized[1], record: RECORDS[1].record }, 2),
   ],
 }
 
-// -- fixture 3: the two-root CAR -------------------------------------------------------
+// -- fixture 3: the repo STAR archive ---------------------------------------------------
 
-const carCtx = { space: SPACE, author: AUTHOR, rev: '3kbcq3p7ad2c2' }
-const basicVariant = signedCommit.variants.find((v) => v.name === 'basic')
-const carCommit = basicVariant.commit
-const carCommitWire = {
-  ver: carCommit.ver,
-  hash: unhex(carCommit.hash),
-  ikm: unhex(carCommit.ikm),
-  sig: unhex(carCommit.sig),
-  mac: unhex(carCommit.mac),
-  rev: carCommit.rev,
-}
-
-const carFrom = async (opts) => {
-  const chunks = []
-  for await (const chunk of serializeRepo(carCommitWire, serializedRecords, opts)) {
-    chunks.push(chunk)
-  }
-  const total = chunks.reduce((n, c) => n + c.length, 0)
-  const bytes = new Uint8Array(total)
-  let offset = 0
-  for (const chunk of chunks) {
-    bytes.set(chunk, offset)
-    offset += chunk.length
-  }
-  return bytes
-}
-
-const carBytes = await carFrom({})
-const carIndexOnlyBytes = await carFrom({ excludeValues: true })
+const starCtx = { space: SPACE, repo: AUTHOR, rev: '3kbcq3p7ad2c2' }
+const starCommit = commitOver(starCtx, serialized)
+const starBytes = await collect(writeRepoStar(starCommit, sortedRecords))
+const emptyCommit = commitOver(starCtx, [])
+const emptyStarBytes = await collect(writeRepoStar(emptyCommit, []))
 
 // Self-check with the reference consumer before pinning anything.
-const verified = await verifyRepoCarFull(carBytes, {
-  space: carCtx.space,
-  author: carCtx.author,
-  didKey: KEY.didKey,
+const starSecret = secretOf(0)
+const starMac = computeCommitMac(starSecret, starCommit)
+const verifiedStar = await verifyRepoStarFull([starBytes], {
+  space: SPACE,
+  repo: AUTHOR,
+  sharedSecret: starSecret,
+  mac: starMac,
 })
-assert(verified.records.length === 3, 'reference consumer saw wrong record count')
-assert(verified.repo.matches(carCommitWire), 'reference consumer: index/hash mismatch')
+assert(verifiedStar.records.length === 3, 'reference consumer saw the wrong record count')
 
-const verifiedIndexOnly = await verifyRepoCarFull(carIndexOnlyBytes, {
-  space: carCtx.space,
-  author: carCtx.author,
-  didKey: KEY.didKey,
-  expectValues: false,
-})
-assert(verifiedIndexOnly.records.length === 0, 'index-only car carried records')
-
-// Roots and block bytes straight from the provider's own block builder.
-const commitBlock = await buildCarBlock(carCommitWire)
-const indexBlock = await buildCarBlock(verified.index)
-const recordBlocks = new Map(
-  serializedRecords.map((rec) => [rec.collection + '/' + rec.rkey, rec]),
-)
-
-const repoCar = {
-  generator: REFERENCE,
-  key: KEY,
-  ctx: carCtx,
-  commit: carCommit,
-  // Input order is deliberately non-canonical (see CAR_RECORDS above); the
-  // index below is the canonical DRISL order the provider emitted.
-  recordsInputOrder: CAR_RECORDS.map((r) => r.collection + '/' + r.rkey),
-  records: CAR_RECORDS,
-  setHashElements: CAR_ELEMENTS,
-  indexEntries: Object.entries(verified.index).map(([path, cid]) => [path, cid.toString()]),
-  roots: { commit: commitBlock.cid.toString(), index: indexBlock.cid.toString() },
-  blocks: [
-    { role: 'commit', cid: commitBlock.cid.toString(), bytes: hex(commitBlock.bytes) },
-    { role: 'index', cid: indexBlock.cid.toString(), bytes: hex(indexBlock.bytes) },
-    ...Object.entries(verified.index).map(([path, cid]) => {
-      const rec = recordBlocks.get(path)
-      return { role: 'record', path, cid: cid.toString(), bytes: hex(rec.bytes) }
-    }),
-  ],
-  car: b64(carBytes),
-  carIndexOnly: b64(carIndexOnlyBytes),
+const starReader = await readStar([starBytes])
+const starPairs = []
+for await (const { key, value } of starReader.pairs) {
+  starPairs.push({ key: Buffer.from(key).toString('utf8'), value: hex(value) })
 }
 
-// -- fixture 4: credential token classes -----------------------------------------------
+const repoStar = {
+  generator: REFERENCE,
+  ctx: starCtx,
+  commit: { ...starCommit, data: hex(starCommit.data) },
+  kemVector: 0,
+  mac: hex(starMac),
+  recordsInputOrder: RECORDS.map((r) => `${r.collection}/${r.rkey}`),
+  records: RECORDS,
+  setHashElements: ELEMENTS_OF_RECORDS,
+  pairs: starPairs,
+  star: b64(starBytes),
+  empty: {
+    commit: { ...emptyCommit, data: hex(emptyCommit.data) },
+    mac: hex(computeCommitMac(starSecret, emptyCommit)),
+    star: b64(emptyStarBytes),
+  },
+}
 
-// createSpaceToken fixes nothing about iat/jti, so these JWTs are NOT
-// byte-reproducible across runs; the fixture records the decoded classes and
-// the signing keys, and exosphere asserts shape + signature, not bytes.
-const delegationJwt = await createSpaceToken(
-  'delegation',
-  { iss: AUTHOR, sub: SPACE, aud: 'did:plc:spaceauthority#atproto_space_host' },
-  keypair,
-)
+// -- fixture 4: credential token classes and the HTTP message signature ---------------
 
-const CRED_PRIV = unhex('4b6f2a9e0e6b4b8e9a2c1d3f5b7a9c1e3d5f7a9b1c3e5d7f9a1b3c5d7e9f1a3b')
-const credentialKeypair = await Secp256k1Keypair.import(CRED_PRIV)
-const DPOP_JKT = '0ZcOCORZNYy-DWpqq30jZyJGHTN0d2HglBV3uiguA4I'
-const credentialJwt = await createSpaceToken(
-  'credential',
-  { iss: 'did:plc:spaceauthority', sub: SPACE, dpopJkt: DPOP_JKT },
-  credentialKeypair,
-)
-
+const USER_PRIV = unhex('d1a92a44ff780b5f9e2f3e94a06fbcbcb31a1f5a4df8e3d9c2d1a5a1c9d3aab1')
+const userKeypair = await Secp256k1Keypair.import(USER_PRIV)
+const AUTH_PRIV = unhex('4b6f2a9e0e6b4b8e9a2c1d3f5b7a9c1e3d5f7a9b1c3e5d7f9a1b3c5d7e9f1a3b')
+const authorityKeypair = await Secp256k1Keypair.import(AUTH_PRIV)
 const ATTEST_PRIV = unhex('8f2a1b3c4d5e6f708192a3b4c5d6e7f8091a2b3c4d5e6f708192a3b4c5d6e7f0')
 const attestationKeypair = await P256Keypair.import(ATTEST_PRIV)
-const attestationJwt = await createSpaceToken(
-  'clientAttestation',
-  {
-    iss: 'https://app.example.com/client-metadata.json',
-    sub: 'https://app.example.com/client-metadata.json',
-    aud: 'did:plc:spaceauthority#atproto_space_host',
-  },
-  attestationKeypair,
-)
+// The syncer's credential key: the P-256 key bound by cnf.kid.
+const CRED_KEY_PRIV = unhex('7c1e5a3f9b2d4c6e8a0f1b3d5c7e9a2b4d6f8a0c2e4b6d8f0a1c3e5b7d9f2a4c')
+const credentialKey = await P256Keypair.import(CRED_KEY_PRIV)
+
+const AUTHORITY = 'did:plc:spaceauthority'
+const AUD = spaceHostAud(AUTHORITY)
+
+const keyInfo = (curve, priv, keypair) => ({
+  curve: curve === k256 ? 'secp256k1' : 'p256',
+  privateKey: hex(priv),
+  publicKeyCompressed: hex(keypair.publicKeyBytes()),
+  didKey: keypair.did(),
+  jwk: jwkFromCompressed(curve, keypair.publicKeyBytes()),
+})
+
+const delegationJwt = await createDelegationToken({ iss: AUTHOR, sub: SPACE, aud: AUD, keypair: userKeypair })
+const credentialJwt = await createSpaceCredential({
+  iss: AUTHORITY,
+  sub: SPACE,
+  keyId: credentialKey.did(),
+  keypair: authorityKeypair,
+})
+const attestationJwt = await createClientAttestation({
+  clientId: 'https://app.example.com/client-metadata.json',
+  aud: AUD,
+  keypair: attestationKeypair,
+})
 
 const decodeJwt = (jwt) => {
   const [h, p] = jwt.split('.')
@@ -404,42 +415,39 @@ const decodeJwt = (jwt) => {
   return { header: dec(h), payload: dec(p) }
 }
 
+// The signature is over the Authorization value and the audience only, so a
+// fixed credential string pins it byte-for-byte (RFC 6979 in the reference).
+const SIG_AUTHORIZATION = 'Atproto-Space-Credential eyJhbGciOiJFUzI1NksiLCJ0eXAiOiJhdHByb3RvLXNwYWNlLWNyZWRlbnRpYWwrand0In0.e30.c2ln'
+const { headers: sigHeaders } = await createSpaceSigHeaders({
+  authorization: SIG_AUTHORIZATION,
+  audience: AUTHOR,
+  keypair: credentialKey,
+})
+await verifyCredentialSig(sigHeaders, credentialKey.did())
+
 const credentials = {
   generator: REFERENCE,
-  nondeterministic: 'iat/jti are fresh per run — assert shape and signature, not bytes',
+  nondeterministic: 'token iat/jti are fresh per run — assert shape and signature, not bytes',
   tokens: [
     {
       class: 'delegation',
       jwt: delegationJwt,
       ...decodeJwt(delegationJwt),
-      signingKey: KEY,
-      expected: {
-        typ: 'atproto-space-delegation+jwt',
-        kid: '#atproto',
-        expMinusIat: 60,
-        iss: AUTHOR,
-        sub: SPACE,
-        aud: 'did:plc:spaceauthority#atproto_space_host',
-      },
+      signingKey: keyInfo(k256, USER_PRIV, userKeypair),
+      expected: { typ: 'atproto-space-delegation+jwt', kid: '#atproto', expMinusIat: 60, iss: AUTHOR, sub: SPACE, aud: AUD },
     },
     {
       class: 'credential',
       jwt: credentialJwt,
       ...decodeJwt(credentialJwt),
-      signingKey: {
-        curve: 'secp256k1',
-        privateKey: hex(CRED_PRIV),
-        publicKeyCompressed: hex(credentialKeypair.publicKeyBytes()),
-        didKey: credentialKeypair.did(),
-        jwk: jwkFromCompressed(k256, credentialKeypair.publicKeyBytes()),
-      },
+      signingKey: keyInfo(k256, AUTH_PRIV, authorityKeypair),
       expected: {
         typ: 'atproto-space-credential+jwt',
         kid: '#atproto',
-        expMinusIat: 7200,
-        iss: 'did:plc:spaceauthority',
+        expMinusIat: 600,
+        iss: AUTHORITY,
         sub: SPACE,
-        cnfJkt: DPOP_JKT,
+        cnfKid: credentialKey.did(),
         noAud: true,
       },
     },
@@ -447,23 +455,54 @@ const credentials = {
       class: 'clientAttestation',
       jwt: attestationJwt,
       ...decodeJwt(attestationJwt),
-      signingKey: {
-        curve: 'p256',
-        privateKey: hex(ATTEST_PRIV),
-        publicKeyCompressed: hex(attestationKeypair.publicKeyBytes()),
-        didKey: attestationKeypair.did(),
-        jwk: jwkFromCompressed(p256, attestationKeypair.publicKeyBytes()),
-      },
+      signingKey: keyInfo(p256, ATTEST_PRIV, attestationKeypair),
       expected: {
         typ: 'atproto-client-attestation+jwt',
         noKid: true,
         expMinusIat: 60,
         iss: 'https://app.example.com/client-metadata.json',
         sub: 'https://app.example.com/client-metadata.json',
-        aud: 'did:plc:spaceauthority#atproto_space_host',
+        aud: AUD,
       },
     },
   ],
+  httpSignature: {
+    key: keyInfo(p256, CRED_KEY_PRIV, credentialKey),
+    authorization: SIG_AUTHORIZATION,
+    audience: AUTHOR,
+    headers: sigHeaders,
+  },
+}
+
+// -- fixture 5: the space meta archive -----------------------------------------------
+
+const metaArchive = {
+  space: SPACE,
+  policy: { $type: 'com.atproto.memberspace.policy', publicRead: false, publicWrite: false, publishMembers: true },
+  policyState: [
+    { key: 'com.atproto.memberspace.member/did:plc:carol', value: { $type: 'com.atproto.memberspace.member', read: true, write: false } },
+    { key: 'com.atproto.memberspace.member/did:plc:alice', value: { $type: 'com.atproto.memberspace.member', read: true, write: true } },
+  ],
+  writers: [
+    // `repoRev`, not `rev`, since the cleanup branch (matching listWriters).
+    { did: 'did:plc:bob', repoRev: '3kbcq3p7ad2k4', data: starCommit.data, spaceRev: '3kbcq3p7ad3a2' },
+    { did: AUTHOR, repoRev: '3kbcq3p7ad2c2', data: emptyCommit.data, spaceRev: '3kbcq3p7ad3a4' },
+  ],
+}
+const metaBytes = await collect(writeSpaceMetaStar(metaArchive))
+const metaRead = await readSpaceMetaStar([metaBytes])
+assert(metaRead.writers.length === 2, 'reference meta reader saw the wrong writer count')
+
+const spaceMeta = {
+  generator: REFERENCE,
+  archive: {
+    space: SPACE,
+    policy: metaArchive.policy,
+    // In archive order (sorted), as the reference reads them back.
+    policyState: metaRead.policyState,
+    writers: metaRead.writers.map((w) => ({ ...w, data: hex(w.data) })),
+  },
+  star: b64(metaBytes),
 }
 
 // -- write -------------------------------------------------------------------------------
@@ -471,9 +510,10 @@ const credentials = {
 await mkdir(outDir, { recursive: true })
 for (const [name, fixture] of [
   ['lthash.json', lthash],
-  ['signed-commit.json', signedCommit],
-  ['repo-car.json', repoCar],
+  ['commit-mac.json', commitMac],
+  ['repo-star.json', repoStar],
   ['credentials.json', credentials],
+  ['space-meta.json', spaceMeta],
 ]) {
   await writeFile(resolve(outDir, name), JSON.stringify(fixture, null, 2) + '\n')
   console.log(`wrote ${name}`)

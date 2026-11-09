@@ -2,7 +2,7 @@ defmodule Exosphere.ATProto.Spaces.SpecEncoderTest do
   @moduledoc """
   The G6 differential: the spec-only second encoder (`SpecEncoder`, written
   from the proposal README) against both the production implementation
-  (`Spaces.{Lthash,Commit,Repo}`) and the reference corpus.
+  (`Spaces.{Lthash,Kem,Mac,Repo}`) and the reference corpus.
 
   Agreement between the two encoders is evidence a shared-encoder dogfood loop
   cannot produce: a wrong reading of the proposal would have to be made twice,
@@ -13,16 +13,14 @@ defmodule Exosphere.ATProto.Spaces.SpecEncoderTest do
   use ExUnitProperties
 
   alias Exosphere.ATProto.{CID, Crypto}
-  alias Exosphere.ATProto.Spaces.{Commit, Lthash, Repo, SpecEncoder}
+  alias Exosphere.ATProto.Spaces.{Kem, Lthash, Mac, Repo, SpecEncoder}
   alias Exosphere.Test.Interop
 
-  @signed_commit Interop.spaces_corpus("signed-commit.json")
-  @repo_car Interop.spaces_corpus("repo-car.json")
-
-  # A pinned ikm so the CAR differential's commits are byte-deterministic.
-  @ikm Base.decode16!("2F9A1B77C11E4F0FDE13B8A29D1C47E56A33F2AC1D0E7B44C9A2F6B3D5E8F701")
-
   defp unhex(s), do: Base.decode16!(s, case: :mixed)
+
+  @commit_mac Interop.spaces_corpus("commit-mac.json")
+  @repo_star Interop.spaces_corpus("repo-star.json")
+  @space_meta Interop.spaces_corpus("space-meta.json")
 
   describe "the spec encoder independently reproduces the corpus" do
     test "every LtHash case, from its own lane math" do
@@ -42,34 +40,149 @@ defmodule Exosphere.ATProto.Spaces.SpecEncoderTest do
       end
     end
 
-    test "every commit context and MAC" do
-      for variant <- @signed_commit["variants"] do
-        %{"space" => space, "author" => author, "rev" => rev} = variant["ctx"]
-        ikm = unhex(variant["ikm"])
+    test "every KEM shared secret, from its own HKDF over :crypto's ECDH" do
+      author = @commit_mac["kem"]["author"]
 
-        assert SpecEncoder.commit_context(space, author, rev, ikm) == unhex(variant["ctxBytes"])
+      for vector <- @commit_mac["kem"]["vectors"] do
+        eph = unhex(vector["ephemeralPrivateKey"])
+        dh = SpecEncoder.ecdh(eph, unhex(author["publicKeyUncompressed"]))
 
-        assert SpecEncoder.commit_mac(
-                 ikm,
-                 unhex(variant["ctxBytes"]),
-                 unhex(variant["commit"]["hash"])
-               ) ==
-                 unhex(variant["commit"]["mac"])
+        assert SpecEncoder.shared_secret(
+                 dh,
+                 unhex(vector["ephemeralPublicKeyUncompressed"]),
+                 unhex(author["publicKeyUncompressed"])
+               ) == unhex(vector["sharedSecret"])
       end
     end
 
-    test "the whole two-root CAR, full and index-only" do
-      records = Enum.map(@repo_car["records"], &{&1["collection"], &1["rkey"], &1["record"]})
-      commit = wire_commit(@repo_car["commit"])
+    test "every commit context, MAC and header" do
+      for variant <- @commit_mac["commits"] do
+        %{"space" => space, "repo" => repo, "rev" => rev, "data" => data} = variant["commit"]
+        secret = unhex(variant["sharedSecret"])
+        mac = SpecEncoder.commit_mac(secret, space, repo, rev, unhex(data))
 
-      assert SpecEncoder.serialize_repo(commit, records) == Base.decode64!(@repo_car["car"])
+        assert mac == unhex(variant["mac"]), "#{variant["name"]}: MAC diverged"
+        assert SpecEncoder.mac_header("atproto-space-repo", mac) == variant["macHeader"]
 
-      assert SpecEncoder.serialize_repo(commit, records, exclude_values: true) ==
-               Base.decode64!(@repo_car["carIndexOnly"])
+        key_share = Enum.at(@commit_mac["kem"]["vectors"], variant["kemVector"])["keyShare"]
+
+        assert SpecEncoder.want_mac_header("atproto-space-repo", key_share) ==
+                 variant["wantMacHeader"]
+      end
+    end
+
+    test "every record MAC, over its own CID of the value" do
+      for variant <- @commit_mac["records"] do
+        secret =
+          unhex(Enum.at(@commit_mac["kem"]["vectors"], variant["kemVector"])["sharedSecret"])
+
+        cid_bytes = SpecEncoder.record_cid_bytes(variant["value"])
+        assert cid_bytes == unhex(variant["cidBytes"])
+        assert SpecEncoder.record_cid_string(variant["value"]) == variant["cid"]
+        assert SpecEncoder.record_mac(secret, variant["uri"], cid_bytes) == unhex(variant["mac"])
+      end
+    end
+
+    test "the repo STAR archive, populated and empty" do
+      records = Enum.map(@repo_star["records"], &{&1["collection"], &1["rkey"], &1["record"]})
+      commit = Map.update!(@repo_star["commit"], "data", &unhex/1)
+
+      assert SpecEncoder.serialize_repo(commit, records) == Base.decode64!(@repo_star["star"])
+
+      empty = Map.update!(@repo_star["empty"]["commit"], "data", &unhex/1)
+      assert SpecEncoder.serialize_repo(empty, []) == Base.decode64!(@repo_star["empty"]["star"])
+    end
+
+    test "the space meta archive" do
+      archive = @space_meta["archive"]
+      state = Enum.map(archive["policyState"], &{&1["key"], &1["value"]})
+      writers = Enum.map(archive["writers"], &Map.update!(&1, "data", fn d -> unhex(d) end))
+
+      assert SpecEncoder.serialize_space_meta(archive["space"], archive["policy"], state, writers) ==
+               Base.decode64!(@space_meta["star"])
     end
   end
 
   describe "differential against the production implementation" do
+    property "commit MAC: byte-identical for arbitrary fields and secrets" do
+      check all(
+              space <- string(:printable, min_length: 1, max_length: 600),
+              repo <- string(:alphanumeric, min_length: 1, max_length: 64),
+              rev <- string(:alphanumeric, length: 13),
+              data <- binary(length: 32),
+              secret <- binary(length: 32)
+            ) do
+        commit = %{"ver" => 1, "space" => space, "repo" => repo, "rev" => rev, "data" => data}
+
+        assert SpecEncoder.commit_mac(secret, space, repo, rev, data) ==
+                 Mac.commit_mac(secret, commit)
+
+        assert SpecEncoder.commit_context(space, repo, rev) ==
+                 Mac.commit_context(space, repo, rev)
+      end
+    end
+
+    property "record MAC: byte-identical over arbitrary URIs and values" do
+      check all(
+              uri <- string(:printable, min_length: 1, max_length: 300),
+              value <- map_of(string(:alphanumeric, min_length: 1, max_length: 8), json_value(1)),
+              secret <- binary(length: 32)
+            ) do
+        cid = CID.create!(value)
+        assert SpecEncoder.record_cid_bytes(value) == CID.to_bytes(cid)
+
+        assert SpecEncoder.record_mac(secret, uri, CID.to_bytes(cid)) ==
+                 Mac.record_mac(secret, uri, CID.to_bytes(cid))
+      end
+    end
+
+    property "KEM: the second derivation agrees with Kem.encapsulate/2" do
+      check all(seed <- binary(length: 32)) do
+        {:ok, author} = Crypto.generate_keypair(:p256)
+        eph = :crypto.hash(:sha256, seed)
+        {:ok, author_full} = Crypto.decompress(author.public_key, :p256)
+        {eph_pub, _} = :crypto.generate_key(:ecdh, :secp256r1, eph)
+
+        expected =
+          SpecEncoder.shared_secret(SpecEncoder.ecdh(eph, author_full), eph_pub, author_full)
+
+        assert {:ok, %{shared_secret: ^expected}} =
+                 Kem.encapsulate(author.public_key, ephemeral_private_key: eph)
+      end
+    end
+
+    property "repo STAR: byte-identical serialization over random record sets" do
+      record =
+        gen(
+          all(
+            collection <- nsid(),
+            rkey <- string(:alphanumeric, min_length: 1, max_length: 12),
+            value <-
+              map_of(string(:alphanumeric, min_length: 1, max_length: 8), json_value(1),
+                max_length: 5
+              )
+          ) do
+            {collection, rkey, value}
+          end
+        )
+
+      check all(
+              records <-
+                uniq_list_of(record, uniq_fun: &{elem(&1, 0), elem(&1, 1)}, max_length: 12),
+              data <- binary(length: 32)
+            ) do
+        commit = %{
+          "ver" => 1,
+          "repo" => "did:plc:author",
+          "space" => "at://did:plc:a/space/com.example.group/default",
+          "rev" => "3kbcq3p7ad2c2",
+          "data" => data
+        }
+
+        assert SpecEncoder.serialize_repo(commit, records) == Repo.serialize(commit, records)
+      end
+    end
+
     property "set hash: add/remove sequences agree, state and digest" do
       element =
         gen(
@@ -97,85 +210,6 @@ defmodule Exosphere.ATProto.Spaces.SpecEncoderTest do
 
         assert spec == Lthash.state(production)
         assert SpecEncoder.state_digest(spec) == Lthash.digest(production)
-      end
-    end
-
-    property "commit context: byte-identical for arbitrary fields" do
-      check all(
-              space <- string(:printable, min_length: 0, max_length: 200),
-              author <- string(:printable, min_length: 0, max_length: 100),
-              rev <- string(:alphanumeric, min_length: 1, max_length: 13),
-              ikm <- binary(min_length: 32, max_length: 32)
-            ) do
-        assert SpecEncoder.commit_context(space, author, rev, ikm) ==
-                 Commit.encode_ctx(%{space: space, author: author, rev: rev}, ikm)
-      end
-    end
-
-    property "commit MAC: byte-identical inside a real sign/verify cycle" do
-      {:ok, %{private_key: priv, public_key: pub}} = Crypto.generate_keypair(:secp256k1)
-
-      check all(
-              elements <-
-                list_of(string(:alphanumeric, min_length: 1, max_length: 20),
-                  min_length: 0,
-                  max_length: 15
-                ),
-              ikm <- binary(min_length: 32, max_length: 32)
-            ) do
-        hash = Enum.reduce(elements, Lthash.new(), &Lthash.add(&2, &1))
-        ctx = %{space: "at://did:plc:s/space/t/k", author: "did:plc:a", rev: "3kbcq3p7ad2c2"}
-
-        assert {:ok, commit} = Commit.sign(hash, ctx, priv, :secp256k1, ikm: ikm)
-
-        assert SpecEncoder.commit_mac(
-                 ikm,
-                 SpecEncoder.commit_context(ctx.space, ctx.author, ctx.rev, ikm),
-                 commit["hash"]
-               ) == commit["mac"]
-
-        assert :ok = Commit.verify(commit, ctx, pub, :secp256k1)
-      end
-    end
-
-    property "repo CAR: byte-identical serialization over random record sets" do
-      {:ok, %{private_key: priv}} = Crypto.generate_keypair(:secp256k1)
-
-      record =
-        gen(
-          all(
-            collection <- nsid(),
-            rkey <- string(:alphanumeric, min_length: 1, max_length: 12),
-            value <- json_value(0),
-            do: {collection, rkey, value}
-          )
-        )
-
-      check all(
-              records <-
-                uniq_list_of(record,
-                  min_length: 0,
-                  max_length: 12,
-                  uniq_fun: fn {c, r, _} -> {c, r} end
-                )
-            ) do
-        hash =
-          Enum.reduce(records, Lthash.new(), fn {c, r, v}, acc ->
-            Commit.add_record(acc, c, r, CID.encode(CID.create!(v)))
-          end)
-
-        ctx = %{
-          space: "at://did:plc:s/space/com.example.t/default",
-          author: "did:plc:a",
-          rev: "3kbcq3p7ad2c2"
-        }
-
-        assert {:ok, commit} = Commit.sign(hash, ctx, priv, :secp256k1, ikm: @ikm)
-
-        for exclude_values <- [false, true], input <- [records, Enum.reverse(records)] do
-          assert SpecEncoder.serialize_repo(commit, input, exclude_values: exclude_values) ==
-                   Repo.serialize(commit, input, exclude_values: exclude_values)
-        end
       end
     end
   end
@@ -217,12 +251,5 @@ defmodule Exosphere.ATProto.Spaces.SpecEncoderTest do
         max_length: 4
       )
     ])
-  end
-
-  defp wire_commit(commit) do
-    Map.new(commit, fn
-      {k, v} when k in ~w(hash ikm sig mac) -> {k, unhex(v)}
-      {k, v} -> {k, v}
-    end)
   end
 end

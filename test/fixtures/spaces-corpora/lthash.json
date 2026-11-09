@@ -1,10 +1,12 @@
 {
   "generator": {
     "repository": "https://github.com/bluesky-social/atproto",
-    "branch": "permissioned-data",
-    "commit": "787a730fcd22ed7791e2636beb509a943017ba1c",
-    "package": "@atproto/space@0.0.1 (MIT)",
-    "generatedAt": "2026-09-26"
+    "branch": "atproto-spaces-cleanup",
+    "commit": "4037310976201ee057f1b06aeef04a3cdc080258",
+    "includes": "atproto-spaces-lexicon-review@7089c42",
+    "star": "packages/star from permissioned-data@98ef3a6b9d1364f0543f137dd024de9651b21c4c (graft-star.mjs)",
+    "package": "@atproto/space@0.0.1, @atproto/star (MIT)",
+    "generatedAt": "2026-11-08"
   },
   "cases": [
     {

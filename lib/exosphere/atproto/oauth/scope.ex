@@ -25,7 +25,7 @@ defmodule Exosphere.ATProto.OAuth.Scope do
     Default is the full record action list. `read` is all-or-nothing across
     collections and implies `read_self`
   - `manage` (repeatable): space administration (`create`/`update`/`delete`,
-    mapping to simplespace operations under `manage=update`); no default
+    the policy-agnostic `com.atproto.space` methods, with member-list changes under `manage=update`); no default
 
   An empty `collection` list means *no write targets* — not "all collections".
   Bundling into OAuth permission sets requires a concrete spaceType.
@@ -64,14 +64,30 @@ defmodule Exosphere.ATProto.OAuth.Scope do
   @doc """
   Parse a `space:` scope string.
 
-  Unknown parameters, malformed values, and a positional type combined with a
-  named `type` parameter are rejected; single-valued parameters may not
-  repeat.
+  The space type is normally positional (`space:{spaceType}?…`); the
+  equivalent named form `space?spaceType={spaceType}&…` is accepted too. The
+  named parameter is `spaceType`, not `type`, since atproto
+  `atproto-spaces-cleanup` (4037310) renamed the scope's parameter to match
+  the lexicon permission field, so `space?type=…` is rejected, as is a
+  positional type combined with a named one. Unknown parameters and malformed
+  values are rejected; single-valued parameters may not repeat.
   """
   @spec parse(String.t()) :: {:ok, t()} | {:error, :invalid_scope}
   def parse("space:" <> rest) do
     {type_part, params} = split(rest)
+    parse_parts(type_part, params)
+  end
 
+  def parse("space?" <> query) do
+    case Map.pop(parse_query(query), "spaceType") do
+      {[type_part], params} -> parse_parts(type_part, params)
+      _ -> {:error, :invalid_scope}
+    end
+  end
+
+  def parse(_), do: {:error, :invalid_scope}
+
+  defp parse_parts(type_part, params) do
     with {:ok, type} <- parse_type(type_part),
          {:ok, params} <- parse_params(params),
          :ok <- reject_named_type(params),
@@ -91,8 +107,6 @@ defmodule Exosphere.ATProto.OAuth.Scope do
        }}
     end
   end
-
-  def parse(_), do: {:error, :invalid_scope}
 
   @doc """
   Format a scope canonically: defaults omitted, repeatable params deduplicated

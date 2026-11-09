@@ -71,6 +71,12 @@ defmodule Exosphere.ATProto.OAuth.ScopeTest do
           "space:not-an-nsid",
           "space:#{@space}?unknown=param",
           "space:#{@space}?type=" <> @space,
+          "space:#{@space}?spaceType=" <> @space,
+          # The named parameter is `spaceType` since atproto 4037310, not `type`.
+          "space?type=" <> @space,
+          "space?spaceType=" <> @space <> "&spaceType=" <> @space,
+          "space?action=read",
+          "space?spaceType=not-an-nsid",
           "space:#{@space}?authority=not-a-did",
           "space:#{@space}?skey=..",
           "space:#{@space}?collection=not-an-nsid",
@@ -79,6 +85,15 @@ defmodule Exosphere.ATProto.OAuth.ScopeTest do
         ] do
       assert {:error, :invalid_scope} = Scope.parse(bad), "expected #{inspect(bad)} to be invalid"
     end
+  end
+
+  test "the named spaceType form parses like the positional one" do
+    assert {:ok, named} = Scope.parse("space?spaceType=#{@space}&action=read")
+    assert {:ok, positional} = Scope.parse("space:#{@space}?action=read")
+    assert named == positional
+    assert Scope.to_string(named) == "space:#{@space}?action=read"
+
+    assert {:ok, %Scope{type: :any}} = Scope.parse("space?spaceType=*")
   end
 
   test "format round-trips through parse" do
