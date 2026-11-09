@@ -10,6 +10,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Added
 - encode event-stream frames, to serve subscribeLabels (#38)
 
+### Fixed
+- let procedure/4 send no body, for procedures with no input (#39)
+
 ## [0.7.0] - 2026-11-09
 
 ### Added
