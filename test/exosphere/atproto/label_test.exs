@@ -131,6 +131,54 @@ defmodule Exosphere.ATProto.LabelTest do
     end
   end
 
+  describe "to_json/1" do
+    doctest Label, only: [to_json: 1]
+
+    test "Bluesky's label comes back with its signature, unpadded", %{doc: doc} do
+      raw = Map.update!(@bsky_label, "sig", &Base.decode64!(&1["$bytes"]))
+
+      assert {:ok, json} = Label.to_json(raw)
+      assert %{"$bytes" => b64} = json["sig"]
+      refute b64 =~ "="
+      assert b64 == String.trim_trailing(@bsky_label["sig"]["$bytes"], "=")
+      assert :ok = Label.verify(json, doc)
+    end
+
+    test "normalises a padded $bytes sig to the unpadded form" do
+      assert {:ok, %{"sig" => %{"$bytes" => b64}}} = Label.to_json(@bsky_label)
+      refute b64 =~ "="
+    end
+
+    test "uses the standard alphabet, not the URL-safe one" do
+      assert {:ok, %{"sig" => %{"$bytes" => "+/8"}}} = Label.to_json(%{"sig" => <<251, 255>>})
+    end
+
+    test "leaves an unsigned label unsigned" do
+      label = Map.delete(@bsky_label, "sig")
+      assert {:ok, ^label} = Label.to_json(label)
+    end
+
+    test "rejects a sig that is neither bytes nor base64" do
+      assert {:error, :invalid_sig} = Label.to_json(%{"sig" => %{"$bytes" => "%%%"}})
+      assert {:error, :invalid_sig} = Label.to_json(%{"sig" => 1})
+    end
+  end
+
+  describe "sig_bytes/1" do
+    test "reads raw bytes and both $bytes forms" do
+      sig = Base.decode64!(@bsky_label["sig"]["$bytes"])
+
+      assert {:ok, ^sig} = Label.sig_bytes(sig)
+      assert {:ok, ^sig} = Label.sig_bytes(@bsky_label["sig"])
+      assert {:ok, ^sig} = Label.sig_bytes(%{"$bytes" => Base.encode64(sig, padding: false)})
+    end
+
+    test "an empty signature is not a signature" do
+      assert {:error, :invalid_sig} = Label.sig_bytes("")
+      assert {:error, :invalid_sig} = Label.sig_bytes(%{"$bytes" => ""})
+    end
+  end
+
   describe "active?/2" do
     @now ~U[2026-11-09 12:00:00Z]
 

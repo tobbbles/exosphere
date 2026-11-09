@@ -12,6 +12,10 @@ defmodule Exosphere.ATProto.Label do
   stream and the JSON query return. `sig` may be raw bytes (from CBOR) or
   `%{"$bytes" => base64}` (from JSON); both are accepted.
 
+  To serve labels, `to_json/1` gives a label's `queryLabels` form, and
+  `Exosphere.ATProto.Firehose.Frame.encode_labels/2` builds the
+  `subscribeLabels` frame.
+
   ## Signing
 
   Per the label spec, the signed bytes are the DAG-CBOR encoding of the label's
@@ -131,13 +135,57 @@ defmodule Exosphere.ATProto.Label do
 
   def active?(_label, _now), do: true
 
-  defp signature(%{"sig" => %{"$bytes" => b64}}) when is_binary(b64) do
+  @doc """
+  A label's `sig` as raw bytes, from either form it arrives in.
+
+  Accepts raw bytes (CBOR) or `%{"$bytes" => base64}` (JSON). The data model
+  allows the base64 with or without `=` padding; both decode.
+  """
+  @spec sig_bytes(term()) :: {:ok, binary()} | {:error, :invalid_sig}
+  def sig_bytes(%{"$bytes" => b64}) when is_binary(b64) do
     case Base.decode64(b64, padding: false) do
-      {:ok, sig} -> {:ok, sig}
-      :error -> {:error, :unsigned}
+      {:ok, sig} when sig != "" -> {:ok, sig}
+      _ -> {:error, :invalid_sig}
     end
   end
 
-  defp signature(%{"sig" => sig}) when is_binary(sig) and byte_size(sig) > 0, do: {:ok, sig}
+  def sig_bytes(sig) when is_binary(sig) and byte_size(sig) > 0, do: {:ok, sig}
+  def sig_bytes(_sig), do: {:error, :invalid_sig}
+
+  @doc """
+  A label in its JSON form, ready to serialise into a `queryLabels` response.
+
+  `sig` becomes `%{"$bytes" => base64}`: standard alphabet, no padding. Fields
+  whose value is `nil` are left out, as the label's signature does not cover
+  them. Everything else passes through unchanged.
+
+  Returns `{:error, :invalid_sig}` when `sig` is present but is neither bytes
+  nor valid base64.
+
+      iex> Exosphere.ATProto.Label.to_json(%{"val" => "spam", "sig" => <<1, 2, 3>>, "exp" => nil})
+      {:ok, %{"val" => "spam", "sig" => %{"$bytes" => "AQID"}}}
+  """
+  @spec to_json(t()) :: {:ok, t()} | {:error, :invalid_sig}
+  def to_json(label) when is_map(label) do
+    label = Map.reject(label, fn {_key, value} -> is_nil(value) end)
+
+    case Map.fetch(label, "sig") do
+      :error ->
+        {:ok, label}
+
+      {:ok, sig} ->
+        with {:ok, bytes} <- sig_bytes(sig) do
+          {:ok, Map.put(label, "sig", %{"$bytes" => Base.encode64(bytes, padding: false)})}
+        end
+    end
+  end
+
+  defp signature(%{"sig" => sig}) do
+    case sig_bytes(sig) do
+      {:ok, bytes} -> {:ok, bytes}
+      {:error, :invalid_sig} -> {:error, :unsigned}
+    end
+  end
+
   defp signature(_label), do: {:error, :unsigned}
 end
