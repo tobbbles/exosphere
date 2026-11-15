@@ -342,6 +342,39 @@ defmodule Exosphere.ATProto.Crypto do
     end
   end
 
+  @doc """
+  HKDF-Extract with SHA-256 (RFC 5869 §2.2): `PRK = HMAC-SHA256(salt, ikm)`.
+
+  An empty `salt` stands for 32 zero bytes, as the RFC specifies (HMAC pads
+  its key with zeros, so the two give the same PRK). Extract and expand are
+  separate steps, rather than one `hkdf/4`, because HPKE (RFC 9180) labels
+  each one differently — see `Exosphere.ATProto.Crypto.HPKE`. This mirrors
+  `hkdfExtractSha256` in `@atproto/crypto`.
+  """
+  @spec hkdf_extract_sha256(binary(), binary()) :: <<_::256>>
+  def hkdf_extract_sha256(salt, ikm) when is_binary(salt) and is_binary(ikm) do
+    salt = if salt == "", do: <<0::256>>, else: salt
+    :crypto.mac(:hmac, :sha256, salt, ikm)
+  end
+
+  @doc """
+  HKDF-Expand with SHA-256 (RFC 5869 §2.3): `length` bytes of output keying
+  material from a pseudorandom key and `info`. `length` is at most
+  `255 * 32`. Mirrors `hkdfExpandSha256` in `@atproto/crypto`.
+  """
+  @spec hkdf_expand_sha256(binary(), binary(), pos_integer()) :: binary()
+  def hkdf_expand_sha256(prk, info, length)
+      when is_binary(prk) and is_binary(info) and is_integer(length) and length > 0 and
+             length <= 255 * 32 do
+    {okm, _} =
+      Enum.reduce(1..ceil(length / 32)//1, {"", ""}, fn i, {acc, prev} ->
+        block = :crypto.mac(:hmac, :sha256, prk, prev <> info <> <<i>>)
+        {acc <> block, block}
+      end)
+
+    binary_part(okm, 0, length)
+  end
+
   # Helper functions
 
   defp compress_secp256k1_public_key(<<0x04, x::binary-32, y::binary-32>>) do

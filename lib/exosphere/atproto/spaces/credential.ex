@@ -1,10 +1,11 @@
 defmodule Exosphere.ATProto.Spaces.Credential do
   @moduledoc """
-  The space credential flow (atproto proposal 0016, "Access control"): fetch
-  a delegation token from the user's PDS, exchange it at the space host for a
-  key-bound credential, present that credential with an HTTP Message
-  Signature — and, because a credential's consumer is often a host, verify
-  such requests.
+  The space credential flow (atproto proposal 0016, "Access control";
+  November 12 alpha, atproto `d4def6e`): fetch a delegation token from the
+  user's PDS, authorize syncing the space at its host for a key-bound
+  credential (optionally registering for notifications), present that
+  credential with an HTTP Message Signature — and, because a credential's
+  consumer is often a host, verify such requests.
 
   The flow, end to end:
 
@@ -19,28 +20,53 @@ defmodule Exosphere.ATProto.Spaces.Credential do
       # 2. At the space host, binding a fresh P-256 key per credential
       {:ok, key} = Spaces.HttpSignature.generate_key()
 
-      {:ok, cred} =
-        Credential.mint("https://space-host.example.com", space_ref, delegation,
+      {:ok, %{credential: _, key: _, space_rev: space_rev} = cred} =
+        Credential.authorize_space_sync("https://space-host.example.com", space_ref, delegation,
           key: key,
-          client_attestation: attestation   # only when the space gates on the app
+          client_attestation: attestation,  # only when the space gates on the app
+          notify: [endpoint: "https://syncer.example.com", token: per_space_token]
         )
 
       # 3. Present it: Authorization + Atproto-Space-Audience + an RFC 9421
       #    signature by `key` (Spaces.Sync does this for every request)
       {:ok, headers} = Credential.presentation_headers(cred, repo_owner_did)
 
-  Since atproto `57b24c6`/`7b8e094` (2026-10) the exchange carries no
-  Authorization header and no DPoP proof: the key to bind (`credentialKey`,
-  the key's `did:key`; the field was `credentialKid` until atproto
-  `atproto-spaces-lexicon-review`) and the optional delegation token and
-  client attestation travel in the JSON body. The credential is bound to that key by
-  `cnf.kid`, lives 600 seconds, and every use is signed — see
-  `Spaces.HttpSignature`. A public space needs no delegation token.
+  `com.atproto.space.authorizeSpaceSync` (it was `getSpaceCredential` before
+  the November 12 alpha) is unauthenticated: the key to bind
+  (`credentialKey`, the key's `did:key`), the optional delegation token and
+  client attestation, and the optional `notify` registration travel in the
+  JSON body. The credential is bound to that key by `cnf.kid`, lives 600
+  seconds by default (at most 3600), and every use is signed — see
+  `Spaces.HttpSignature`. A public space needs no delegation token. The
+  answer carries the space's current revision, `spaceRev`, omitted before
+  the space's first update.
 
-  exosphere is the *client* here: minting delegation tokens is the PDS's job
-  and minting credentials is the space host's. `verify/2` and
-  `verify_request/2` are the exception: exosphere consumers host spaces too,
-  so the receiving half ships in the client library.
+  ## Reauthorizing and notifications
+
+  Calling `authorize_space_sync/4` again before the credential expires is
+  *reauthorizing*; it works the same as the first call. A syncer registers
+  for `com.atproto.space.notifySpaceUpdate` by passing `notify:` — an
+  `endpoint` (a base URL the host calls XRPC methods against) and an opaque
+  `token` of at most 512 bytes, different per space and stable across
+  authorizations (the pair identifies the registration). Before creating a
+  new registration the host calls `com.atproto.space.confirmRegistration` on
+  the endpoint, and fails the authorization with `RegistrationNotConfirmed`
+  if the syncer does not echo the challenge. A registration lives only as
+  long as the credential from its latest authorization, so a syncer wanting
+  continuous notifications keeps reauthorizing with the same `notify` before
+  each credential expires. Compare the returned `space_rev` with the
+  checkpoint to detect missed updates. (`registerNotify` / `unregisterNotify`
+  are gone; to unregister, stop reauthorizing.)
+
+  ## Both sides
+
+  The client half is `get_delegation_token/3`, `authorize_space_sync/4` and
+  `presentation_headers/2`. Minting delegation tokens is the PDS's job and
+  minting credentials the space host's (`Spaces.Token.sign/3`), but exosphere
+  consumers host spaces too, so the receiving half ships here as well:
+  `decode_authorization_request/1` and `authorization_response/2` for the
+  space host's `authorizeSpaceSync` handler, and `verify/2` /
+  `verify_request/2` for a repo host checking a presented credential.
 
   All HTTP goes through `Exosphere.ATProto.HTTP.Behaviour` (pass `:http` to
   substitute a mock), so the whole flow tests offline. Request options
@@ -49,24 +75,57 @@ defmodule Exosphere.ATProto.Spaces.Credential do
   `:timeout` actually bounds.
   """
 
-  alias Exosphere.ATProto.{Crypto, HTTP}
+  alias Exosphere.ATProto.{Crypto, HTTP, TID}
   alias Exosphere.ATProto.Identity.Document
   alias Exosphere.ATProto.OAuth.{Request, Session}
   alias Exosphere.ATProto.Spaces.{HttpSignature, Token, XRPC}
 
   @delegation_nsid "com.atproto.space.getDelegationToken"
-  @credential_nsid "com.atproto.space.getSpaceCredential"
+  @authorize_nsid "com.atproto.space.authorizeSpaceSync"
+  @max_notify_token_bytes 512
 
-  @exchange_errors %{
+  # The refusals that change what a syncer does, typed. `NotAuthorized` is
+  # the lexicon's generic refusal (a host may answer it in place of
+  # `AccountNotAuthorized` or `AppNotAuthorized`); `UpstreamFailure` is the
+  # reference host's answer when a managed space's managing app can't decide,
+  # which — unlike a refusal — leaves a notify registration in place.
+  @authorize_errors %{
     "SpaceDeleted" => :space_deleted,
     "RepoTakendown" => :repo_takendown,
     "RepoDeactivated" => :repo_deactivated,
     "AccountNotAuthorized" => :account_not_authorized,
-    "AppNotAuthorized" => :app_not_authorized
+    "AppNotAuthorized" => :app_not_authorized,
+    "NotAuthorized" => :not_authorized,
+    "RegistrationNotConfirmed" => :registration_not_confirmed,
+    "UpstreamFailure" => :upstream_failure
   }
 
-  @typedoc "A minted credential with the key it is bound to — what `Spaces.Sync` takes."
-  @type t :: %{credential: String.t(), key: HttpSignature.key()}
+  @typedoc """
+  An authorized credential with the key it is bound to — what `Spaces.Sync`
+  takes — and the space's revision at authorization (`nil` before the
+  space's first update).
+  """
+  @type t :: %{
+          required(:credential) => String.t(),
+          required(:key) => HttpSignature.key(),
+          optional(:space_rev) => String.t() | nil
+        }
+
+  @typedoc """
+  A notification registration: `endpoint` is the syncer's base URL, `token`
+  an opaque secret of at most 512 bytes. Given as a map or keyword list.
+  """
+  @type notify ::
+          %{endpoint: String.t(), token: String.t()} | [endpoint: String.t(), token: String.t()]
+
+  @typedoc "A decoded `authorizeSpaceSync` request, as the space host sees it."
+  @type authorization_request :: %{
+          space: String.t(),
+          credential_key: String.t(),
+          delegation_token: String.t() | nil,
+          client_attestation: String.t() | nil,
+          notify: %{endpoint: String.t(), token: String.t()} | nil
+        }
   @doc """
   Fetch a delegation token from the user's PDS
   (`com.atproto.space.getDelegationToken`, OAuth-authenticated).
@@ -78,7 +137,7 @@ defmodule Exosphere.ATProto.Spaces.Credential do
   atproto OAuth access token is DPoP-bound, so sending it as `Bearer` is
   refused. `headers: [...]` is still accepted and passed through verbatim,
   for other authorization schemes. The token is single-use and lives ~60s:
-  exchange it immediately via `mint/4`.
+  use it immediately with `authorize_space_sync/4`.
   """
   @spec get_delegation_token(String.t(), String.t(), keyword()) ::
           {:ok, String.t()} | {:error, term()}
@@ -133,8 +192,10 @@ defmodule Exosphere.ATProto.Spaces.Credential do
   end
 
   @doc """
-  Request a space credential from the space host
-  (`com.atproto.space.getSpaceCredential`).
+  Authorize syncing a space at its host (`com.atproto.space.authorizeSpaceSync`,
+  which was `getSpaceCredential` before the November 12 alpha), returning a
+  fresh credential. Call it again before the credential expires to
+  reauthorize.
 
   `delegation_jwt` is the delegation token from `get_delegation_token/3`, or
   `nil` for a space that does not gate on the user (a public space). Options:
@@ -143,45 +204,122 @@ defmodule Exosphere.ATProto.Spaces.Credential do
     `did:key` is sent as `credentialKey` and becomes the credential's
     `cnf.kid`. Keep it for the credential's lifetime and discard it after.
   - `:client_attestation` — only when the space gates on app identity.
+  - `:notify` — register (or renew the registration of) an endpoint for
+    `notifySpaceUpdate`: `[endpoint: base_url, token: secret]` or the same as
+    a map (see "Reauthorizing and notifications" above). The endpoint must be
+    an absolute `http(s)` URL and the token at most 512 bytes, else
+    `{:error, :invalid_notify}` before anything is sent. The reference host
+    fetches the endpoint with SSRF protection, so outside dev mode it must be
+    HTTPS on a public address.
 
   The request is unauthenticated: everything travels in the JSON body. On
-  success the minted credential is checked to be bound to `key` before it is
+  success the credential is checked to be bound to `key` before it is
   returned, so a misbehaving host is caught immediately. Returns
-  `{:ok, %{credential: jwt, key: key}}`, ready for `Spaces.Sync`.
+  `{:ok, %{credential: jwt, key: key, space_rev: tid | nil}}`, ready for
+  `Spaces.Sync`; a `spaceRev` that is not a TID is
+  `{:error, :invalid_space_rev}`.
 
   Refusals that change what a syncer should do are typed:
 
-  - `{:error, :space_deleted}` (`SpaceDeleted`) — the space is gone: delete
-    every copy of its data (proposal 0016, "Space deletion"). Any *other*
-    renewal failure says nothing about the space.
-  - `{:error, :repo_takendown}` / `{:error, :repo_deactivated}`
-    (`RepoTakendown` / `RepoDeactivated`, atproto `99bf6e2`) — the space
-    authority's account is taken down or deactivated.
-
+  - `{:error, :space_deleted}` (`SpaceDeleted`, answered before the request's
+    authorization is checked) — the space is gone: drop every copy of its
+    data (proposal 0016, "Space deletion"). This answer, not a
+    `#spaceDeleted` notice alone, is what confirms the deletion.
+  - `{:error, :repo_takendown}` / `{:error, :repo_deactivated}` — the space
+    authority's account is taken down or deactivated. A notify registration
+    is kept (lapsed) through the suspension.
   - `{:error, :account_not_authorized}` (`AccountNotAuthorized`, which was
-    `UserNotAuthorized` until atproto `atproto-spaces-lexicon-review`) — the
-    policy does not let this account read the space.
-  - `{:error, :app_not_authorized}` (`AppNotAuthorized`) — the policy does not
-    let this app read the space (`allowed_apps`).
+    `UserNotAuthorized`), `{:error, :app_not_authorized}`
+    (`AppNotAuthorized`, the policy's `allowed_apps`), and
+    `{:error, :not_authorized}` (`NotAuthorized`, the generic refusal) — the
+    policy denies this syncer; a registration carried by the request is
+    withdrawn.
+  - `{:error, :registration_not_confirmed}` (`RegistrationNotConfirmed`) —
+    the `notify` endpoint did not answer `confirmRegistration` with the
+    challenge.
+  - `{:error, :upstream_failure}` (`UpstreamFailure`) — the host could not
+    decide (a managed space's managing app failed). Not a denial: no
+    credential, but the registration stays; retry later.
 
-  Other refusals (`SpaceNotFound`, `InvalidDelegationToken`, …) come back as
+  Other refusals (`SpaceNotFound`, `InvalidDelegationToken`,
+  `InvalidClientAttestation`, …) come back as
   `{:error, {:http_error, status, code}}`.
   """
-  @spec mint(String.t(), String.t(), String.t() | nil, keyword()) ::
+  @spec authorize_space_sync(String.t(), String.t(), String.t() | nil, keyword()) ::
           {:ok, t()} | {:error, term()}
-  def mint(space_host_url, space_ref, delegation_jwt, opts \\ []) do
+  def authorize_space_sync(space_host_url, space_ref, delegation_jwt, opts \\ []) do
     http = Keyword.get(opts, :http, HTTP)
-    url = String.trim_trailing(space_host_url, "/") <> "/xrpc/" <> @credential_nsid
+    url = String.trim_trailing(space_host_url, "/") <> "/xrpc/" <> @authorize_nsid
 
     with {:ok, key} <- fetch_key(opts),
          {:ok, attestation} <- client_attestation(opts),
-         body = exchange_body(space_ref, key, delegation_jwt, attestation),
-         {:ok, jwt} <- post_exchange(http, url, body, opts),
+         {:ok, notify} <- notify_opt(opts),
+         body = authorize_body(space_ref, key, delegation_jwt, attestation, notify),
+         {:ok, jwt, space_rev} <- post_authorize(http, url, body, opts),
          {:ok, parsed} <- Token.parse(:credential, jwt),
          :ok <- check_binding(parsed, key) do
-      {:ok, %{credential: jwt, key: key}}
+      {:ok, %{credential: jwt, key: key, space_rev: space_rev}}
     end
   end
+
+  @doc """
+  Decode a received `com.atproto.space.authorizeSpaceSync` body for a space
+  host: `{:ok, %{space:, credential_key:, delegation_token:,
+  client_attestation:, notify:}}`, the optional fields `nil` when absent and
+  `notify` as `%{endpoint:, token:}`.
+
+  Checked here: `space` is a space ref, `credentialKey` a P-256 `did:key`
+  (`{:error, :invalid_credential_key}`, which the reference answers as
+  `InvalidRequest`), the tokens are strings, and `notify` has an `endpoint`
+  that is a URI and a `token` of at most 512 bytes
+  (`{:error, :invalid_notify}`). Any other malformation is
+  `{:error, :invalid_request}`.
+
+  Left to the host, in the reference's order: answer `SpaceDeleted` for a
+  deleted space before anything else; verify the delegation token
+  (`Spaces.Token.verify/3`, its `sub` must equal `space`) and the client
+  attestation; apply the policy, withdrawing the request's registration on a
+  refusal but not on `UpstreamFailure`; confirm a *new* registration with
+  `confirmRegistration` (a 10-second bound in the reference) or fail with
+  `RegistrationNotConfirmed`; mint the credential (`Spaces.Token.sign/3`,
+  600 seconds by default) and renew the registration's expiry to the
+  credential's `exp`; read `spaceRev` after registering. Fetch the endpoint
+  as an untrusted URL.
+  """
+  @spec decode_authorization_request(map()) ::
+          {:ok, authorization_request()}
+          | {:error, :invalid_request | :invalid_credential_key | :invalid_notify}
+  def decode_authorization_request(%{"space" => space, "credentialKey" => key} = body)
+      when is_binary(key) do
+    delegation = Map.get(body, "delegationToken")
+    attestation = Map.get(body, "clientAttestation")
+
+    with true <- XRPC.space_ref?(space) || {:error, :invalid_request},
+         true <- optional_string?(delegation) || {:error, :invalid_request},
+         true <- optional_string?(attestation) || {:error, :invalid_request},
+         true <- HttpSignature.p256_did_key?(key) || {:error, :invalid_credential_key},
+         {:ok, notify} <- decode_notify(Map.get(body, "notify")) do
+      {:ok,
+       %{
+         space: space,
+         credential_key: key,
+         delegation_token: delegation,
+         client_attestation: attestation,
+         notify: notify
+       }}
+    end
+  end
+
+  def decode_authorization_request(_), do: {:error, :invalid_request}
+
+  @doc """
+  The space host's `authorizeSpaceSync` answer in its wire shape:
+  `%{"credential" => jwt, "spaceRev" => rev}`, with `spaceRev` omitted when
+  `nil` (before the space's first update).
+  """
+  @spec authorization_response(String.t(), String.t() | nil) :: map()
+  def authorization_response(credential, space_rev \\ nil) when is_binary(credential),
+    do: maybe_put(%{"credential" => credential}, "spaceRev", space_rev)
 
   @doc """
   The headers that present `cred` to `audience` — the repo owner's DID when
@@ -265,9 +403,9 @@ defmodule Exosphere.ATProto.Spaces.Credential do
   ## Revocation
 
   A space authority may revoke outstanding credentials early with
-  `com.atproto.space.notifyCredentialsRevoked` (atproto `a571a93fc`, renamed
-  from `notifyCredentialRevoked` by `atproto-spaces-lexicon-review`;
-  `notify_credentials_revoked/5` sends it, `decode_revocation/1` reads it). A
+  `com.atproto.space.notifyCredentialsRevoked` (`notify_credentials_revoked/5`
+  sends it, `decode_revocation/1` reads it). A revoked credential also drops
+  the notify registrations it renewed — that is the space host's job. A
   repo host MUST then reject a credential whose `jti` was revoked for that
   space, and keep the revocation for at least 60 minutes — after which no
   credential carrying that `jti` can still be valid (the 3600-second lifetime
@@ -276,7 +414,11 @@ defmodule Exosphere.ATProto.Spaces.Credential do
   """
   @spec verify_request(HttpSignature.headers(), keyword()) :: {:ok, map()} | {:error, term()}
   def verify_request(headers, opts) do
-    headers = normalize_headers(headers)
+    # The same normalization `HttpSignature.verify/2` applies: repeated
+    # Signature-Input/Signature field lines are joined rather than dropped, so
+    # a second credential-tagged signature is seen and refused, and list
+    # values (as Req returns them) reduce to one string.
+    headers = HttpSignature.normalize_headers(headers)
     audience = Keyword.fetch!(opts, :audience)
 
     with {:ok, jwt} <- credential_from_authorization(headers["authorization"]),
@@ -290,9 +432,8 @@ defmodule Exosphere.ATProto.Spaces.Credential do
 
   @doc """
   Notify a repo host that the authority revoked credentials
-  (`com.atproto.space.notifyCredentialsRevoked`; it was
-  `notify_credential_revoked/5` / `notifyCredentialRevoked` before atproto
-  `atproto-spaces-lexicon-review`), identified by `jti` — 1 to 100 per call.
+  (`com.atproto.space.notifyCredentialsRevoked`), identified by `jti` — 1 to
+  100 per call.
   Revocation is idempotent, so retrying delivery is safe.
 
   The call is authenticated with service auth from the space authority,
@@ -369,29 +510,28 @@ defmodule Exosphere.ATProto.Spaces.Credential do
   defp check_audience(nil, _), do: {:error, {:missing_header, "atproto-space-audience"}}
   defp check_audience(_, _), do: {:error, :bad_audience}
 
-  defp normalize_headers(headers) when is_map(headers),
-    do: Map.new(headers, fn {k, v} -> {String.downcase(k), v} end)
-
-  defp normalize_headers(headers) when is_list(headers),
-    do: Enum.reduce(headers, %{}, fn {k, v}, acc -> Map.put_new(acc, String.downcase(k), v) end)
-
-  defp exchange_body(space_ref, key, delegation_jwt, attestation) do
+  defp authorize_body(space_ref, key, delegation_jwt, attestation, notify) do
     %{"space" => space_ref, "credentialKey" => key.did_key}
     |> maybe_put("delegationToken", delegation_jwt)
     |> maybe_put("clientAttestation", attestation)
+    |> maybe_put("notify", notify && %{"endpoint" => notify.endpoint, "token" => notify.token})
   end
 
   # The caller's request options ride along with the flow's own; the body is
   # ours and is not the caller's to override.
-  defp post_exchange(http, url, body, opts) do
+  defp post_authorize(http, url, body, opts) do
     request_opts = opts |> HTTP.take_request_opts() |> Keyword.put(:json, body)
 
     case http.post(url, request_opts) do
-      {:ok, %{status: 200, body: %{"credential" => jwt}}} when is_binary(jwt) ->
-        {:ok, jwt}
+      {:ok, %{status: 200, body: %{"credential" => jwt} = resp}} when is_binary(jwt) ->
+        case Map.get(resp, "spaceRev") do
+          nil -> {:ok, jwt, nil}
+          rev when is_binary(rev) -> if TID.valid?(rev), do: {:ok, jwt, rev}, else: bad_rev()
+          _ -> bad_rev()
+        end
 
-      {:ok, %{body: %{"error" => code}}} when is_map_key(@exchange_errors, code) ->
-        {:error, Map.fetch!(@exchange_errors, code)}
+      {:ok, %{body: %{"error" => code}}} when is_map_key(@authorize_errors, code) ->
+        {:error, Map.fetch!(@authorize_errors, code)}
 
       {:ok, %{status: status, body: %{} = body}} ->
         {:error, {:http_error, status, body["error"]}}
@@ -403,6 +543,58 @@ defmodule Exosphere.ATProto.Spaces.Credential do
         error
     end
   end
+
+  defp bad_rev, do: {:error, :invalid_space_rev}
+
+  defp notify_opt(opts) do
+    case Keyword.get(opts, :notify) do
+      nil ->
+        {:ok, nil}
+
+      notify when is_list(notify) or is_map(notify) ->
+        endpoint = notify[:endpoint]
+        token = notify[:token]
+
+        if http_url?(endpoint) and notify_token?(token),
+          do: {:ok, %{endpoint: endpoint, token: token}},
+          else: {:error, :invalid_notify}
+
+      _ ->
+        {:error, :invalid_notify}
+    end
+  end
+
+  # The syncer's own endpoint: an absolute http(s) URL with a host.
+  defp http_url?(value) when is_binary(value) do
+    case URI.new(value) do
+      {:ok, %URI{scheme: scheme, host: host}}
+      when scheme in ["https", "http"] and is_binary(host) and host != "" ->
+        true
+
+      _ ->
+        false
+    end
+  end
+
+  defp http_url?(_), do: false
+
+  defp notify_token?(token),
+    do: is_binary(token) and byte_size(token) <= @max_notify_token_bytes
+
+  # The host side follows the lexicon: `endpoint` a `uri`, `token` a string of
+  # at most 512 bytes. Whether to insist on HTTPS / a public address is the
+  # host's fetch policy, not the request shape.
+  defp decode_notify(nil), do: {:ok, nil}
+
+  defp decode_notify(%{"endpoint" => endpoint, "token" => token}) do
+    if XRPC.uri?(endpoint) and notify_token?(token),
+      do: {:ok, %{endpoint: endpoint, token: token}},
+      else: {:error, :invalid_notify}
+  end
+
+  defp decode_notify(_), do: {:error, :invalid_notify}
+
+  defp optional_string?(value), do: is_nil(value) or is_binary(value)
 
   defp check_binding(%{payload: %{"cnf" => %{"kid" => kid}}}, %{did_key: kid}), do: :ok
 

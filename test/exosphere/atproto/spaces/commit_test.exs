@@ -11,15 +11,17 @@ defmodule Exosphere.ATProto.Spaces.CommitTest do
 
   @space "at://did:example:space/space/app.bsky.group/test"
   @repo "did:example:alice"
-  @ctx %{space: @space, repo: @repo, rev: "3kbcq3p7ad400"}
+  @rev "3kbcq3p7ad422"
+  @ctx %{space: @space, repo: @repo, rev: @rev}
 
   setup do
-    # The syncer/host handshake: a fresh shared secret against the author's
-    # KEM key, decapsulated on the host side.
+    # The syncer/host handshake: a fresh HPKE secret against the author's KEM
+    # key, requested in Accept-Signature and decapsulated on the host side.
     {:ok, author_kem} = Crypto.generate_keypair(:p256)
-    {:ok, %{key_share: share, shared_secret: secret}} = Kem.encapsulate(author_kem.public_key)
-    {:ok, ^secret} = Kem.decapsulate(author_kem.private_key, share)
-    %{secret: secret}
+    {:ok, kem} = Kem.encapsulate(author_kem.public_key)
+    {:ok, request} = Mac.parse_request(Mac.format_request(:commit, kem.key_share), :commit)
+    {:ok, params} = Mac.decapsulate(request, author_kem.private_key)
+    %{kem: kem, params: params}
   end
 
   test "build/2 produces a defs#commit over the set hash" do
@@ -30,7 +32,7 @@ defmodule Exosphere.ATProto.Spaces.CommitTest do
              "ver" => 1,
              "repo" => @repo,
              "space" => @space,
-             "rev" => "3kbcq3p7ad400",
+             "rev" => @rev,
              "data" => Lthash.digest(hash)
            }
 
@@ -46,51 +48,79 @@ defmodule Exosphere.ATProto.Spaces.CommitTest do
              )
   end
 
-  test "verify/4 accepts the host's MAC under the shared secret", %{secret: secret} do
+  test "verify/4 accepts the host's MAC headers under the request's secret", %{
+    kem: kem,
+    params: params
+  } do
     commit = Commit.build(repo([{"c.a", "1", @cid_a}]), @ctx)
-    mac = Commit.mac(commit, secret)
+    headers = Commit.mac_headers(commit, params)
 
-    assert mac == Mac.commit_mac(secret, commit)
-    assert :ok = Commit.verify(commit, %{space: @space, repo: @repo}, secret, mac)
+    # The covered header and the signature under the requested label.
+    assert headers == Mac.commit_headers(commit, params)
+    assert {"signature-input", "mac=" <> _} = List.keyfind(headers, "signature-input", 0)
+
+    assert {"atproto-space-commit", "ver=1, repo=" <> _} =
+             List.keyfind(headers, "atproto-space-commit", 0)
+
+    assert :ok = Commit.verify(commit, %{space: @space, repo: @repo}, kem, headers)
   end
 
-  test "verify/4 binds the requested repo and space, and the secret", %{secret: secret} do
+  test "verify/4 binds the requested repo and space, and the secret", %{kem: kem, params: params} do
     commit = Commit.build(repo([{"c.a", "1", @cid_a}]), @ctx)
-    mac = Commit.mac(commit, secret)
+    headers = Commit.mac_headers(commit, params)
 
     assert {:error, :repo_mismatch} =
-             Commit.verify(commit, %{space: @space, repo: "did:example:bob"}, secret, mac)
+             Commit.verify(commit, %{space: @space, repo: "did:example:bob"}, kem, headers)
 
     assert {:error, :space_mismatch} =
-             Commit.verify(commit, %{space: @space <> "x", repo: @repo}, secret, mac)
+             Commit.verify(commit, %{space: @space <> "x", repo: @repo}, kem, headers)
 
-    assert {:error, :invalid_mac} =
-             Commit.verify(commit, %{space: @space, repo: @repo}, :binary.copy(<<1>>, 32), mac)
+    other = %{kem | shared_secret: :binary.copy(<<1>>, 32)}
+
+    assert {:error, {:invalid_space_mac, :mac_mismatch}} =
+             Commit.verify(commit, %{space: @space, repo: @repo}, other, headers)
+
+    # No MAC at all is a MAC failure too.
+    assert {:error, {:invalid_space_mac, :missing_http_signature}} =
+             Commit.verify(commit, %{space: @space, repo: @repo}, kem, [])
   end
 
-  test "a tampered data or rev fails the MAC", %{secret: secret} do
+  test "a commit that differs from the MAC'd header fails", %{kem: kem, params: params} do
     commit = Commit.build(repo([{"c.a", "1", @cid_a}]), @ctx)
-    mac = Commit.mac(commit, secret)
+    headers = Commit.mac_headers(commit, params)
     ctx = %{space: @space, repo: @repo}
 
-    assert {:error, :invalid_mac} =
-             Commit.verify(%{commit | "data" => :crypto.hash(:sha256, "x")}, ctx, secret, mac)
+    assert {:error, {:invalid_space_mac, :commit_mismatch}} =
+             Commit.verify(%{commit | "data" => :crypto.hash(:sha256, "x")}, ctx, kem, headers)
 
-    assert {:error, :invalid_mac} =
-             Commit.verify(%{commit | "rev" => "3kbcq3p7ad401"}, ctx, secret, mac)
+    assert {:error, {:invalid_space_mac, :commit_mismatch}} =
+             Commit.verify(%{commit | "rev" => "3kbcq3p7ad423"}, ctx, kem, headers)
   end
 
-  test "unknown versions and malformed commits are invalid", %{secret: secret} do
+  test "unknown versions and malformed commits are invalid", %{kem: kem, params: params} do
     commit = Commit.build(Lthash.new(), @ctx)
-    mac = Commit.mac(commit, secret)
+    headers = Commit.mac_headers(commit, params)
     ctx = %{space: @space, repo: @repo}
 
-    assert {:error, :invalid_commit} = Commit.verify(%{commit | "ver" => 2}, ctx, secret, mac)
+    assert {:error, :invalid_commit} = Commit.verify(%{commit | "ver" => 2}, ctx, kem, headers)
 
     assert {:error, :invalid_commit} =
-             Commit.verify(%{commit | "data" => <<1, 2>>}, ctx, secret, mac)
+             Commit.verify(%{commit | "data" => <<1, 2>>}, ctx, kem, headers)
 
-    assert {:error, :invalid_commit} = Commit.verify(Map.delete(commit, "rev"), ctx, secret, mac)
+    assert {:error, :invalid_commit} = Commit.verify(Map.delete(commit, "rev"), ctx, kem, headers)
+
+    # defs#commit: rev is format tid, repo a did, space a space-ref.
+    for bad <- [
+          %{commit | "rev" => "not-a-tid"},
+          %{commit | "rev" => "3KBCQ3P7AD400"},
+          %{commit | "repo" => "alice"},
+          %{commit | "space" => "at://did:example:space/app.bsky.group/test"}
+        ] do
+      refute Commit.well_formed?(bad)
+    end
+
+    assert {:error, :invalid_commit} =
+             Commit.verify(%{commit | "rev" => "not-a-tid"}, ctx, kem, headers)
   end
 
   test "to_dag_cbor/1 wraps data as a byte string" do

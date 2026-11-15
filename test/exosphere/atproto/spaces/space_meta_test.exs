@@ -49,6 +49,27 @@ defmodule Exosphere.ATProto.Spaces.SpaceMetaTest do
     assert SpaceMeta.encode(shuffled) == Base.decode64!(@corpus["star"])
   end
 
+  # November 12: exportSpaceMeta leaves removed writers out of the archive.
+  test "encode leaves writers removed from the writer set out" do
+    archive = corpus_archive()
+
+    removed = %{
+      did: "did:plc:removedwriter",
+      repo_rev: "3kbcq3p7ad2k4",
+      data: <<0::256>>,
+      space_rev: "3kbcq3p7ad3a2",
+      removed_at: "2026-11-12T00:00:00Z"
+    }
+
+    # A listWriters-style removal carries no repo state at all.
+    bare_removal = %{did: "did:plc:alsoremoved", space_rev: "3kbcq3p7ad3a2", removed_at: true}
+
+    kept = Enum.map(archive.writers, &Map.put(&1, :removed_at, nil))
+
+    assert SpaceMeta.encode(%{archive | writers: [removed, bare_removal | kept]}) ==
+             Base.decode64!(@corpus["star"])
+  end
+
   describe "rejects" do
     setup do
       meta = %{
@@ -76,8 +97,26 @@ defmodule Exosphere.ATProto.Spaces.SpaceMetaTest do
            "spaceRev" => "3kbcq3p7ad3a2"
          })}
 
+      # Both keys at once: `rev` is still refused.
+      both_writer =
+        {"writer/did:plc:bob",
+         DagCbor.encode!(%{
+           "rev" => "3kbcq3p7ad2k4",
+           "repoRev" => "3kbcq3p7ad2k4",
+           "data" => %CBOR.Tag{tag: :bytes, value: <<0::256>>},
+           "spaceRev" => "3kbcq3p7ad3a2"
+         })}
+
       member = {"com.atproto.memberspace.member/did:plc:a", DagCbor.encode!(%{"read" => true})}
-      %{meta: meta, policy: policy, writer: writer, old_writer: old_writer, member: member}
+
+      %{
+        meta: meta,
+        policy: policy,
+        writer: writer,
+        old_writer: old_writer,
+        both_writer: both_writer,
+        member: member
+      }
     end
 
     test "a writer keyed `rev` rather than `repoRev`", ctx do
@@ -85,6 +124,9 @@ defmodule Exosphere.ATProto.Spaces.SpaceMetaTest do
 
       assert {:error, {:invalid_writer, "writer/did:plc:bob"}} =
                SpaceMeta.decode(Star.encode(ctx.meta, [ctx.policy, ctx.old_writer]))
+
+      assert {:error, {:invalid_writer, "writer/did:plc:bob"}} =
+               SpaceMeta.decode(Star.encode(ctx.meta, [ctx.policy, ctx.both_writer]))
     end
 
     test "a missing policy", ctx do

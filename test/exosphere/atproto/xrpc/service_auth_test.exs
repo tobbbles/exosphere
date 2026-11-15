@@ -7,7 +7,7 @@ defmodule Exosphere.ATProto.XRPC.ServiceAuthTest do
 
   @iss "did:web:syncer.example.com"
   @aud "did:plc:spaceauthority#atproto_pds"
-  @lxm "com.atproto.space.unregisterNotify"
+  @lxm "com.atproto.space.notifyRepoUpdate"
   @now 1_800_000_000
 
   setup do
@@ -106,7 +106,7 @@ defmodule Exosphere.ATProto.XRPC.ServiceAuthTest do
         )
 
       assert {:error, :bad_audience} = verify.(aud: "did:plc:spaceauthority")
-      assert {:error, :bad_lxm} = verify.(lxm: "com.atproto.space.registerNotify")
+      assert {:error, :bad_lxm} = verify.(lxm: "com.atproto.managedspace.checkAccess")
       assert {:error, :token_expired} = verify.(now: @now + 3600)
 
       assert {:error, :invalid_signature} =

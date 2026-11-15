@@ -1,10 +1,11 @@
 defmodule Exosphere.ExternalSpaceTest do
   @moduledoc """
-  A live Spaces round trip: delegation → credential → writer set → verified STAR archive.
+  A live Spaces round trip: delegation → authorizeSpaceSync → writer set →
+  verified STAR archive → MAC'd oplog catch-up.
 
-  This is the `spaces/alpha` promotion checklist's "one `@tag :external` round
-  trip against a stable alpha PDS", written so it can be run the moment such a
-  PDS exists. Everything else in the Spaces suite is exercised through
+  This is the Spaces promotion checklist's "one `@tag :external` round trip
+  against a stable PDS" (November 12 alpha or later), written so it can be
+  run the moment such a PDS exists. Everything else in the Spaces suite is exercised through
   `HTTP.Behaviour` mocks, which check the requests we *send* but can only ever
   confirm the shapes we already believe in. This one talks to a real host.
 
@@ -71,31 +72,52 @@ defmodule Exosphere.ExternalSpaceTest do
                  headers: [{"authorization", "Bearer " <> token}]
                )
 
-      # 3. Exchange it at the space host for a credential bound to a fresh
+      # 3. Authorize sync at the space host: a credential bound to a fresh
       #    P-256 key; every later request is signed by that key.
       assert {:ok, key} = HttpSignature.generate_key()
 
       assert {:ok, credential} =
-               Credential.mint(space_host, space_ref, delegation, key: key)
+               Credential.authorize_space_sync(space_host, space_ref, delegation, key: key)
 
-      # 4. The writer set.
+      # 4. The writer set: repos still in it, not the ones removed from it.
       assert {:ok, %{repos: repos}} = Sync.list_writers(space_host, space_ref, credential)
       assert is_list(repos)
 
-      # 5. Each member's repo, verified: a synced copy that is also an
-      #    authenticated one. This is the claim the whole design rests on, and
-      #    the only place it meets bytes the reference implementation produced.
-      for repo <- repos do
+      # 5. Each member's repo, from its own host, verified: a synced copy that
+      #    is also an authenticated one. This is the claim the whole design
+      #    rests on, and the only place it meets bytes the reference
+      #    implementation produced. The KEM key is re-resolved on a failed
+      #    verification, as the proposal advises.
+      for %{type: :repo_write} = repo <- repos do
         {:ok, author_doc} = DID.resolve(repo.repo)
+        {:ok, repo_host} = Document.get_pds_endpoint(author_doc)
 
-        {:ok, kem_key} = Document.get_kem_key(author_doc)
+        kem_key = fn
+          false ->
+            Document.get_kem_key(author_doc)
+
+          true ->
+            with {:ok, doc} <- DID.resolve(repo.repo), do: Document.get_kem_key(doc)
+        end
 
         assert {:ok, verified} =
-                 Sync.get_repo(pds, space_ref, repo.repo, credential, kem_key: kem_key),
+                 Sync.get_repo(repo_host, space_ref, repo.repo, credential, kem_key: kem_key),
                "full-archive verification failed for #{repo.repo}"
 
         assert Sync.synced?(verified.lthash, repo.data),
                "the verified set hash does not match the writer set's commit data"
+
+        # 6. And incrementally from there: every page MAC'd, the last page's
+        #    commit equal to the running set hash.
+        assert {:ok, _} =
+                 Sync.sync_repo(
+                   repo_host,
+                   space_ref,
+                   repo.repo,
+                   credential,
+                   %{rev: verified.rev, lthash: verified.lthash},
+                   kem_key: kem_key
+                 )
       end
     end
   end

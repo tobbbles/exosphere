@@ -23,10 +23,15 @@ defmodule Exosphere.ATProto.XRPC.ServiceAuth do
   maps (`Exosphere.ATProto.OAuth.JWK.from_keypair/2` converts an
   `ATProto.Crypto` keypair).
 
-  The Spaces methods that use it: `com.atproto.space.unregisterNotify` (from
-  the service being withdrawn), `notifyCredentialsRevoked` (from the space
-  authority), `notifyRepoUpdate` / `notifySpaceStatus` (from repo and space
-  hosts), and `com.atproto.managedspace.checkAccess` (from the authority).
+  The Spaces methods that use it (November 12 alpha):
+  `com.atproto.space.notifyCredentialsRevoked` (from the space authority to a
+  repo host), `notifyRepoUpdate` (from a repo host to the space host,
+  `lxm=com.atproto.space.notifyRepoUpdate`), and
+  `com.atproto.managedspace.checkAccess` (from the authority to its managing
+  app, `lxm=com.atproto.managedspace.checkAccess`). The calls a space host
+  makes to a syncer's notify endpoint — `confirmRegistration` and
+  `notifySpaceUpdate` — carry no service auth: the registration token in the
+  body authenticates them.
   """
 
   alias Exosphere.ATProto.Identity.DID

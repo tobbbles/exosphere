@@ -15,19 +15,31 @@ defmodule Exosphere.ATProto.Spaces.SpaceMeta do
   2. **Policy state** — anything else the policy keeps, keyed like record
      paths (`{nsid}/{rkey}`), e.g. memberspace's
      `com.atproto.memberspace.member/{did}` entries.
-  3. **Writers** — one `writer/{did}` key per account in the writer set, with
+  3. **Writers** — one `writer/{did}` key per repo in the writer set, with
      `repoRev`, `data` and `spaceRev` (what `listWriters` serves after
-     migration). The repo revision was keyed `rev` until the
-     `atproto-spaces-cleanup` branch (`4037310`) renamed it to match
-     `listWriters`; an archive carrying `rev` is rejected as a malformed
-     writer.
+     migration):
+
+         writer/<did> → {"repoRev": "<TID>", "data": <bytes>, "spaceRev": "<TID>"}
+
+     The repo revision was keyed `rev` before the November 12 alpha; a writer
+     carrying `rev` is rejected as malformed, so a Nov 5 archive no longer
+     imports (re-export it from an upgraded host).
+
+  Since the November 12 alpha a removed writer (`removeWriter`,
+  `removeMembers`, or `putMembers` revoking write) stays in the writer set as
+  a `#repoRemoved` entry until it writes again, but `exportSpaceMeta` leaves
+  it out of the archive. `encode/1` does that for the host: a writer whose
+  `:removed_at` is set is skipped, so the host can pass its writer rows
+  unfiltered.
 
   `decode/1` rejects the archive on a parse error, a missing policy, a
   section out of place, a duplicate or out-of-order key, a non-map value, or
-  a malformed writer. (Rejecting a policy or policy-state key the importing
-  host does not implement is that host's call — `UnsupportedPolicy`.)
-  Notification registrations, credential revocations and deleted-space
-  tombstones are not carried over.
+  a malformed writer — a host answers all of these `InvalidSpaceMeta`.
+  (Rejecting a policy or policy-state key the importing host does not
+  implement is that host's call — `UnsupportedPolicy` for the policy,
+  `InvalidSpaceMeta` for state; `Spaces.Policy.decode/1` refuses a policy
+  whose baseline fields are malformed.) Notification registrations,
+  credential revocations and deleted-space tombstones are not carried over.
   """
 
   alias Exosphere.ATProto.CBOR, as: DagCbor
@@ -40,6 +52,20 @@ defmodule Exosphere.ATProto.Spaces.SpaceMeta do
   @writer_prefix "writer/"
 
   @type writer :: %{did: String.t(), repo_rev: String.t(), data: binary(), space_rev: String.t()}
+
+  @typedoc """
+  A writer as a host passes it to `encode/1`: a `t:writer/0`, optionally
+  with `:removed_at` (any non-nil value marks it removed from the writer set,
+  and leaves it out of the archive).
+  """
+  @type export_writer :: %{
+          required(:did) => String.t(),
+          required(:space_rev) => String.t(),
+          optional(:repo_rev) => String.t(),
+          optional(:data) => binary(),
+          optional(:removed_at) => term()
+        }
+
   @type t :: %{
           space: String.t(),
           policy: map(),
@@ -47,8 +73,17 @@ defmodule Exosphere.ATProto.Spaces.SpaceMeta do
           writers: [writer()]
         }
 
-  @doc "Encode an archive; each section is put into key order."
-  @spec encode(t()) :: binary()
+  @doc """
+  Encode an archive; each section is put into key order. Writers with a
+  non-nil `:removed_at` are left out (see "removed writer" above); `:writers`
+  may therefore hold `t:export_writer/0`s.
+  """
+  @spec encode(%{
+          required(:space) => String.t(),
+          required(:policy) => map(),
+          optional(:policy_state) => [{String.t(), map()}],
+          optional(:writers) => [writer() | export_writer()]
+        }) :: binary()
   def encode(%{space: space, policy: %{} = policy} = archive) do
     state =
       archive
@@ -59,6 +94,7 @@ defmodule Exosphere.ATProto.Spaces.SpaceMeta do
     writers =
       archive
       |> Map.get(:writers, [])
+      |> Enum.reject(&(Map.get(&1, :removed_at) != nil))
       |> Enum.map(fn w ->
         value = %{
           "repoRev" => w.repo_rev,
@@ -146,6 +182,10 @@ defmodule Exosphere.ATProto.Spaces.SpaceMeta do
 
   defp put(acc, :policy, _key, map), do: {:ok, %{acc | policy: map}}
   defp put(acc, :state, key, map), do: {:ok, %{acc | state: [{key, map} | acc.state]}}
+
+  # A writer carrying the pre-November 12 `rev` key is refused outright, even
+  # alongside `repoRev`, so a stale exporter can't slip one past.
+  defp put(_acc, :writers, key, %{"rev" => _}), do: {:error, {:invalid_writer, key}}
 
   defp put(acc, :writers, @writer_prefix <> did = key, map) do
     with true <- DID.valid?(did),

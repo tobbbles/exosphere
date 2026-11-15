@@ -15,13 +15,19 @@ defmodule Exosphere.ATProto.Spaces.Commit do
   | `data` | bytes | `sha256` of the repo's LtHash state (32 bytes) |
 
   It carries **no signature**. A repo host authenticates a commit to each
-  syncer with a MAC keyed by a per-request shared secret (`Spaces.Kem`,
-  `Spaces.Mac`), sent in the `Atproto-Space-Mac` response header — so a
-  syncer gets integrity and a leaked commit proves nothing to a third party.
-  `verify/4` checks that MAC and that the commit names the repo and space
-  that were asked for; once it passes, `data` is trusted as the author's
-  claim, which is what makes comparing a locally-folded set hash against it
-  (`matches?/2`) meaningful.
+  syncer with an RFC 9421 `hmac-sha256` signature keyed by a per-request HPKE
+  secret (`Spaces.Kem`, `Spaces.Mac`): an `Atproto-Space-Commit` header
+  describing the commit, signed under the label the syncer asked for in
+  `Accept-Signature`. A syncer gets integrity, and a leaked commit proves
+  nothing to a third party. The host builds those headers with
+  `mac_headers/2`; `verify/4` checks the commit's shape, that it names the
+  repo and space that were asked for, and the MAC over a header matching it.
+  Once it passes, `data` is trusted as the author's claim, which is what
+  makes comparing a locally-folded set hash against it (`matches?/2`)
+  meaningful.
+
+  Until the November 12 alpha the MAC was a bare HMAC over a length-prefixed
+  context, sent in `Atproto-Space-Mac`; that format is gone.
 
   Until atproto `5791385` (2026-10-27) the commit was a signed
   `defs#signedCommit{ver, hash, ikm, sig, mac, rev}` verified against the
@@ -31,7 +37,9 @@ defmodule Exosphere.ATProto.Spaces.Commit do
   binary (`to_dag_cbor/1` wraps it as a CBOR byte string for encoding).
   """
 
-  alias Exosphere.ATProto.Spaces.{Lthash, Mac}
+  alias Exosphere.ATProto.Identity.DID
+  alias Exosphere.ATProto.Spaces.{HttpSignature, Kem, Lthash, Mac, XRPC}
+  alias Exosphere.ATProto.TID
 
   @version 1
 
@@ -113,34 +121,48 @@ defmodule Exosphere.ATProto.Spaces.Commit do
 
   def matches?(_, _), do: false
 
-  @doc "The commit MAC under `shared_secret` (what a repo host sends)."
-  @spec mac(t(), binary()) :: binary()
-  def mac(%{} = commit, shared_secret), do: Mac.commit_mac(shared_secret, commit)
+  @doc """
+  The response headers a repo host adds for `commit` (`getLatestCommit`,
+  `listRepoOps`, `getRepo`): `atproto-space-commit`, `signature-input` and
+  `signature`, keyed by the request's decapsulated secret (`mac_params`, from
+  `Spaces.Mac.parse_request/2` and `Spaces.Mac.decapsulate/2`). See
+  `Spaces.Mac.commit_headers/2`.
+  """
+  @spec mac_headers(t(), Mac.mac_params()) :: [{String.t(), String.t()}]
+  def mac_headers(%{} = commit, mac_params), do: Mac.commit_headers(commit, mac_params)
 
   @doc """
-  Verify a commit against the MAC its response carried: the format version,
-  the shape, that `repo` and `space` are the ones requested (`ctx`), and the
-  MAC under the request's shared secret.
+  Verify a commit against the MAC its response carried: the format version
+  and shape, that `repo` and `space` are the ones requested (`ctx`), and the
+  commit MAC in the response `headers`, under the `encapsulation` the request
+  was made with (`Spaces.Kem.encapsulate/2`), over an `Atproto-Space-Commit`
+  header that matches the commit field for field.
 
   Errors: `:invalid_commit` (shape/version), `:repo_mismatch`,
-  `:space_mismatch`, `:invalid_mac`. On `:invalid_mac` the proposal advises
-  refreshing the author's DID document (the KEM key may have rotated) before
-  retrying with a new key share.
+  `:space_mismatch`, `{:invalid_space_mac, reason}` (`Spaces.Mac`). On a MAC
+  failure the proposal advises refreshing the author's DID document (the KEM
+  key may have rotated) before retrying with a new key share.
   """
-  @spec verify(t(), ctx(), binary(), binary()) :: :ok | {:error, term()}
-  def verify(%{} = commit, %{space: space, repo: repo}, shared_secret, mac) do
+  @spec verify(t(), ctx(), Kem.encapsulation(), HttpSignature.headers()) ::
+          :ok | {:error, term()}
+  def verify(%{} = commit, %{space: space, repo: repo}, encapsulation, headers) do
     cond do
       not well_formed?(commit) -> {:error, :invalid_commit}
       commit["repo"] != repo -> {:error, :repo_mismatch}
       commit["space"] != space -> {:error, :space_mismatch}
-      not Mac.equal?(Mac.commit_mac(shared_secret, commit), mac) -> {:error, :invalid_mac}
-      true -> :ok
+      true -> Mac.verify_commit(commit, encapsulation, headers)
     end
   end
 
   def verify(_, _, _, _), do: {:error, :invalid_commit}
 
-  @doc "Whether a map has the commit's shape and the supported version."
+  @doc """
+  Whether a map has the commit's shape (`com.atproto.space.defs#commit`) and
+  the supported version: `repo` a DID, `space` a space-ref, `rev` a TID, and
+  a 32-byte `data` digest. The rev is checked as a TID because syncers hand
+  it back as the position to resume from (`listRepoOps` `since`, format
+  `tid`), and the reference refuses a commit whose rev is not one.
+  """
   @spec well_formed?(term()) :: boolean()
   def well_formed?(%{
         "ver" => @version,
@@ -151,7 +173,7 @@ defmodule Exosphere.ATProto.Spaces.Commit do
       })
       when is_binary(repo) and is_binary(space) and is_binary(rev) and is_binary(data) and
              byte_size(data) == 32,
-      do: true
+      do: DID.valid?(repo) and XRPC.space_ref?(space) and TID.valid?(rev)
 
   def well_formed?(_), do: false
 

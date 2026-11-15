@@ -187,7 +187,7 @@ defmodule Exosphere.ATProto.Spaces.CredentialTest do
              Credential.get_delegation_token(@pds, @space, http: RecordingHTTP)
   end
 
-  test "mint sends the key and delegation in the body, unauthenticated", ctx do
+  test "authorize_space_sync sends the key and delegation in the body, unauthenticated", ctx do
     delegation = delegation_jwt(ctx)
     credential = credential_jwt(ctx, ctx.key)
 
@@ -196,8 +196,9 @@ defmodule Exosphere.ATProto.Spaces.CredentialTest do
       {:ok, %{status: 200, headers: [], body: %{"credential" => credential}}}
     )
 
-    assert {:ok, %{credential: ^credential, key: key}} =
-             Credential.mint(@space_host, @space, delegation,
+    # No spaceRev before the space's first update.
+    assert {:ok, %{credential: ^credential, key: key, space_rev: nil}} =
+             Credential.authorize_space_sync(@space_host, @space, delegation,
                key: ctx.key,
                http: RecordingHTTP
              )
@@ -205,7 +206,8 @@ defmodule Exosphere.ATProto.Spaces.CredentialTest do
     assert key == ctx.key
 
     {url, opts} = Process.get(:last_post)
-    assert url == @space_host <> "/xrpc/com.atproto.space.getSpaceCredential"
+    # November 12: getSpaceCredential is authorizeSpaceSync.
+    assert url == @space_host <> "/xrpc/com.atproto.space.authorizeSpaceSync"
 
     # atproto 7b8e094: no Authorization, no DPoP — everything is in the body.
     assert :error = find_header(opts[:headers], "authorization")
@@ -218,7 +220,8 @@ defmodule Exosphere.ATProto.Spaces.CredentialTest do
            }
   end
 
-  test "mint without a delegation token asks a public space for a credential", ctx do
+  test "authorize_space_sync without a delegation token asks a public space for a credential",
+       ctx do
     credential = credential_jwt(ctx, ctx.key)
 
     Process.put(
@@ -227,7 +230,10 @@ defmodule Exosphere.ATProto.Spaces.CredentialTest do
     )
 
     assert {:ok, %{credential: ^credential}} =
-             Credential.mint(@space_host, @space, nil, key: ctx.key, http: RecordingHTTP)
+             Credential.authorize_space_sync(@space_host, @space, nil,
+               key: ctx.key,
+               http: RecordingHTTP
+             )
 
     {_url, opts} = Process.get(:last_post)
     refute Map.has_key?(opts[:json], "delegationToken")
@@ -244,9 +250,12 @@ defmodule Exosphere.ATProto.Spaces.CredentialTest do
 
     assert {"atproto-space-audience", @user} = List.keyfind(headers, "atproto-space-audience", 0)
 
-    assert {"signature-input",
-            ~s(atproto-space-credential=\("authorization" "atproto-space-audience"\);tag="atproto-space-credential")} =
-             List.keyfind(headers, "signature-input", 0)
+    # Verifiers find the signature by its tag, under any label (the reference
+    # signer's label is `sig` since November 12).
+    {"signature-input", input} = List.keyfind(headers, "signature-input", 0)
+
+    assert input =~
+             ~r/\A[a-z*][a-z0-9_.*-]*=\("authorization" "atproto-space-audience"\);.*tag="atproto-space-credential"/
 
     assert {:ok, %{payload: %{"sub" => @space}}} =
              Credential.verify_request(headers,
@@ -292,10 +301,65 @@ defmodule Exosphere.ATProto.Spaces.CredentialTest do
     assert {:error, :invalid_http_signature} = Credential.verify_request(other_headers, opts)
 
     no_sig = List.keydelete(headers, "signature", 0)
-    assert {:error, {:missing_header, "signature"}} = Credential.verify_request(no_sig, opts)
+    # Signatures are found by tag (section 5); with no Signature field there
+    # is no credential signature to find.
+    assert {:error, :missing_http_signature} = Credential.verify_request(no_sig, opts)
   end
 
-  test "mint carries a client attestation when gating", ctx do
+  test "verify_request combines repeated signature field lines before the tag lookup", ctx do
+    credential = credential_jwt(ctx, ctx.key)
+    cred = %{credential: credential, key: ctx.key}
+    {:ok, headers} = Credential.presentation_headers(cred, @user)
+    opts = [audience: @user, document: ctx.authority_doc, now: @now]
+
+    {"signature-input", "sig=" <> input} = List.keyfind(headers, "signature-input", 0)
+    {"signature", "sig=" <> signature} = List.keyfind(headers, "signature", 0)
+    base = Enum.reject(headers, fn {k, _} -> k in ["signature-input", "signature"] end)
+
+    # The credential signature on a second field line, behind an unrelated
+    # one: Node joins the lines with ", " and the reference accepts it.
+    second_line =
+      base ++
+        [
+          {"Signature-Input", ~s[other=("authorization");tag="unrelated"]},
+          {"Signature-Input", "sig=" <> input},
+          {"Signature", "other=:AAAA:"},
+          {"Signature", "sig=" <> signature}
+        ]
+
+    assert {:ok, _} = Credential.verify_request(second_line, opts)
+
+    # Two credential-tagged signatures on separate lines: section 5 requires
+    # exactly one, under any label.
+    two_tagged =
+      base ++
+        [
+          {"signature-input", "sig=" <> input},
+          {"signature-input", "sig2=" <> input},
+          {"signature", "sig=" <> signature},
+          {"signature", "sig2=" <> signature}
+        ]
+
+    assert {:error, :multiple_http_signatures} = Credential.verify_request(two_tagged, opts)
+  end
+
+  test "verify_request takes Req-style list-valued header maps", ctx do
+    credential = credential_jwt(ctx, ctx.key)
+
+    {:ok, headers} =
+      Credential.presentation_headers(%{credential: credential, key: ctx.key}, @user)
+
+    req_style = Map.new(headers, fn {k, v} -> {k, [v]} end)
+
+    assert {:ok, %{payload: %{"sub" => @space}}} =
+             Credential.verify_request(req_style,
+               audience: @user,
+               document: ctx.authority_doc,
+               now: @now
+             )
+  end
+
+  test "authorize_space_sync carries a client attestation when gating", ctx do
     delegation = delegation_jwt(ctx)
     credential = credential_jwt(ctx, ctx.key)
 
@@ -313,7 +377,7 @@ defmodule Exosphere.ATProto.Spaces.CredentialTest do
       )
 
     assert {:ok, _} =
-             Credential.mint(@space_host, @space, delegation,
+             Credential.authorize_space_sync(@space_host, @space, delegation,
                key: ctx.key,
                client_attestation: attestation,
                http: RecordingHTTP
@@ -323,7 +387,7 @@ defmodule Exosphere.ATProto.Spaces.CredentialTest do
     assert opts[:json]["clientAttestation"] == attestation
   end
 
-  test "mint catches a credential bound to another key", ctx do
+  test "authorize_space_sync catches a credential bound to another key", ctx do
     delegation = delegation_jwt(ctx)
 
     evil = credential_jwt(ctx, sig_key())
@@ -331,13 +395,13 @@ defmodule Exosphere.ATProto.Spaces.CredentialTest do
     Process.put(:post_response, {:ok, %{status: 200, headers: [], body: %{"credential" => evil}}})
 
     assert {:error, :credential_bound_to_other_key} =
-             Credential.mint(@space_host, @space, delegation,
+             Credential.authorize_space_sync(@space_host, @space, delegation,
                key: ctx.key,
                http: RecordingHTTP
              )
   end
 
-  test "mint surfaces host refusals with their error code", ctx do
+  test "authorize_space_sync surfaces host refusals with their error code", ctx do
     delegation = delegation_jwt(ctx)
 
     Process.put(
@@ -346,20 +410,23 @@ defmodule Exosphere.ATProto.Spaces.CredentialTest do
     )
 
     assert {:error, {:http_error, 403, "SpaceNotFound"}} =
-             Credential.mint(@space_host, @space, delegation,
+             Credential.authorize_space_sync(@space_host, @space, delegation,
                key: ctx.key,
                http: RecordingHTTP
              )
   end
 
-  test "mint types the refusals that change what a syncer does", ctx do
+  test "authorize_space_sync types the refusals that change what a syncer does", ctx do
     for {code, expected} <- [
           {"SpaceDeleted", :space_deleted},
           {"RepoTakendown", :repo_takendown},
           {"RepoDeactivated", :repo_deactivated},
-          # Renamed from UserNotAuthorized by atproto-spaces-lexicon-review.
+          # Renamed from UserNotAuthorized on November 12.
           {"AccountNotAuthorized", :account_not_authorized},
-          {"AppNotAuthorized", :app_not_authorized}
+          {"AppNotAuthorized", :app_not_authorized},
+          {"NotAuthorized", :not_authorized},
+          {"RegistrationNotConfirmed", :registration_not_confirmed},
+          {"UpstreamFailure", :upstream_failure}
         ] do
       Process.put(
         :post_response,
@@ -367,8 +434,162 @@ defmodule Exosphere.ATProto.Spaces.CredentialTest do
       )
 
       assert {:error, ^expected} =
-               Credential.mint(@space_host, @space, nil, key: ctx.key, http: RecordingHTTP)
+               Credential.authorize_space_sync(@space_host, @space, nil,
+                 key: ctx.key,
+                 http: RecordingHTTP
+               )
     end
+  end
+
+  # -- authorizeSpaceSync: notify and spaceRev (November 12) ------------------
+
+  test "authorize_space_sync registers for notifications and returns spaceRev", ctx do
+    credential = credential_jwt(ctx, ctx.key)
+
+    Process.put(
+      :post_response,
+      {:ok,
+       %{
+         status: 200,
+         headers: [],
+         body: %{"credential" => credential, "spaceRev" => "3kbcq3p7ad3a2"}
+       }}
+    )
+
+    token = String.duplicate("t", 512)
+
+    assert {:ok, %{credential: ^credential, space_rev: "3kbcq3p7ad3a2"}} =
+             Credential.authorize_space_sync(@space_host, @space, nil,
+               key: ctx.key,
+               notify: [endpoint: "https://syncer.example.com", token: token],
+               http: RecordingHTTP
+             )
+
+    {_url, opts} = Process.get(:last_post)
+
+    assert opts[:json]["notify"] == %{
+             "endpoint" => "https://syncer.example.com",
+             "token" => token
+           }
+
+    # A map works as well as a keyword list.
+    assert {:ok, _} =
+             Credential.authorize_space_sync(@space_host, @space, nil,
+               key: ctx.key,
+               notify: %{endpoint: "http://localhost:3000", token: "secret"},
+               http: RecordingHTTP
+             )
+
+    {_url, opts} = Process.get(:last_post)
+    assert opts[:json]["notify"]["endpoint"] == "http://localhost:3000"
+  end
+
+  test "authorize_space_sync refuses a malformed notify before sending", ctx do
+    for bad <- [
+          [endpoint: "https://syncer.example.com", token: String.duplicate("t", 513)],
+          [endpoint: "https://syncer.example.com"],
+          [token: "secret"],
+          [endpoint: "syncer.example.com", token: "secret"],
+          [endpoint: "ftp://syncer.example.com", token: "secret"],
+          [endpoint: "https://syncer.example.com", token: 42],
+          "https://syncer.example.com"
+        ] do
+      assert {:error, :invalid_notify} =
+               Credential.authorize_space_sync(@space_host, @space, nil,
+                 key: ctx.key,
+                 notify: bad,
+                 http: RecordingHTTP
+               )
+    end
+
+    refute Process.get(:last_post)
+  end
+
+  test "authorize_space_sync rejects a spaceRev that is not a TID", ctx do
+    credential = credential_jwt(ctx, ctx.key)
+
+    for rev <- ["not-a-tid", 7] do
+      Process.put(
+        :post_response,
+        {:ok, %{status: 200, headers: [], body: %{"credential" => credential, "spaceRev" => rev}}}
+      )
+
+      assert {:error, :invalid_space_rev} =
+               Credential.authorize_space_sync(@space_host, @space, nil,
+                 key: ctx.key,
+                 http: RecordingHTTP
+               )
+    end
+  end
+
+  test "decode_authorization_request shapes the space host's input", ctx do
+    assert {:ok,
+            %{
+              space: @space,
+              credential_key: did_key,
+              delegation_token: nil,
+              client_attestation: nil,
+              notify: nil
+            }} =
+             Credential.decode_authorization_request(%{
+               "space" => @space,
+               "credentialKey" => ctx.key.did_key
+             })
+
+    assert did_key == ctx.key.did_key
+
+    assert {:ok,
+            %{
+              delegation_token: "d",
+              client_attestation: "a",
+              notify: %{endpoint: "https://syncer.example.com", token: "t"}
+            }} =
+             Credential.decode_authorization_request(%{
+               "space" => @space,
+               "credentialKey" => ctx.key.did_key,
+               "delegationToken" => "d",
+               "clientAttestation" => "a",
+               "notify" => %{"endpoint" => "https://syncer.example.com", "token" => "t"}
+             })
+
+    base = %{"space" => @space, "credentialKey" => ctx.key.did_key}
+
+    # A secp256k1 did:key is not a credential key.
+    {:ok, k256} = JWK.generate(:secp256k1)
+    {:ok, k256_pub, :secp256k1} = JWK.to_public_key(JWK.to_public(k256))
+    k256_did_key = "did:key:z" <> Base58.encode(<<0xE7, 0x01, k256_pub::binary>>)
+
+    assert {:error, :invalid_credential_key} =
+             Credential.decode_authorization_request(%{base | "credentialKey" => k256_did_key})
+
+    for notify <- [
+          %{"endpoint" => "https://syncer.example.com", "token" => String.duplicate("t", 513)},
+          %{"endpoint" => "not a uri", "token" => "t"},
+          %{"endpoint" => "https://syncer.example.com"},
+          "https://syncer.example.com"
+        ] do
+      assert {:error, :invalid_notify} =
+               Credential.decode_authorization_request(Map.put(base, "notify", notify))
+    end
+
+    for bad <- [
+          %{base | "space" => "at://did:plc:x/com.example.post/1"},
+          Map.put(base, "delegationToken", 1),
+          Map.delete(base, "credentialKey"),
+          # Nov 5's field name is not accepted.
+          %{"space" => @space, "credentialKid" => ctx.key.did_key}
+        ] do
+      assert {:error, :invalid_request} = Credential.decode_authorization_request(bad)
+    end
+  end
+
+  test "authorization_response omits spaceRev before the first update" do
+    assert Credential.authorization_response("jwt") == %{"credential" => "jwt"}
+
+    assert Credential.authorization_response("jwt", "3kbcq3p7ad3a2") == %{
+             "credential" => "jwt",
+             "spaceRev" => "3kbcq3p7ad3a2"
+           }
   end
 
   # -- revocation (notifyCredentialsRevoked) ---------------------------------
@@ -452,19 +673,19 @@ defmodule Exosphere.ATProto.Spaces.CredentialTest do
     assert {:error, :invalid_revocation} = Credential.decode_revocation(%{"credentials" => ["a"]})
   end
 
-  test "mint passes transport errors through instead of crashing" do
+  test "authorize_space_sync passes transport errors through instead of crashing" do
     Process.put(:post_response, {:error, :econnrefused})
 
     assert {:error, :econnrefused} =
-             Credential.mint(@space_host, @space, "jwt",
+             Credential.authorize_space_sync(@space_host, @space, "jwt",
                key: sig_key(),
                http: RecordingHTTP
              )
   end
 
-  test "mint requires a credential key" do
+  test "authorize_space_sync requires a credential key" do
     assert {:error, :missing_key} =
-             Credential.mint(@space_host, @space, "jwt", http: RecordingHTTP)
+             Credential.authorize_space_sync(@space_host, @space, "jwt", http: RecordingHTTP)
   end
 
   test "verify resolves the authority's space key from its DID document", ctx do
@@ -573,7 +794,7 @@ defmodule Exosphere.ATProto.Spaces.CredentialTest do
     assert {"authorization", "Bearer tok"} in opts[:headers]
   end
 
-  test "mint hands the caller's timeout to the transport", ctx do
+  test "authorize_space_sync hands the caller's timeout to the transport", ctx do
     delegation = delegation_jwt(ctx)
     credential = credential_jwt(ctx, ctx.key)
 
@@ -583,7 +804,7 @@ defmodule Exosphere.ATProto.Spaces.CredentialTest do
     )
 
     assert {:ok, _} =
-             Credential.mint(@space_host, @space, delegation,
+             Credential.authorize_space_sync(@space_host, @space, delegation,
                key: ctx.key,
                timeout: 1_500,
                follow_redirects: false,
@@ -599,7 +820,8 @@ defmodule Exosphere.ATProto.Spaces.CredentialTest do
     assert opts[:json]["delegationToken"] == delegation
   end
 
-  test "mint does not forward caller headers onto the unauthenticated exchange", ctx do
+  test "authorize_space_sync does not forward caller headers onto the unauthenticated exchange",
+       ctx do
     delegation = delegation_jwt(ctx)
     credential = credential_jwt(ctx, ctx.key)
 
@@ -609,7 +831,7 @@ defmodule Exosphere.ATProto.Spaces.CredentialTest do
     )
 
     assert {:ok, _} =
-             Credential.mint(@space_host, @space, delegation,
+             Credential.authorize_space_sync(@space_host, @space, delegation,
                key: ctx.key,
                headers: [{"authorization", "Bearer not-this-one"}],
                http: RecordingHTTP

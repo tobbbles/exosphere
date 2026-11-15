@@ -23,6 +23,55 @@ entries are keyed `repoRev` rather than `rev`. `lthash.json`,
 `commit-mac.json`, `repo-star.json` and the HTTP signature in
 `credentials.json` regenerate byte-identically.
 
+## Status against the November 12 alpha (`d4def6e`)
+
+exosphere now follows the November 12 alpha (bluesky-social/atproto
+`permissioned-data` at `d4def6e9f521896ed8222f576d54923d00b5fbeb`,
+`@atproto/space@0.0.0-spaces-alpha-20261112204144`). That release replaced
+two of the byte formats this corpus pins, and the proposal says not to
+support the old ones:
+
+- **The KEM shared secret** is now an HPKE secret export (RFC 9180 §6.2,
+  `info` `"atproto-mac"`, empty exporter context, 32 bytes), not a bare DHKEM
+  `shared_secret`. Every `kem.vectors[].sharedSecret` and
+  `commits[].sharedSecret` in `commit-mac.json` is a November 5 value.
+- **MACs** are now RFC 9421 `hmac-sha256` signatures over an
+  `Atproto-Space-Commit` / `Atproto-Space-Record` header, requested with
+  `Accept-Signature`. Every `mac`, `macHeader` and `wantMacHeader` in
+  `commit-mac.json`, and `mac` in `repo-star.json`, is a November 5 value.
+- **Credential signatures** are found by tag, and reference signers use the
+  label `sig`. `credentials.json`'s HTTP signature is signed under the old
+  label `atproto-space-credential`; it still verifies (lookup is by tag), but
+  its `signature-input` no longer matches exosphere's byte for byte, only
+  after the label.
+
+Those fields are **no longer asserted**. Everything else in the corpus is
+unchanged by the release and still asserted byte for byte: LtHash states and
+digests, commits (`ver`, `repo`, `space`, `rev`, `data`) built from their
+set-hash elements, record values' CIDs, the repo STAR archives, the token
+classes, and the space meta archive. `spaces_corpus_test.exs` verifies the
+reference commits, records and archives under November 12 MACs it computes
+against the corpus's own author KEM key.
+
+The November 12 secret and MAC bytes are pinned meanwhile by the reference's
+own test vectors, not by this corpus: the CFRG export-only DHKEM(P-256)
+vector and atproto's Go-computed `atproto-mac` vector
+(`packages/space/tests/kem.test.ts`), in `test/exosphere/atproto/crypto/hpke_test.exs`
+and the second encoder; and the exact request, covered-header and
+signature-base strings of `packages/space/tests/mac.test.ts`, in
+`kem_mac_test.exs` and the second encoder.
+
+**To regenerate** at the November 12 alpha, `generate.mjs` needs a rewrite
+against `@atproto/space` at `d4def6e` (no graft is needed any more:
+`permissioned-data` has both the renames and `@atproto/star`). With the
+fixed author KEM key and fixed ephemeral key pairs, record `encapsulate`'s
+`keyShare` and `sharedSecret` (and check them with `decapsulate`); for each
+commit and record, `formatMacRequest`, then `parseMacRequest` plus the
+decapsulated secret into `createCommitMacHeaders` / `createRecordMacHeaders`,
+recording the request and every response header; and sign the credential
+presentation under `sig`. Until that lands, treat the fields listed above as
+history.
+
 ## Why a graft
 
 `atproto-spaces-cleanup` forked from `permissioned-data` at `99bf6e2`, before
@@ -72,9 +121,9 @@ regeneration diff on any other file means the reference moved.
 | Fixture | What it pins | Exercised by |
 |---|---|---|
 | `lthash.json` | Lane math (LE u16, mod 2^16), BLAKE3-XOF expansion, empty/multi/add-remove/multiset/underflow states, 512-byte rkey element (unchanged since `787a730`) | `Spaces.Lthash`, second encoder |
-| `commit-mac.json` | KEM shared secrets (RFC 9180 DHKEM(P-256) via the reference's `decapsulate`, from fixed ephemeral keys), `defs#commit` fields and `data`, commit MACs (incl. a 532-byte space URI), record MACs over URI + binary CID, and the exact `Atproto-Space-Want-Mac` / `Atproto-Space-Mac` header strings | `Spaces.{Kem,Commit,Mac}`, second encoder |
-| `repo-star.json` | The `atproto-space-repo` STAR archive: metadata, strict key-byte pair order (the record set contains a pair whose length-first and bytewise orders differ), per-record DRISL bytes, the empty repo | `Spaces.Repo`, `Star`, second encoder |
-| `credentials.json` | The three token classes (`typ`/`kid`, claims, TTLs, `cnf.kid`, `jti`, `#atproto_pds` audience) by shape and signature; the RFC 9421 HTTP message signature presenting a credential, byte-for-byte | `Spaces.{Token,HttpSignature}` |
+| `commit-mac.json` | `defs#commit` fields and `data` from set-hash elements (incl. a 532-byte space URI), record values' CIDs. *Not asserted since November 12:* its KEM shared secrets, commit and record MACs, and `Atproto-Space-Want-Mac` / `Atproto-Space-Mac` header strings (see above) | `Spaces.Commit`, `CID`, second encoder |
+| `repo-star.json` | The `atproto-space-repo` STAR archive: metadata, strict key-byte pair order (the record set contains a pair whose length-first and bytewise orders differ), per-record DRISL bytes, the empty repo. *Not asserted:* its `mac` | `Spaces.Repo`, `Star`, second encoder |
+| `credentials.json` | The three token classes (`typ`/`kid`, claims, TTLs, `cnf.kid`, `jti`, `#atproto_pds` audience) by shape and signature; the RFC 9421 HTTP message signature presenting a credential, verified by tag, its covered components and parameters byte-for-byte (the label is now the signer's choice) | `Spaces.{Token,HttpSignature}` |
 | `space-meta.json` | An `atproto-space-meta` archive: policy, memberspace policy state, writer set (`repoRev`, `data`, `spaceRev`) | `Spaces.SpaceMeta`, second encoder |
 
 The corpus is checked in (not fetched) so the suite runs offline and

@@ -11,19 +11,30 @@ defmodule Exosphere.ATProto.Spaces.Memberspace do
   different policy. Calling these on a space under another policy answers
   `PolicyMismatch`.
 
-  Changes are batched: since atproto `atproto-spaces-lexicon-review`
-  (carried by `atproto-spaces-cleanup` 4037310) `putMember`/`removeMember`
-  are `putMembers`/`removeMembers`, each taking up to 100 entries applied in
-  a single commit. `put_member/5` and `remove_member/5` are gone; pass a
-  one-element list.
+  Changes are batched (November 12 alpha): `putMembers` takes
+  `{space, members: [{did, read, write}]}` and `removeMembers`
+  `{space, dids: [did]}`, each up to 100 entries applied in a single commit.
+  A DID listed twice in `putMembers` takes its last entry; `removeMembers`
+  ignores DIDs that are not members (and leaves them in the writer set).
+  Removing a member, or putting one with `write: false`, also removes it
+  from the writer set, which the host announces to syncers as a
+  `com.atproto.space.defs#repoRemoved`. Under a memberspace with
+  `public_write`, a member whose `write` is false is not tracked as a writer.
 
   OAuth-authenticated as the space authority (`manage=update` for writes,
   `read_self` for `list_members/4`): pass `session:` or `headers:` as for
   `Spaces.Space`. A space credential cannot list members — to make the list
   visible to readers, set the policy's `publish_members`. A caller that is
-  not the authority is refused `NotAuthorized` (was `NotSpaceOwner`),
-  returned as `{:error, :not_authorized}`; a cursor the host cannot read is
+  not the authority is refused `NotAuthorized`, returned as
+  `{:error, :not_authorized}`; a cursor the host cannot read is
   `{:error, :invalid_cursor}`.
+
+  ## Host side
+
+  A space host receiving these calls can shape their input with
+  `decode_put_members/1` (validated, deduplicated last-entry-wins) and
+  `decode_remove_members/1`, and build `listMembers` entries with
+  `member/3`.
   """
 
   alias Exosphere.ATProto.Identity.DID
@@ -37,6 +48,9 @@ defmodule Exosphere.ATProto.Spaces.Memberspace do
   (booleans, both defaulting to `true`), or a bare DID meaning read and write.
   """
   @type member :: String.t() | %{required(:did) => String.t(), optional(atom()) => boolean()}
+
+  @typedoc "A decoded `com.atproto.memberspace.defs#member`."
+  @type access :: %{did: String.t(), read: boolean(), write: boolean()}
 
   @doc """
   Add members, or replace the access of members already on the list
@@ -101,6 +115,84 @@ defmodule Exosphere.ATProto.Spaces.Memberspace do
     }
 
     XRPC.query(pds, "#{@nsid}.listMembers", params, auth, opts)
+  end
+
+  @doc """
+  A `com.atproto.memberspace.defs#member` in its wire shape — the entry
+  `putMembers` takes and `listMembers` returns.
+  """
+  @spec member(String.t(), boolean(), boolean()) :: map()
+  def member(did, read, write) when is_binary(did) and is_boolean(read) and is_boolean(write),
+    do: %{"did" => did, "read" => read, "write" => write}
+
+  @doc """
+  Decode a received `com.atproto.memberspace.putMembers` body for a space
+  host: `{:ok, %{space: space_ref, members: [%{did:, read:, write:}]}}`.
+
+  At most 100 entries, each a `defs#member` with a valid DID and both
+  booleans. A DID listed more than once takes its *last* entry, keeping the
+  position of its first (the reference keys the batch by DID), so the host
+  writes each member once per commit. An empty list is lexicon-valid and
+  decodes to no members. Anything else is `{:error, :invalid_request}`.
+  """
+  @spec decode_put_members(map()) ::
+          {:ok, %{space: String.t(), members: [access()]}} | {:error, :invalid_request}
+  def decode_put_members(%{"space" => space, "members" => members})
+      when is_list(members) and length(members) <= @max_batch do
+    with true <- XRPC.space_ref?(space),
+         {:ok, entries} <- decode_members(members) do
+      {:ok, %{space: space, members: last_entry_wins(entries)}}
+    else
+      _ -> {:error, :invalid_request}
+    end
+  end
+
+  def decode_put_members(_), do: {:error, :invalid_request}
+
+  @doc """
+  Decode a received `com.atproto.memberspace.removeMembers` body for a space
+  host: `{:ok, %{space: space_ref, dids: [did]}}`, at most 100 valid DIDs,
+  duplicates dropped. Removing a DID that is not a member is the host's to
+  ignore (leaving any writer set entry alone). Anything else is
+  `{:error, :invalid_request}`.
+  """
+  @spec decode_remove_members(map()) ::
+          {:ok, %{space: String.t(), dids: [String.t()]}} | {:error, :invalid_request}
+  def decode_remove_members(%{"space" => space, "dids" => dids})
+      when is_list(dids) and length(dids) <= @max_batch do
+    if XRPC.space_ref?(space) and Enum.all?(dids, &DID.valid?/1),
+      do: {:ok, %{space: space, dids: Enum.uniq(dids)}},
+      else: {:error, :invalid_request}
+  end
+
+  def decode_remove_members(_), do: {:error, :invalid_request}
+
+  defp decode_members(members) do
+    Enum.reduce_while(members, {:ok, []}, fn
+      %{"did" => did, "read" => read, "write" => write}, {:ok, acc}
+      when is_binary(did) and is_boolean(read) and is_boolean(write) ->
+        if DID.valid?(did),
+          do: {:cont, {:ok, [%{did: did, read: read, write: write} | acc]}},
+          else: {:halt, :error}
+
+      _, _ ->
+        {:halt, :error}
+    end)
+    |> case do
+      {:ok, acc} -> {:ok, Enum.reverse(acc)}
+      :error -> :error
+    end
+  end
+
+  # Order of first appearance, value of last appearance — a JS `Map` built
+  # from the list, as the reference does.
+  defp last_entry_wins(entries) do
+    last = Map.new(entries, &{&1.did, &1})
+
+    entries
+    |> Enum.map(& &1.did)
+    |> Enum.uniq()
+    |> Enum.map(&Map.fetch!(last, &1))
   end
 
   defp batch?(list), do: is_list(list) and list != [] and length(list) <= @max_batch

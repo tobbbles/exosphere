@@ -9,12 +9,17 @@ defmodule Exospace.Interop.SpacesCorpusTest do
 
   This is the G1 gate's strongest evidence — the two implementations were
   written independently and must agree on the exact bytes: LtHash states and
-  digests, the KEM shared secrets (RFC 9180 DHKEM(P-256)), the commit and
-  record MACs and the headers carrying them, the `atproto-space-repo` STAR
-  archive, the token classes, and the HTTP message signature that presents a
-  credential. A failure here is either a spec-reading bug in exosphere or a
-  reference divergence from the proposal text — both are findings, never
-  silently reconciled.
+  digests, commits and record CIDs, the `atproto-space-repo` STAR archive, the
+  token classes, and the HTTP message signature that presents a credential.
+  A failure here is either a spec-reading bug in exosphere or a reference
+  divergence from the proposal text — both are findings, never silently
+  reconciled.
+
+  The corpus predates the November 12 alpha, whose KEM secrets and MACs are
+  incompatible with the ones recorded in `commit-mac.json`. Those recorded
+  bytes are not asserted; the reference artifacts are verified under
+  November 12 MACs computed here instead, and the November 12 bytes are
+  pinned by the reference's own test vectors elsewhere (see SOURCE.md).
   """
 
   use ExUnit.Case, async: true
@@ -81,76 +86,53 @@ defmodule Exospace.Interop.SpacesCorpusTest do
     end
   end
 
-  describe "KEM: the reference's shared secrets reproduce exactly" do
-    test "decapsulate/2 and a pinned encapsulate/2 derive every recorded secret" do
-      author = @commit_mac["kem"]["author"]
-      author_priv = unhex(author["privateKey"])
-
-      for vector <- @commit_mac["kem"]["vectors"] do
-        secret = unhex(vector["sharedSecret"])
-
-        assert {:ok, ^secret} = Kem.decapsulate(author_priv, vector["keyShare"])
-
-        assert {:ok, %{key_share: key_share, shared_secret: ^secret}} =
-                 Kem.encapsulate(author["didKey"],
-                   ephemeral_private_key: unhex(vector["ephemeralPrivateKey"])
-                 )
-
-        assert key_share == vector["keyShare"]
-      end
-    end
-  end
-
-  describe "commit and record MACs, and their headers, byte-for-byte" do
-    test "every commit's data, MAC and headers match the reference" do
+  # `commit-mac.json` was generated at `4037310`, before the November 12 alpha
+  # replaced the KEM derivation (HPKE secret export) and the MAC format
+  # (RFC 9421 `hmac-sha256` signatures). Its `sharedSecret`, `mac`,
+  # `macHeader` and `wantMacHeader` fields are November 5 bytes, which the
+  # proposal says not to support, so they are no longer asserted (see
+  # SOURCE.md). Its commits, set-hash elements, record values and CIDs are
+  # unchanged by the release and still pin exosphere byte for byte. The
+  # November 12 secret and MAC bytes are pinned instead by the reference's own
+  # test vectors (`Crypto.HPKE` and `Spaces.Mac` tests, and the second encoder
+  # in spec_encoder_test.exs).
+  describe "commits and record CIDs, byte-for-byte" do
+    test "every commit's data matches the reference, and verifies under a November 12 MAC" do
       for variant <- @commit_mac["commits"] do
         %{"space" => space, "repo" => repo, "rev" => rev} = variant["ctx"]
-        secret = unhex(variant["sharedSecret"])
 
         hash = Enum.reduce(variant["elements"], Lthash.new(), &Lthash.add(&2, &1))
         commit = Commit.build(hash, %{space: space, repo: repo, rev: rev})
 
         assert commit == wire_commit(variant["commit"]), "#{variant["name"]}: commit diverged"
 
-        mac = Commit.mac(commit, secret)
-        assert mac == unhex(variant["mac"]), "#{variant["name"]}: MAC diverged"
-        assert Mac.mac_header(:commit, mac) == variant["macHeader"]
-
-        key_share = Enum.at(@commit_mac["kem"]["vectors"], variant["kemVector"])["keyShare"]
-        assert Mac.want_mac_header(:commit, key_share) == variant["wantMacHeader"]
-
-        assert {:ok, ^mac} = Mac.parse_mac_header(variant["macHeader"], :commit)
-        assert :ok = Commit.verify(commit, %{space: space, repo: repo}, secret, mac)
+        # Including the 532-byte space URI, which the covered header carries.
+        {kem, headers} = mac_exchange(:commit, commit)
+        assert :ok = Commit.verify(commit, %{space: space, repo: repo}, kem, headers)
       end
     end
 
-    test "a tampered field fails the reference's MAC" do
-      variant = hd(@commit_mac["commits"])
-      commit = wire_commit(variant["commit"])
+    test "a field that differs from the MAC'd commit fails" do
+      commit = wire_commit(hd(@commit_mac["commits"])["commit"])
       ctx = %{space: commit["space"], repo: commit["repo"]}
-      secret = unhex(variant["sharedSecret"])
-      mac = unhex(variant["mac"])
+      {kem, headers} = mac_exchange(:commit, commit)
 
-      assert {:error, :invalid_mac} =
-               Commit.verify(%{commit | "rev" => "3kbcq3p7ad2c3"}, ctx, secret, mac)
+      assert {:error, {:invalid_space_mac, :commit_mismatch}} =
+               Commit.verify(%{commit | "rev" => "3kbcq3p7ad2c3"}, ctx, kem, headers)
 
-      assert {:error, :invalid_mac} =
-               Commit.verify(%{commit | "data" => :crypto.hash(:sha256, "x")}, ctx, secret, mac)
+      assert {:error, {:invalid_space_mac, :commit_mismatch}} =
+               Commit.verify(%{commit | "data" => :crypto.hash(:sha256, "x")}, ctx, kem, headers)
     end
 
-    test "every record MAC and header matches, over the value's own CID" do
+    test "every record value's CID matches, and its record MAC verifies over it" do
       for variant <- @commit_mac["records"] do
-        vector = Enum.at(@commit_mac["kem"]["vectors"], variant["kemVector"])
-        secret = unhex(vector["sharedSecret"])
         cid = CID.create!(variant["value"])
 
         assert CID.encode(cid) == variant["cid"]
         assert CID.to_bytes(cid) == unhex(variant["cidBytes"])
 
-        mac = Mac.record_mac(secret, variant["uri"], CID.to_bytes(cid))
-        assert mac == unhex(variant["mac"]), "#{variant["name"]}: record MAC diverged"
-        assert Mac.mac_header(:record, mac) == variant["macHeader"]
-        assert Mac.want_mac_header(:record, vector["keyShare"]) == variant["wantMacHeader"]
+        {kem, headers} = mac_exchange(:record, {variant["uri"], cid})
+        assert :ok = Mac.verify_record(variant["uri"], cid, kem, headers)
       end
     end
   end
@@ -160,14 +142,15 @@ defmodule Exospace.Interop.SpacesCorpusTest do
       records =
         Enum.map(@repo_star["records"], fn r -> {r["collection"], r["rkey"], r["record"]} end)
 
-      secret =
-        unhex(Enum.at(@commit_mac["kem"]["vectors"], @repo_star["kemVector"])["sharedSecret"])
+      commit = wire_commit(@repo_star["commit"])
+      {kem, headers} = mac_exchange(:commit, commit)
 
       %{
         records: records,
-        commit: wire_commit(@repo_star["commit"]),
+        commit: commit,
         star: Base.decode64!(@repo_star["star"]),
-        secret: secret,
+        kem: kem,
+        mac: headers,
         ctx: %{space: @repo_star["ctx"]["space"], repo: @repo_star["ctx"]["repo"]}
       }
     end
@@ -176,9 +159,8 @@ defmodule Exospace.Interop.SpacesCorpusTest do
       assert Repo.serialize(ctx.commit, ctx.records) == ctx.star
     end
 
-    test "verify/4 accepts the reference archive end to end", ctx do
-      assert {:ok, verified} =
-               Repo.verify(ctx.star, ctx.ctx, ctx.secret, unhex(@repo_star["mac"]))
+    test "verify/4 accepts the reference archive end to end, under a November 12 MAC", ctx do
+      assert {:ok, verified} = Repo.verify(ctx.star, ctx.ctx, ctx.kem, ctx.mac)
 
       assert Enum.map(verified.records, &"#{&1.collection}/#{&1.rkey}") ==
                Enum.map(@repo_star["pairs"], & &1["key"])
@@ -205,15 +187,10 @@ defmodule Exospace.Interop.SpacesCorpusTest do
       star = Base.decode64!(empty["star"])
       assert Repo.serialize(commit, []) == star
 
-      secret = unhex(hd(@commit_mac["kem"]["vectors"])["sharedSecret"])
+      {kem, headers} = mac_exchange(:commit, commit)
 
       assert {:ok, %{records: []}} =
-               Repo.verify(
-                 star,
-                 %{space: commit["space"], repo: commit["repo"]},
-                 secret,
-                 unhex(empty["mac"])
-               )
+               Repo.verify(star, %{space: commit["space"], repo: commit["repo"]}, kem, headers)
     end
 
     test "a tampered record fails the digest", ctx do
@@ -222,7 +199,7 @@ defmodule Exospace.Interop.SpacesCorpusTest do
       tampered = Repo.serialize(ctx.commit, [{c, r, Map.put(rec, "extra", 1)} | rest])
 
       assert {:error, :records_do_not_match_commit} =
-               Repo.verify(tampered, ctx.ctx, ctx.secret, unhex(@repo_star["mac"]))
+               Repo.verify(tampered, ctx.ctx, ctx.kem, ctx.mac)
     end
   end
 
@@ -278,12 +255,14 @@ defmodule Exospace.Interop.SpacesCorpusTest do
   end
 
   describe "the HTTP message signature that presents a credential" do
-    test "the reference's signature verifies against the bound key" do
+    test "the reference's signature verifies against the bound key, found by its tag" do
+      # Signed under the label `atproto-space-credential` (the 4037310 signer);
+      # November 12 verifiers find it by tag under any label.
       sig = @credentials["httpSignature"]
       assert :ok = HttpSignature.verify(Map.to_list(sig["headers"]), sig["key"]["didKey"])
     end
 
-    test "exosphere signs the same covered components, input and base" do
+    test "exosphere signs the same covered components and parameters" do
       sig = @credentials["httpSignature"]
       {:ok, key} = HttpSignature.key_from_private(unhex(sig["key"]["privateKey"]))
       assert key.did_key == sig["key"]["didKey"]
@@ -292,15 +271,39 @@ defmodule Exospace.Interop.SpacesCorpusTest do
       {:ok, headers} = HttpSignature.headers(key, jwt, sig["audience"])
 
       # Everything but the signature value (P-256 here signs with a random
-      # nonce, the reference with RFC 6979) is byte-identical...
-      for name <- ["authorization", "atproto-space-audience", "signature-input"] do
+      # nonce, the reference with RFC 6979) and the label is byte-identical.
+      # The label is the signer's choice: November 12 reference signers use
+      # `sig`, as exosphere does; the corpus predates that.
+      for name <- ["authorization", "atproto-space-audience"] do
         assert {^name, value} = List.keyfind(headers, name, 0)
         assert value == sig["headers"][name], "#{name} diverged"
       end
 
+      {"signature-input", "sig=" <> params} = List.keyfind(headers, "signature-input", 0)
+      "atproto-space-credential=" <> reference_params = sig["headers"]["signature-input"]
+      assert params == reference_params, "signature-input parameters diverged"
+
       # ...and the signature verifies under the same check the reference's does.
       assert :ok = HttpSignature.verify(headers, key.did_key)
     end
+  end
+
+  # One November 12 MAC exchange against the corpus's own author KEM key: a
+  # fresh encapsulation, the Accept-Signature request, and the headers a host
+  # answers with after decapsulating it.
+  defp mac_exchange(profile, subject) do
+    author = @commit_mac["kem"]["author"]
+    {:ok, kem} = Kem.encapsulate(author["didKey"])
+    {:ok, request} = Mac.parse_request(Mac.format_request(profile, kem.key_share), profile)
+    {:ok, params} = Mac.decapsulate(request, unhex(author["privateKey"]))
+
+    headers =
+      case {profile, subject} do
+        {:commit, commit} -> Commit.mac_headers(commit, params)
+        {:record, {uri, cid}} -> Mac.record_headers(uri, cid, params)
+      end
+
+    {kem, headers}
   end
 
   defp wire_commit(%{} = commit), do: Map.update!(commit, "data", &unhex/1)

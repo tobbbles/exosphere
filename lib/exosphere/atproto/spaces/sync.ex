@@ -1,137 +1,225 @@
 defmodule Exosphere.ATProto.Spaces.Sync do
   @moduledoc """
-  The space sync client (atproto proposal 0016): keep a local copy of a
-  member's permissioned repo in step with its repo host, authenticated end to
-  end.
+  Space sync (atproto proposal 0016, the November 12 alpha): keep a local copy
+  of a space's repos in step with their repo hosts, authenticated end to end —
+  and the host-side halves of the same exchanges, for consumers that host.
 
-  Sync runs over dedicated XRPC with LtHash commit digests. The client
-  maintains a running set hash; when its digest equals the latest commit's
-  `data`, the local copy is fully synced **and authenticated**. On
-  divergence, recover via a full STAR archive (`get_repo/5`, verified through
-  `Spaces.Repo.verify/4`) or `get_latest_commit/5` plus a records diff.
+  Sync runs over dedicated XRPC with LtHash commit digests. A syncer keeps a
+  running set hash per repo; when its digest equals the latest commit's
+  `data`, the local copy is fully synced **and authenticated**. Recover from
+  divergence with a full STAR archive (`get_repo/5`, verified through
+  `Spaces.Repo.verify/4`).
 
-  Oplog entries (`list_repo_ops/5`) are a transport optimisation, never a
-  source of truth: hosts may compact them, and they reset on account
-  migration — hence `list_repo_ops/5` returns the retained window, and
-  divergence falls back to the full archive.
+  Oplog entries (`list_repo_ops/5`, applied by `sync_repo/6`) are a transport
+  optimisation, never a source of truth: hosts may compact them, and they
+  reset on account migration.
 
-  Notify registration (`register_notify/5`) subscribes a syncer to repo
-  update notifications at a space host; delivery of `notifyRepoUpdate` and
-  `notifySpaceStatus` stays in the consumer's process tree — this module
-  exposes registration, withdrawal (`unregister_notify/5`), and
-  `decode_notify_repo_update/1` / `decode_notify_space_status/1`, and leaves
-  receiving to the app.
+  ## The writer set and its lifecycle
+
+  `list_writers/4` reads the space host's writer set. Each entry is either a
+  `com.atproto.space.defs#repoWrite` (the repo's latest revision and commit
+  `data`) or a `#repoRemoved` (the repo left the writer set: stop treating it
+  as part of the space). A later write re-adds a removed repo with a new
+  `repoWrite`.
+
+  ## Notifications
+
+  A syncer registers for notifications by passing `notify:` to
+  `Spaces.Credential.authorize_space_sync/4`, and keeps the registration alive
+  by reauthorizing before each credential expires. The space host then calls
+  two methods on the syncer's endpoint, neither carrying service auth (the
+  registration token in the body authenticates them):
+
+    * `com.atproto.space.confirmRegistration`, before a new registration:
+      `decode_confirm_registration/1`, check the token is one you issued for
+      that space (`token_matches?/2`), answer `confirm_registration_response/1`.
+      The space host's side is `confirm_registration/4`.
+    * `com.atproto.space.notifySpaceUpdate`, for each update:
+      `decode_space_update/1`, check the token likewise, then act on the
+      update (see `decode_space_update/1`). The space host's side is
+      `notify_space_update/5`.
+
+  Repo hosts tell the space host about writes with
+  `com.atproto.space.notifyRepoUpdate` (`notify_repo_update/4`, service auth
+  from the repo's account); the space host reads it with
+  `decode_notify_repo_update/1` and `check_repo_update_auth/2`.
+
+  Serving those endpoints stays in the consumer's process tree: this module
+  shapes and checks the bodies, and leaves the HTTP to the app.
 
   ## Authorization
 
-  Requests are credential-authed: the space credential travels as
+  Syncer reads are credential-authed: the space credential travels as
   `Authorization: Atproto-Space-Credential <jwt>` with an
   `Atproto-Space-Audience` header and an RFC 9421 HTTP Message Signature by
   the credential's bound key (`Spaces.HttpSignature`). The audience is the
   repo owner's DID for repo-host methods and the space authority's DID for
-  space-host methods (`list_writers/4`, `register_notify/5`). The one
-  exception is `unregister_notify/5`, which takes service auth from the
-  service being withdrawn (atproto `atproto-spaces-cleanup` 4037310). Pass
-  `:http` to substitute an `HTTP.Behaviour` mock.
+  `list_writers/4`. Pass `:http` to substitute an `HTTP.Behaviour` mock.
 
   ## Authenticity: the commit and record MACs
 
-  Commits carry no signature (atproto `5791385`). Methods that return a
-  commit or record — `get_latest_commit/5`, `list_repo_ops/5`, `get_repo/5`,
-  `get_record/7` — need the author's `#atproto_kem` public key, passed as
-  `kem_key:` (a compressed P-256 key or `did:key`; resolve it with
-  `Identity.Document.get_kem_key/1`). For each request the client derives a
-  fresh shared secret (`Spaces.Kem.encapsulate/1`), sends its key share in
-  `Atproto-Space-Want-Mac`, and verifies the `Atproto-Space-Mac` the host
-  answers with (`Spaces.Mac`) — so what comes back is authenticated to the
-  author's repo host, and deniable to everyone else. A missing `kem_key:` is
-  `{:error, :missing_kem_key}`; a MAC that fails is `{:error, :invalid_mac}`,
-  on which the proposal advises refreshing the author's DID document before
-  retrying. A host that cannot use the request's key share answers
-  `InvalidSpaceMac` (it was `BadSpaceMac`), returned as
+  Commits carry no signature. Methods that return a commit or record —
+  `get_latest_commit/5`, `list_repo_ops/5`, `get_repo/5`, `get_record/7` —
+  need the author's `#atproto_kem` public key, passed as `kem_key:` (a P-256
+  key or `did:key`; resolve it with `Identity.Document.get_kem_key/1`). For
+  every request — retries and each page included — the client derives a fresh
+  HPKE secret (`Spaces.Kem.encapsulate/2`), asks for a MAC with
+  `Accept-Signature` (`Spaces.Mac.request_headers/2`), and verifies the
+  HTTP-signature MAC the host answers with: the commit profile for commits,
+  the record profile for records.
+
+  `kem_key:` may also be a function `fn refresh? -> {:ok, key} | {:error, _}
+  end`. It is called with `false` first; if verification then fails, it is
+  called again with `true` — re-resolve the author's DID document, since the
+  KEM key may have rotated — and the request is retried once with a new key
+  share. With a plain key there is no retry, and a failure is returned for
+  the caller to handle the same way.
+
+  A missing `kem_key:` is `{:error, :missing_kem_key}`. A MAC that fails is
+  `{:error, {:invalid_space_mac, reason}}` (`Spaces.Mac`). A host that cannot
+  use the request answers `InvalidSpaceMac`, returned as
   `{:error, :invalid_space_mac}`.
 
   ## Error surface
 
-  Failures come back typed: transport errors as-is, and HTTP errors as
-  `{:error, {:http_error, status}}` — except the sync-recovery signal. When a
-  host answers `listRepoOps`'s `since` with `400 SinceOutOfBounds` (the `since`
-  predates the retained oplog window, or names a position the oplog never
-  covered), the client returns `{:error, {:since_out_of_bounds, floor}}` with
-  the window's oldest retained rev parsed out of the message when the host
-  carries it — the position a full `get_repo/5` recovery starts from.
-
-  The account-state refusals the lexicons declare are typed too, so a caller
-  can tell "this account is gone or paused" from a transient failure (atproto
-  `99bf6e2` brought them to the writer listing, where they describe the space
-  authority; the repo-host reads describe the repo's account), as are the
-  error names the 4037310 lexicons introduced:
+  Transport errors come back as-is, and HTTP errors as
+  `{:error, {:http_error, status}}`, except these:
 
   | XRPC error | returned |
   |---|---|
+  | `RepoNotFound` | `{:error, :repo_not_found}`: the repo was never written, or was emptied and collected; treat it as an empty repo |
   | `RepoTakendown` | `{:error, :repo_takendown}` |
   | `RepoDeactivated` | `{:error, :repo_deactivated}` |
   | `RepoSuspended` | `{:error, :repo_suspended}` |
-  | `InvalidSpaceMac` (was `BadSpaceMac`) | `{:error, :invalid_space_mac}` |
-  | `InvalidCursor` (`listRepoOps`, `listRecords`) | `{:error, :invalid_cursor}` |
+  | `InvalidSpaceMac` | `{:error, :invalid_space_mac}` |
+  | `InvalidCursor` | `{:error, :invalid_cursor}` |
+  | `SinceOutOfBounds` (400) | `{:error, {:since_out_of_bounds, floor}}` |
+
+  The reference PDS does not emit `SinceOutOfBounds`; it is typed for hosts
+  that follow the proposal's "cannot find its since revision" guidance, with
+  the oldest retained rev parsed out of the message when the host gives it.
+
+  This replaces the November 5 surface: `registerNotify`/`unregisterNotify`,
+  forwarded `notifyWrite` and `notifySpaceStatus`/`notifySpaceDeleted` are
+  gone, as are the `Atproto-Space-Want-Mac`/`Atproto-Space-Mac` headers.
   """
 
   alias Exosphere.ATProto.{AtUri, CID, HTTP, TID}
   alias Exosphere.ATProto.CBOR, as: DagCbor
   alias Exosphere.ATProto.Identity.DID
-  alias Exosphere.ATProto.Spaces.{Commit, Credential, Kem, Lthash, Mac, Token, XRPC}
+
+  alias Exosphere.ATProto.Spaces.{
+    Commit,
+    Credential,
+    HttpSignature,
+    Kem,
+    Lthash,
+    Mac,
+    Token,
+    XRPC
+  }
+
   alias Exosphere.ATProto.Spaces.Repo, as: SpaceRepo
 
-  @typedoc "A minted credential and its bound key (`Spaces.Credential.mint/4`)."
+  @repo_write "com.atproto.space.defs#repoWrite"
+  @repo_removed "com.atproto.space.defs#repoRemoved"
+  @space_deleted "com.atproto.space.notifySpaceUpdate#spaceDeleted"
+  @registration_expired "com.atproto.space.notifySpaceUpdate#registrationExpired"
+
+  # The lexicon bound on notify tokens and challenges.
+  @max_token_bytes 512
+  # The reference space host gives a syncer's endpoint 10 seconds.
+  @notify_timeout 10_000
+
+  @typedoc "A space credential and its bound key (`Spaces.Credential.authorize_space_sync/4`)."
   @type credential :: Credential.t()
 
+  @typedoc """
+  The author's KEM public key (a P-256 point or `did:key`), or a function
+  resolving it: called with `false`, then with `true` to re-resolve after a
+  failed verification.
+  """
+  @type kem_key ::
+          binary()
+          | (boolean() -> {:ok, binary()} | {:error, term()})
+
+  @typedoc "A `com.atproto.space.defs#repoWrite`: a repo advanced to a new revision."
+  @type repo_write :: %{
+          required(:type) => :repo_write,
+          required(:repo) => String.t(),
+          required(:repo_rev) => String.t(),
+          required(:data) => binary(),
+          required(:space_rev) => String.t(),
+          optional(:prev_space_rev) => String.t() | nil
+        }
+
+  @typedoc "A `com.atproto.space.defs#repoRemoved`: a repo left the writer set."
+  @type repo_removed :: %{
+          required(:type) => :repo_removed,
+          required(:repo) => String.t(),
+          required(:space_rev) => String.t(),
+          optional(:prev_space_rev) => String.t() | nil
+        }
+
+  @typedoc "A writer set entry, as `list_writers/4` returns it."
+  @type writer :: repo_write() | repo_removed()
+
+  @typedoc """
+  A `notifySpaceUpdate` update: a writer set change (with `prev_space_rev`),
+  `%{type: :space_deleted}`, `%{type: :registration_expired, space_rev:}`, or
+  `%{type: :unknown, value: map}` for an update type this library does not
+  know.
+  """
+  @type space_update ::
+          repo_write()
+          | repo_removed()
+          | %{type: :space_deleted}
+          | %{type: :registration_expired, space_rev: String.t()}
+          | %{type: :unknown, value: map()}
+
+  @typedoc "A `notifyRepoUpdate` body: the repo's new revision and commit `data`."
+  @type repo_update :: %{
+          space: String.t(),
+          repo: String.t(),
+          repo_rev: String.t(),
+          data: binary()
+        }
+
+  # -- the writer set -----------------------------------------------------------
+
   @doc """
-  The space host's writer set (`com.atproto.space.listWriters`): each member
-  repo with its current `repo_rev` and commit `data` (the sha256 of its
-  LtHash state) as last reported to the authority, and the `space_rev` at
-  which the host last saw it move. The authority may lag the repo hosts,
-  which are the source of truth.
+  A page of the space host's writer set (`com.atproto.space.listWriters`),
+  ordered by `space_rev`, ascending.
 
-  Returns `{:ok, %{repos: [%{repo:, repo_rev:, space_rev:, data:}], cursor:
-  cursor | nil}}`. The `data` values are base64-decoded from the lexicon
-  `bytes` wire form (`{"$bytes": …}`).
+  Returns `{:ok, %{repos: [writer()], cursor: cursor | nil}}`, each entry
+  either `%{type: :repo_write, repo:, repo_rev:, data:, space_rev:}` (`data`
+  the repo's commit digest, decoded from the lexicon `bytes` form) or
+  `%{type: :repo_removed, repo:, space_rev:}`. Entries of a union type this
+  library does not know are skipped, as the reference client does. An entry
+  that is malformed is `{:error, :invalid_writer}`.
 
-  This was `list_repos/4` (`com.atproto.space.listRepos`, entries keyed
-  `did`) until atproto `atproto-spaces-lexicon-review` renamed the method to
-  `listWriters` and the entry's DID field to `repo` (carried by
-  `atproto-spaces-cleanup` 4037310). A pre-rename host does not serve the new
-  method, and a pre-rename entry's `did` is not read across (`repo` decodes
-  to `nil`). The `data` field was `hash` until atproto `5791385`
-  (2026-10-27), likewise not read across.
+  ## Two revisions
 
-  ## Two revisions, and why they are not the same thing
+    * `repo_rev` is **the repo's** revision: the TID of the author's latest
+      commit, the `since:` that `list_repo_ops/5` takes. It is only ever
+      compared within one repo.
+    * `space_rev` is **the space host's** sequence number for the change:
+      every accepted write or removal advances one per-space sequence. It is
+      what the listing is ordered by, and what the cursor is.
 
-  Until atproto `357c4cee9` (2026-09-30) a repo entry carried one `rev`. It
-  now carries two, and they answer different questions:
+  `cursor:` is "repos updated after this space revision", so a syncer that
+  remembers the last `space_rev` it processed — from a page, a notification,
+  or `authorize_space_sync/4`'s `space_rev` — asks only for what moved since.
+  A non-empty page carries a cursor and an empty page ends the walk. A repo
+  can appear twice across pages if it moved while you paged; its last entry
+  is current.
 
-    * `repo_rev` (wire `repoRev`) is **the repo's** revision — the TID of the
-      author's latest commit, the same number `list_repo_ops/5`'s `since:`
-      takes. It is per-repo and only ever compared within one repo.
-    * `space_rev` (wire `spaceRev`) is **the space host's** sequence number
-      for the update: every accepted `notifyRepoUpdate` advances one per-space
-      sequence, and the repo's entry is stamped with where it landed. It is
-      what the listing is *ordered by*, ascending, and what the cursor is.
-
-  The second is what makes the writer set resumable rather than merely
-  pageable: `cursor:` is "repos updated after this space revision
-  (exclusive)", so a syncer that remembers the last `space_rev` it processed
-  — from a page, or from a forwarded `notifyRepoUpdate`'s `spaceRev` — can ask for
-  only what moved since, and a gap in a forwarded notification's
-  `prevSpaceRev` chain is recovered by exactly that call. A repo can appear
-  twice across pages if it moved while you paged; that is the lexicon's
-  stated behaviour, not a host bug.
-
-  The cursor rule changed with it: a **non-empty** page carries a cursor
-  (its last entry's `spaceRev`), and an empty page omits it. So the end of
-  the walk is an empty page, one round trip later than "a short page" was.
+  Removed repos may be garbage collected after 72 hours, so a syncer whose
+  last seen space revision is older should list the whole writer set (no
+  cursor) and drop any repo that is missing or removed.
   """
   @spec list_writers(String.t(), String.t(), credential(), keyword()) ::
-          {:ok, %{repos: [map()], cursor: String.t() | nil}} | {:error, term()}
+          {:ok, %{repos: [writer()], cursor: String.t() | nil}} | {:error, term()}
   def list_writers(space_host, space_ref, cred, opts \\ []) do
     params =
       %{space: space_ref}
@@ -141,10 +229,32 @@ defmodule Exosphere.ATProto.Spaces.Sync do
     url = xrpc_url(space_host, "com.atproto.space.listWriters", params)
 
     with {:ok, %{body: body}} <- get_json(url, cred, authority(space_ref), [], opts),
-         {:ok, repos} <- decode_repos(body["repos"]) do
-      {:ok, %{repos: repos, cursor: body["cursor"]}}
+         {:ok, repos} <- decode_writers(body["repos"]),
+         {:ok, cursor} <- optional_string(body["cursor"]) do
+      {:ok, %{repos: repos, cursor: cursor}}
     end
   end
+
+  @doc """
+  A writer set entry in wire form (`$type` included), for a space host
+  serving `listWriters`. `prev_space_rev` is not part of a listing and is
+  left out.
+  """
+  @spec encode_writer(writer()) :: map()
+  def encode_writer(writer), do: encode_entry(Map.delete(writer, :prev_space_rev))
+
+  @doc """
+  A `listWriters` output for `writers` (ordered by `space_rev`): the encoded
+  entries, and the last entry's `space_rev` as the cursor — none on an empty
+  page, which is how a syncer knows the walk is over.
+  """
+  @spec list_writers_output([writer()]) :: map()
+  def list_writers_output(writers) when is_list(writers) do
+    %{"repos" => Enum.map(writers, &encode_writer/1)}
+    |> maybe_put("cursor", writers |> List.last() |> then(&(&1 && &1.space_rev)))
+  end
+
+  # -- repo reads (MAC-verified) --------------------------------------------------
 
   @doc """
   A repo's current commit (`com.atproto.space.getLatestCommit`), from its
@@ -158,35 +268,38 @@ defmodule Exosphere.ATProto.Spaces.Sync do
     url =
       xrpc_url(repo_host, "com.atproto.space.getLatestCommit", %{space: space_ref, repo: repo_did})
 
-    with {:ok, kem} <- encapsulate(opts),
-         {:ok, %{body: body, headers: headers}} <-
-           get_json(url, cred, repo_did, want_mac(:commit, kem), opts),
-         {:ok, commit} <- decode_commit(body["commit"]),
-         :ok <- require_present(commit, :missing_commit),
-         :ok <- verify_commit(commit, headers, space_ref, repo_did, kem) do
-      {:ok, commit}
-    end
+    ctx = %{space: space_ref, repo: repo_did}
+
+    with_kem(opts, fn kem_key ->
+      with {:ok, kem} <- Kem.encapsulate(kem_key),
+           {:ok, %{body: body, headers: headers}} <-
+             get_json(url, cred, repo_did, Mac.request_headers(:commit, kem.key_share), opts),
+           {:ok, commit} <- decode_commit(body["commit"]),
+           :ok <- Commit.verify(commit, ctx, kem, headers) do
+        {:ok, commit}
+      end
+    end)
   end
 
   @doc """
-  A repo's oplog (`com.atproto.space.listRepoOps`) after `since` (the local
-  sync position). Records are inlined by default; `exclude_values: true`
-  fetches metadata only. Ops sharing a `rev` belong to one batch. Requires
-  `kem_key:`.
+  One page of a repo's oplog (`com.atproto.space.listRepoOps`) after `since`
+  (the local sync position). Records are inlined by default;
+  `exclude_values: true` fetches metadata only. Ops sharing a `rev` belong to
+  one commit. Requires `kem_key:`.
 
-  Returns `{:ok, %{ops: [map()], commit: map() | nil, cursor: String.t() | nil}}`
-  — the head `commit` is present when the response reaches the oplog head
-  (and is then verified against the response's MAC), and `cursor` is present
-  when it does not (page until it disappears). A page without a commit has no
-  MAC: its ops are checked when the final page's commit `data` is compared
-  against your running set hash.
+  Returns `{:ok, %{ops: [map()], commit: Commit.t(), cursor: String.t() | nil}}`.
+  Every page carries the repo's current commit, verified against that page's
+  MAC. A page has a `cursor` whenever it is full, so the last page may be
+  empty; page until there is no cursor, then compare the last page's commit
+  `data` with your running set hash — `sync_repo/6` does all of that.
 
-  When the host answers that `since` predates (or falls outside) its retained
-  window, the error is `{:error, {:since_out_of_bounds, floor}}` with the
-  window floor when the host names one — the cue to recover via `get_repo/5`.
+  A repo that was never written is `{:error, :repo_not_found}`. When the
+  host answers that `since` falls outside its retained window, the error is
+  `{:error, {:since_out_of_bounds, floor}}` — the cue to recover via
+  `get_repo/5`.
   """
   @spec list_repo_ops(String.t(), String.t(), String.t(), credential(), keyword()) ::
-          {:ok, %{ops: [map()], commit: map() | nil, cursor: String.t() | nil}}
+          {:ok, %{ops: [map()], commit: Commit.t(), cursor: String.t() | nil}}
           | {:error, term()}
   def list_repo_ops(repo_host, space_ref, repo_did, cred, opts \\ []) do
     params =
@@ -197,22 +310,135 @@ defmodule Exosphere.ATProto.Spaces.Sync do
       |> maybe_put("excludeValues", Keyword.get(opts, :exclude_values))
 
     url = xrpc_url(repo_host, "com.atproto.space.listRepoOps", params)
+    ctx = %{space: space_ref, repo: repo_did}
 
-    with {:ok, kem} <- encapsulate(opts),
-         {:ok, %{body: body, headers: headers}} <-
-           get_json(url, cred, repo_did, want_mac(:commit, kem), opts),
-         {:ok, commit} <- decode_commit(body["commit"]),
-         :ok <- maybe_verify_commit(commit, headers, space_ref, repo_did, kem) do
-      {:ok, %{ops: body["ops"] || [], commit: commit, cursor: body["cursor"]}}
+    with_kem(opts, fn kem_key ->
+      with {:ok, kem} <- Kem.encapsulate(kem_key),
+           {:ok, %{body: body, headers: headers}} <-
+             get_json(url, cred, repo_did, Mac.request_headers(:commit, kem.key_share), opts),
+           {:ok, ops} <- decode_ops(body["ops"]),
+           {:ok, commit} <- decode_commit(body["commit"]),
+           {:ok, cursor} <- optional_string(body["cursor"]),
+           :ok <- Commit.verify(commit, ctx, kem, headers) do
+        {:ok, %{ops: ops, commit: commit, cursor: cursor}}
+      end
+    end)
+  end
+
+  @doc """
+  Bring a known state of a repo up to date from its oplog: page through
+  `list_repo_ops/5` from `head.rev` (each page with a fresh MAC secret), fold
+  every op into `head.lthash`, and once a page has no cursor, require the
+  result to equal that page's commit `data`.
+
+  Ops must come in revision order, after `head.rev`, and any inlined value
+  must encode to its op's `cid`. Options pass through to `list_repo_ops/5`
+  (`:kem_key` is required; `:limit`, `:exclude_values`, `:http`, …).
+
+  Returns `{:ok, %{commit:, lthash:, rev:, ops:}}` — the authenticated state
+  to continue from (`rev` is the commit's) and every op applied, in order.
+  `{:error, {:diverged, commit}}` (the ops do not lead to the commit) and
+  `{:error, :ops_out_of_order}` mean the oplog cannot be applied to this
+  state: recover with `get_repo/5`, as for `{:since_out_of_bounds, _}`.
+  `{:error, :repo_not_found}` means the host no longer has the repo: treat it
+  as empty.
+  """
+  @spec sync_repo(
+          String.t(),
+          String.t(),
+          String.t(),
+          credential(),
+          %{rev: String.t(), lthash: Lthash.t()},
+          keyword()
+        ) ::
+          {:ok, %{commit: Commit.t(), lthash: Lthash.t(), rev: String.t(), ops: [map()]}}
+          | {:error, term()}
+  def sync_repo(repo_host, space_ref, repo_did, cred, head, opts \\ [])
+
+  def sync_repo(
+        repo_host,
+        space_ref,
+        repo_did,
+        cred,
+        %{rev: since, lthash: %Lthash{} = hash},
+        opts
+      )
+      when is_binary(since) do
+    opts = opts |> Keyword.delete(:cursor) |> Keyword.put(:since, since)
+    state = %{since: since, last_rev: since, lthash: hash, ops: [], cursor: nil}
+    sync_pages({repo_host, space_ref, repo_did, cred}, opts, state)
+  end
+
+  defp sync_pages({repo_host, space_ref, repo_did, cred} = target, opts, state) do
+    page_opts = if state.cursor, do: Keyword.put(opts, :cursor, state.cursor), else: opts
+
+    with {:ok, %{ops: ops, commit: commit, cursor: cursor}} <-
+           list_repo_ops(repo_host, space_ref, repo_did, cred, page_opts),
+         {:ok, last_rev, hash} <- apply_page(ops, state) do
+      applied = Enum.reverse(ops, state.ops)
+
+      cond do
+        is_nil(cursor) ->
+          if Commit.matches?(hash, commit),
+            do:
+              {:ok,
+               %{commit: commit, lthash: hash, rev: commit["rev"], ops: Enum.reverse(applied)}},
+            else: {:error, {:diverged, commit}}
+
+        # A host answering with the same cursor would page forever.
+        cursor == state.cursor ->
+          {:error, :repeated_cursor}
+
+        true ->
+          sync_pages(target, opts, %{
+            state
+            | cursor: cursor,
+              last_rev: last_rev,
+              lthash: hash,
+              ops: applied
+          })
+      end
     end
   end
+
+  defp apply_page(ops, state) do
+    Enum.reduce_while(ops, {:ok, state.last_rev, state.lthash}, fn op, {:ok, last, hash} ->
+      with {:ok, rev} <- check_op_order(op, state.since, last),
+           :ok <- check_op_value(op) do
+        {:cont, {:ok, rev, Commit.apply_op(hash, op)}}
+      else
+        error -> {:halt, error}
+      end
+    end)
+  end
+
+  # Ops sharing a revision were applied atomically; none may precede `since`
+  # or an op already applied.
+  defp check_op_order(%{"rev" => rev}, since, last) when is_binary(rev) do
+    if rev > since and rev >= last, do: {:ok, rev}, else: {:error, :ops_out_of_order}
+  end
+
+  defp check_op_order(_op, _since, _last), do: {:error, :invalid_op}
+
+  defp check_op_value(%{"value" => value} = op) when not is_nil(value) do
+    path = "#{op["collection"]}/#{op["rkey"]}"
+
+    with cid when is_binary(cid) <- op["cid"],
+         {:ok, cid} <- CID.decode(cid),
+         {:ok, ^cid} <- value_cid(value) do
+      :ok
+    else
+      _ -> {:error, {:record_cid_mismatch, path}}
+    end
+  end
+
+  defp check_op_value(_op), do: :ok
 
   @doc """
   A repo's records (`com.atproto.space.listRecords`), page by page. Options:
   `:collection` (omit to list across all collections), `:cursor`, `:limit`,
   and `:exclude_values` (metadata only — collection, rkey, cid — for diffing
-  a lightly diverged copy). Upstream dropped the `reverse` parameter at
-  4037310, and so has this function. A cursor the host cannot read is
+  a lightly diverged copy). A cursor the host cannot read is
   `{:error, :invalid_cursor}`.
 
   Listing carries no MAC: verify the result through the set hash, or fetch
@@ -237,11 +463,13 @@ defmodule Exosphere.ATProto.Spaces.Sync do
   A single record (`com.atproto.space.getRecord`), verified against the
   record MAC (requires `kem_key:`): the response must be the record that was
   requested (its `uri` is the space record URI
-  `at://{authority}/space/{type}/{skey}/{repo}/{collection}/{rkey}`), the MAC
-  must cover that URI and the record's CID, and the value must encode to that
-  CID.
+  `at://{authority}/space/{type}/{skey}/{repo}/{collection}/{rkey}`), the
+  `Atproto-Space-Record` header the MAC covers must name that URI and the
+  record's CID, and the value must encode to that CID.
 
-  Returns `{:ok, %{"uri" => …, "cid" => …, "value" => …}}`.
+  Returns `{:ok, %{"uri" => …, "cid" => …, "value" => …}}`. Errors:
+  `:record_uri_mismatch`, `:record_cid_mismatch`, `:invalid_record`, and
+  `{:invalid_space_mac, reason}`.
   """
   @spec get_record(
           String.t(),
@@ -257,209 +485,361 @@ defmodule Exosphere.ATProto.Spaces.Sync do
     params = %{space: space_ref, repo: repo_did, collection: collection, rkey: rkey}
     url = xrpc_url(repo_host, "com.atproto.space.getRecord", params)
 
-    with {:ok, uri} <- record_uri(space_ref, repo_did, collection, rkey),
-         {:ok, kem} <- encapsulate(opts),
-         {:ok, %{body: body, headers: headers}} <-
-           get_json(url, cred, repo_did, want_mac(:record, kem), opts),
-         :ok <- verify_record(body, headers, uri, kem) do
-      {:ok, body}
+    with {:ok, uri} <- record_uri(space_ref, repo_did, collection, rkey) do
+      with_kem(opts, fn kem_key ->
+        with {:ok, kem} <- Kem.encapsulate(kem_key),
+             {:ok, %{body: body, headers: headers}} <-
+               get_json(url, cred, repo_did, Mac.request_headers(:record, kem.key_share), opts),
+             :ok <- verify_record(body, uri, kem, headers) do
+          {:ok, body}
+        end
+      end)
     end
   end
 
   @doc """
-  The full repo (`com.atproto.space.getRepo`) as a STAR archive, verified end
-  to end through `Spaces.Repo.verify/4`: the archive's commit names the
-  requested repo and space, its MAC verifies, and every record folds into a
-  set hash equal to the commit's `data`. Requires `kem_key:`.
+  The full repo (`com.atproto.space.getRepo`) as a STAR archive
+  (`application/vnd.dasl.star`), verified end to end through
+  `Spaces.Repo.verify/4`: the archive's commit names the requested repo and
+  space, the commit MAC verifies and the `Atproto-Space-Commit` header it
+  covers matches the archive's commit, and every record folds into a set hash
+  equal to the commit's `data`. Requires `kem_key:`.
 
   On success the returned set hash is the authenticated running hash to
-  continue syncing from (`list_repo_ops/5` with `since: verified.rev`).
+  continue syncing from (`sync_repo/6` with `%{rev: verified.rev, lthash:
+  verified.lthash}`). A response whose content type is not STAR is
+  `{:error, {:unexpected_content_type, content_type}}`. A repo its host does
+  not have is `{:error, :repo_not_found}`: treat it as empty.
   """
   @spec get_repo(String.t(), String.t(), String.t(), credential(), keyword()) ::
           {:ok, SpaceRepo.verified()} | {:error, term()}
   def get_repo(repo_host, space_ref, repo_did, cred, opts \\ []) do
     http = Keyword.get(opts, :http, HTTP)
     url = xrpc_url(repo_host, "com.atproto.space.getRepo", %{space: space_ref, repo: repo_did})
+    ctx = %{space: space_ref, repo: repo_did}
 
-    with {:ok, kem} <- encapsulate(opts) do
-      case signed_request(http, :get, url, [], cred, repo_did, want_mac(:commit, kem)) do
-        {:ok, %{status: 200, body: star, headers: headers}} when is_binary(star) ->
-          with {:ok, mac} <- response_mac(headers, :commit) do
-            SpaceRepo.verify(star, %{space: space_ref, repo: repo_did}, kem.shared_secret, mac)
-          end
+    with_kem(opts, fn kem_key ->
+      with {:ok, kem} <- Kem.encapsulate(kem_key) do
+        mac_request = Mac.request_headers(:commit, kem.key_share)
 
-        {:ok, response} ->
-          classify_error(response)
+        case signed_request(http, url, opts, cred, repo_did, mac_request) do
+          {:ok, %{status: 200, body: star, headers: headers}} when is_binary(star) ->
+            with :ok <- check_star_content_type(headers),
+                 do: SpaceRepo.verify(star, ctx, kem, headers)
 
-        error ->
-          error
+          {:ok, response} ->
+            classify_error(response)
+
+          error ->
+            error
+        end
       end
+    end)
+  end
+
+  # -- confirmRegistration --------------------------------------------------------
+
+  @doc """
+  Space host side: confirm a new notify registration before storing it, by
+  calling `com.atproto.space.confirmRegistration` on the syncer's `endpoint`
+  with `{space, token, challenge}` and checking that it echoes the challenge.
+
+  Returns `:ok`, or `{:error, :registration_not_confirmed}` for any failure —
+  a refusal, a wrong echo, a timeout — which `authorizeSpaceSync` answers as
+  `RegistrationNotConfirmed`. The call carries no auth. The endpoint is the
+  requester's choice: fetch it as an untrusted URL (HTTPS, public address).
+  Options: `:challenge` pins the challenge (tests only; it is random by
+  default), `:timeout` (10 seconds by default, as the reference), `:http`.
+  """
+  @spec confirm_registration(String.t(), String.t(), String.t(), keyword()) ::
+          :ok | {:error, :registration_not_confirmed}
+  def confirm_registration(endpoint, space_ref, token, opts \\ []) do
+    challenge = Keyword.get_lazy(opts, :challenge, &new_challenge/0)
+    body = %{"space" => space_ref, "token" => token, "challenge" => challenge}
+    opts = Keyword.put_new(opts, :timeout, @notify_timeout)
+
+    case XRPC.procedure(
+           endpoint,
+           "com.atproto.space.confirmRegistration",
+           body,
+           [headers: []],
+           opts
+         ) do
+      {:ok, %{"challenge" => ^challenge}} -> :ok
+      _ -> {:error, :registration_not_confirmed}
     end
   end
 
   @doc """
-  Subscribe to update notifications for the space
-  (`com.atproto.space.registerNotify`, a procedure on the space host),
-  credential-authed. The subscriber is named by `service` — a `did#serviceId`
-  reference, not a URL, because `notifyRepoUpdate` and `notifySpaceStatus`
-  are delivered with service auth addressed to it. Since atproto
-  `atproto-spaces-cleanup` (4037310) the fragment is required: a bare DID is
-  refused here as `{:error, :invalid_service}` (the host would answer
-  `InvalidRequest`). Re-registering renews the registration and extends the
-  expiry, which may outlive the credential's own — renew before then.
-  """
-  @spec register_notify(String.t(), String.t(), String.t(), credential(), keyword()) ::
-          {:ok, map()} | {:error, term()}
-  def register_notify(space_host, space_ref, service, cred, opts \\ []) do
-    if service_ref?(service) do
-      http = Keyword.get(opts, :http, HTTP)
-      url = "#{String.trim_trailing(space_host, "/")}/xrpc/com.atproto.space.registerNotify"
-      body = [json: %{"space" => space_ref, "service" => service}]
+  Syncer side: read a `confirmRegistration` request into
+  `{:ok, %{space:, token:, challenge:}}`, or `{:error, :invalid_request}`.
 
-      case signed_request(http, :post, url, body, cred, authority(space_ref), []) do
-        {:ok, %{status: 200, body: body}} when is_map(body) -> {:ok, body}
-        {:ok, %{status: 200}} -> {:ok, %{}}
-        {:ok, response} -> classify_error(response)
-        error -> error
-      end
-    else
-      {:error, :invalid_service}
-    end
+  Then check that `token` is the one you passed as `notify:` for `space`
+  (`token_matches?/2`), refuse otherwise (an XRPC error), and answer
+  `confirm_registration_response/1`.
+  """
+  @spec decode_confirm_registration(map()) ::
+          {:ok, %{space: String.t(), token: String.t(), challenge: String.t()}}
+          | {:error, :invalid_request}
+  def decode_confirm_registration(%{"space" => space, "token" => token, "challenge" => challenge}) do
+    if XRPC.space_ref?(space) and token?(token) and token?(challenge),
+      do: {:ok, %{space: space, token: token, challenge: challenge}},
+      else: {:error, :invalid_request}
   end
 
+  def decode_confirm_registration(_), do: {:error, :invalid_request}
+
   @doc """
-  Withdraw a notify registration (`com.atproto.space.unregisterNotify`),
-  passing the `service` it was registered under (or its bare DID, which
-  withdraws every registration under that DID). Registrations may also simply
-  be left to expire. Succeeds when nothing was registered.
-
-  Since atproto `atproto-spaces-cleanup` (4037310, "service auth for
-  unregisterNotify") this is **not** credential-authed: a space credential
-  names no service, so any holder could withdraw anyone's registration. The
-  request carries inter-service auth (`XRPC.ServiceAuth`) issued by the
-  service being withdrawn. `auth` is one of:
-
-  - `[service_auth: [key: private_jwk]]` — minted per request: the service
-    DID's `#atproto` signing key as a private JWK. `iss` defaults to the
-    service's bare DID, `aud` to the authority's space host
-    (`Token.space_host_aud/1`, `{authority}#atproto_pds`), and `lxm` is
-    `com.atproto.space.unregisterNotify`; `:iss`, `:aud`, `:kid` and
-    `:expires_in` may be given to override.
-  - `[headers: [{"authorization", "Bearer " <> jwt}]]` — a token minted
-    elsewhere.
-
-  The host checks that `iss` is the service or its DID and that `aud` is the
-  space authority (bare or `#atproto_pds`).
+  The `confirmRegistration` output echoing the challenge, from the decoded
+  request or the challenge itself.
   """
-  @spec unregister_notify(String.t(), String.t(), String.t(), keyword(), keyword()) ::
+  @spec confirm_registration_response(%{challenge: String.t()} | String.t()) :: map()
+  def confirm_registration_response(%{challenge: challenge}),
+    do: confirm_registration_response(challenge)
+
+  def confirm_registration_response(challenge) when is_binary(challenge),
+    do: %{"challenge" => challenge}
+
+  @doc """
+  Whether a token received in `confirmRegistration` or `notifySpaceUpdate`
+  is the one issued for the space, compared in constant time (the token is
+  the only thing authenticating those calls).
+  """
+  @spec token_matches?(String.t(), term()) :: boolean()
+  def token_matches?(issued, received) when is_binary(issued),
+    do: Mac.equal?(issued, received)
+
+  # -- notifySpaceUpdate -----------------------------------------------------------
+
+  @doc """
+  Space host side: send a `com.atproto.space.notifySpaceUpdate` to a
+  registered syncer's `endpoint`, with the registration's `token` and the
+  `update` (see `t:space_update/0`; `:unknown` cannot be sent).
+
+  Returns `:ok`, or the XRPC error (`{:error, {:http_error, status, name}}`
+  and so on) for the caller's retry policy: `repoWrite` and `repoRemoved`
+  are best effort, while expiry and deletion notices are retried with backoff
+  (1 minute up to 12 hours, for at least 72 hours), and a syncer that rejects
+  an expiry notice with a non-retryable error (e.g. 400) has unregistered.
+  The call carries no auth; fetch the endpoint as an untrusted URL. Options:
+  `:timeout` (10 seconds by default), `:http`.
+  """
+  @spec notify_space_update(String.t(), String.t(), String.t(), space_update(), keyword()) ::
           :ok | {:error, term()}
-  def unregister_notify(space_host, space_ref, service, auth, opts \\ []) do
-    with {:ok, auth} <- unregister_auth(auth, space_ref, service) do
-      body = %{"space" => space_ref, "service" => service}
+  def notify_space_update(endpoint, space_ref, token, update, opts \\ []) do
+    with {:ok, body} <- encode_space_update(space_ref, token, update) do
+      opts = Keyword.put_new(opts, :timeout, @notify_timeout)
 
-      case XRPC.procedure(space_host, "com.atproto.space.unregisterNotify", body, auth, opts) do
+      case XRPC.procedure(
+             endpoint,
+             "com.atproto.space.notifySpaceUpdate",
+             body,
+             [headers: []],
+             opts
+           ) do
         {:ok, _} -> :ok
         error -> error
       end
     end
   end
 
-  defp unregister_auth([service_auth: sa], space_ref, service) when is_list(sa) do
-    [did | _] = String.split(service, "#", parts: 2)
-
-    sa =
-      sa
-      |> Keyword.put_new(:iss, did)
-      |> Keyword.put_new_lazy(:aud, fn -> Token.space_host_aud(authority(space_ref)) end)
-
-    {:ok, [service_auth: sa]}
-  end
-
-  defp unregister_auth([headers: headers] = auth, _space_ref, _service) when is_list(headers),
-    do: {:ok, auth}
-
-  defp unregister_auth(_, _, _), do: {:error, :invalid_auth}
-
-  # A `did#serviceId` reference: a DID and a non-empty fragment.
-  defp service_ref?(service) when is_binary(service) do
-    case String.split(service, "#", parts: 2) do
-      [did, id] when id != "" -> DID.valid?(did)
-      _ -> false
-    end
-  end
-
-  defp service_ref?(_), do: false
-
   @doc """
-  Decode a forwarded repo update notification
-  (`com.atproto.space.notifyRepoUpdate`, the JSON body a space host POSTs to a
-  registered syncer) into
-  `%{space:, repo:, repo_rev:, data:, space_rev:, prev_space_rev:}`.
-
-  This was `decode_notify_write/1` (`notifyWrite`) until atproto
-  `atproto-spaces-lexicon-review` renamed the method; the body is unchanged.
-  `data` is the repo's commit digest after the write, base64-decoded from the
-  lexicon `bytes` form (the field was `hash` until atproto `5791385`).
-  `space_rev`/`prev_space_rev` sequence the space: a `prev_space_rev` that is
-  not the last `space_rev` you processed means notifications were missed —
-  recover with `list_writers/4`'s `cursor:` set to the last one you did
-  process. The notification carries no record data and authenticates
-  nothing about the repo: sync the repo itself from its host.
-
-  Receiving the POST (and checking its service auth, e.g. with
-  `XRPC.ServiceAuth.verify/3` and `lxm: "com.atproto.space.notifyRepoUpdate"`)
-  is the app's job; this only gives the body a shape. Missing required fields
-  are `{:error, {:missing_field, name}}`.
+  The `notifySpaceUpdate` input for `update`, `$type`s in full. A writer set
+  change includes `prevSpaceRev` when it has one.
   """
-  @spec decode_notify_repo_update(map()) :: {:ok, map()} | {:error, term()}
-  def decode_notify_repo_update(%{} = body) do
-    with :ok <- require_fields(body, ~w(space repo repoRev data)),
-         {:ok, data} <- decode_field(body, "data") do
-      {:ok,
-       %{
-         space: body["space"],
-         repo: body["repo"],
-         repo_rev: body["repoRev"],
-         data: data,
-         space_rev: body["spaceRev"],
-         prev_space_rev: body["prevSpaceRev"]
-       }}
+  @spec encode_space_update(String.t(), String.t(), space_update()) ::
+          {:ok, map()} | {:error, :invalid_update}
+  def encode_space_update(space_ref, token, update) when is_binary(space_ref) do
+    if token?(token) do
+      case encode_entry(update) do
+        nil -> {:error, :invalid_update}
+        entry -> {:ok, %{"space" => space_ref, "token" => token, "update" => entry}}
+      end
+    else
+      {:error, :invalid_update}
     end
   end
 
   @doc """
-  Decode a space status notification (`com.atproto.space.notifySpaceStatus`,
-  POSTed by the space host to registered syncers) into
-  `{:ok, %{space: space_ref, status: status}}`.
+  Syncer side: read a `notifySpaceUpdate` request into
+  `{:ok, %{space:, token:, update:}}`. Check `token` against the one issued
+  for `space` (`token_matches?/2`) and reject anything else.
 
-  It replaces `notifySpaceDeleted` (atproto `atproto-spaces-lexicon-review`),
-  which carried only the space: the status is now explicit. `"deleted"` — the
-  one status upstream defines, decoded as `:deleted` — means the space is gone
-  and every copy of its data should be dropped. Any other status (the field
-  is an open set of known values) decodes to its string, for the app to
-  ignore or handle. Missing fields are `{:error, {:missing_field, name}}`.
+  `update` is matched on its `$type` in full:
+
+  | `$type` | decoded | syncer action |
+  |---|---|---|
+  | `com.atproto.space.defs#repoWrite` | `%{type: :repo_write, repo:, repo_rev:, data:, space_rev:, prev_space_rev:}` | sync the repo from its host |
+  | `com.atproto.space.defs#repoRemoved` | `%{type: :repo_removed, repo:, space_rev:, prev_space_rev:}` | stop treating the repo as part of the space |
+  | `com.atproto.space.notifySpaceUpdate#spaceDeleted` | `%{type: :space_deleted}` | reauthorize; only a `SpaceDeleted` answer confirms the deletion |
+  | `com.atproto.space.notifySpaceUpdate#registrationExpired` | `%{type: :registration_expired, space_rev:}` | reauthorize with `notify:` and catch up through `list_writers/4`; or reject with a 400 to unregister |
+  | anything else | `%{type: :unknown, value: map}` | acknowledge and ignore |
+
+  Writer set changes are best effort: a `prev_space_rev` that is not the last
+  `space_rev` you processed means updates were missed — catch up with
+  `list_writers/4`'s `cursor:` set to the last one you did process.
+  A malformed body is `{:error, :invalid_request}`; a malformed update of a
+  known type is `{:error, :invalid_update}`.
   """
-  @spec decode_notify_space_status(map()) ::
-          {:ok, %{space: String.t(), status: :deleted | String.t()}} | {:error, term()}
-  def decode_notify_space_status(%{} = body) do
-    with :ok <- require_fields(body, ~w(space status)) do
-      case body do
-        %{"space" => space, "status" => "deleted"} when is_binary(space) ->
-          {:ok, %{space: space, status: :deleted}}
+  @spec decode_space_update(map()) ::
+          {:ok, %{space: String.t(), token: String.t(), update: space_update()}}
+          | {:error, :invalid_request | :invalid_update}
+  def decode_space_update(%{"space" => space, "token" => token, "update" => update}) do
+    if XRPC.space_ref?(space) and token?(token) do
+      with {:ok, update} <- decode_update(update),
+           do: {:ok, %{space: space, token: token, update: update}}
+    else
+      {:error, :invalid_request}
+    end
+  end
 
-        %{"space" => space, "status" => status} when is_binary(space) and is_binary(status) ->
-          {:ok, %{space: space, status: status}}
+  def decode_space_update(_), do: {:error, :invalid_request}
 
-        _ ->
-          {:error, :invalid_notification}
+  defp decode_update(%{"$type" => type} = update) when type in [@repo_write, @repo_removed] do
+    with {:ok, entry} <- decode_entry(update),
+         prev = update["prevSpaceRev"],
+         true <- is_nil(prev) or TID.valid?(prev) do
+      {:ok, Map.put(entry, :prev_space_rev, prev)}
+    else
+      _ -> {:error, :invalid_update}
+    end
+  end
+
+  defp decode_update(%{"$type" => @space_deleted}), do: {:ok, %{type: :space_deleted}}
+
+  defp decode_update(%{"$type" => @registration_expired} = update) do
+    case update["spaceRev"] do
+      rev when is_binary(rev) ->
+        if TID.valid?(rev),
+          do: {:ok, %{type: :registration_expired, space_rev: rev}},
+          else: {:error, :invalid_update}
+
+      _ ->
+        {:error, :invalid_update}
+    end
+  end
+
+  defp decode_update(%{"$type" => type} = update) when is_binary(type),
+    do: {:ok, %{type: :unknown, value: update}}
+
+  defp decode_update(_), do: {:error, :invalid_update}
+
+  # -- notifyRepoUpdate -------------------------------------------------------------
+
+  @doc """
+  Repo host side: tell the space host a space repo advanced
+  (`com.atproto.space.notifyRepoUpdate`), with `update`'s `space`, `repo`,
+  `repo_rev` and commit `data` (32 bytes).
+
+  Authenticated with service auth from the repo's account. `auth` is one of:
+
+    * `[service_auth: [key: repo_signing_jwk]]` — minted per request:
+      `iss` defaults to the repo DID, `aud` to the space authority's space
+      host (`Token.space_host_aud/1`, `{authority}#atproto_pds`), and `lxm`
+      is `com.atproto.space.notifyRepoUpdate`; `:iss`, `:aud`, `:kid` and
+      `:expires_in` may be given to override.
+    * `[headers: [{"authorization", "Bearer " <> jwt}]]` — minted elsewhere.
+
+  Delivery is retried by the repo host until it succeeds; the space host
+  answers `UpstreamFailure` when a managing app cannot be reached, which is
+  also a reason to retry rather than drop. Errors come back as XRPC errors
+  (`{:error, {:http_error, status, name}}`, e.g. `FutureRev`).
+  """
+  @spec notify_repo_update(String.t(), repo_update(), keyword(), keyword()) ::
+          :ok | {:error, term()}
+  def notify_repo_update(space_host, update, auth, opts \\ [])
+
+  def notify_repo_update(
+        space_host,
+        %{space: space, repo: repo, repo_rev: repo_rev, data: data},
+        auth,
+        opts
+      )
+      when is_binary(data) do
+    with {:ok, auth} <- repo_update_auth(auth, space, repo) do
+      body = %{
+        "space" => space,
+        "repo" => repo,
+        "repoRev" => repo_rev,
+        "data" => encode_bytes(data)
+      }
+
+      case XRPC.procedure(space_host, "com.atproto.space.notifyRepoUpdate", body, auth, opts) do
+        {:ok, _} -> :ok
+        error -> error
       end
     end
   end
 
+  defp repo_update_auth([service_auth: sa], space, repo) when is_list(sa) do
+    sa =
+      sa
+      |> Keyword.put_new(:iss, repo)
+      |> Keyword.put_new_lazy(:aud, fn -> Token.space_host_aud(authority(space)) end)
+
+    {:ok, [service_auth: sa]}
+  end
+
+  defp repo_update_auth([headers: headers] = auth, _space, _repo) when is_list(headers),
+    do: {:ok, auth}
+
+  defp repo_update_auth(_, _, _), do: {:error, :invalid_auth}
+
+  @doc """
+  Space host side: read a `notifyRepoUpdate` body into
+  `{:ok, %{space:, repo:, repo_rev:, data:}}` (`data` decoded from the
+  lexicon `bytes` form), or `{:error, :invalid_request}`.
+
+  Verify the request's service auth first (`XRPC.ServiceAuth.verify/3` with
+  `lxm: "com.atproto.space.notifyRepoUpdate"`), then `check_repo_update_auth/2`
+  against the decoded body. Since the November 12 alpha the body carries no
+  `spaceRev`: the space host sequences the update itself.
+  """
+  @spec decode_notify_repo_update(map()) :: {:ok, repo_update()} | {:error, :invalid_request}
+  def decode_notify_repo_update(%{"space" => space, "repo" => repo, "repoRev" => rev} = body) do
+    with true <- XRPC.space_ref?(space) and did?(repo) and tid?(rev),
+         {:ok, data} when is_binary(data) <- decode_field(body, "data") do
+      {:ok, %{space: space, repo: repo, repo_rev: rev, data: data}}
+    else
+      _ -> {:error, :invalid_request}
+    end
+  end
+
+  def decode_notify_repo_update(_), do: {:error, :invalid_request}
+
+  @doc """
+  Space host side: check a verified `notifyRepoUpdate` service auth payload
+  against the decoded body, as the reference does: `iss` must be the repo (so
+  a repo host cannot notify on another account's behalf), and `aud` the space
+  authority, bare or as `{authority}#atproto_pds` (a host answers for many
+  authorities, so the audience is only knowable from the body).
+
+  Returns `:ok`, `{:error, :iss_mismatch}` or `{:error, :aud_mismatch}`
+  (both answered as `Forbidden`).
+  """
+  @spec check_repo_update_auth(map(), repo_update()) ::
+          :ok | {:error, :iss_mismatch | :aud_mismatch}
+  def check_repo_update_auth(%{} = payload, %{space: space, repo: repo}) do
+    authority = authority(space)
+
+    cond do
+      payload["iss"] != repo ->
+        {:error, :iss_mismatch}
+
+      payload["aud"] not in [authority, Token.space_host_aud(authority)] ->
+        {:error, :aud_mismatch}
+
+      true ->
+        :ok
+    end
+  end
+
+  # -- the set hash -----------------------------------------------------------------
+
   @doc """
   Fold a page of oplog ops into the running set hash (remove `prev`, add
   `cid` — deletes carry `cid: null`). Ops are maps in the wire shape with
-  string keys.
+  string keys. `sync_repo/6` does this with the ordering and value checks.
   """
   @spec apply_ops(Lthash.t(), [map()]) :: Lthash.t()
   def apply_ops(%Lthash{} = hash, ops) when is_list(ops),
@@ -478,12 +858,12 @@ defmodule Exosphere.ATProto.Spaces.Sync do
   def synced?(%Lthash{} = hash, %{"data" => data}), do: synced?(hash, data)
   def synced?(%Lthash{}, _), do: false
 
-  # -- requests -------------------------------------------------------------
+  # -- requests ---------------------------------------------------------------------
 
   defp get_json(url, cred, audience, extra_headers, opts) do
     http = Keyword.get(opts, :http, HTTP)
 
-    case signed_request(http, :get, url, [], cred, audience, extra_headers) do
+    case signed_request(http, url, opts, cred, audience, extra_headers) do
       {:ok, %{status: 200, body: body} = response} when is_map(body) -> {:ok, response}
       {:ok, response} -> classify_error(response)
       error -> error
@@ -491,10 +871,12 @@ defmodule Exosphere.ATProto.Spaces.Sync do
   end
 
   # Every credential-authed request: the credential, its audience, and the
-  # signature over both. The signature binds neither method nor URI.
-  defp signed_request(http, method, url, request_opts, cred, audience, extra_headers) do
+  # signature over both. The signature binds neither method nor URI. Every
+  # sync read is a GET.
+  defp signed_request(http, url, opts, cred, audience, extra_headers) do
     {:ok, headers} = Credential.presentation_headers(cred, audience)
-    http.request(method, url, Keyword.put(request_opts, :headers, headers ++ extra_headers))
+    request_opts = Keyword.put(HTTP.take_request_opts(opts), :headers, headers ++ extra_headers)
+    http.request(:get, url, request_opts)
   end
 
   # The audience for space-host methods: the authority DID of the space ref.
@@ -510,57 +892,111 @@ defmodule Exosphere.ATProto.Spaces.Sync do
     "#{String.trim_trailing(host, "/")}/xrpc/#{nsid}?#{query}"
   end
 
-  # -- MACs -------------------------------------------------------------------
+  # The media type, without parameters, when the response names one.
+  defp check_star_content_type(headers) do
+    case HttpSignature.normalize_headers(headers)["content-type"] do
+      nil ->
+        :ok
 
-  # A fresh key share per request (retries and pages included).
-  defp encapsulate(opts) do
+      content_type ->
+        media_type =
+          content_type
+          |> String.split(";", parts: 2)
+          |> hd()
+          |> String.trim()
+          |> String.downcase()
+
+        if media_type == XRPC.star_content_type(),
+          do: :ok,
+          else: {:error, {:unexpected_content_type, content_type}}
+    end
+  end
+
+  defp new_challenge,
+    do: :crypto.strong_rand_bytes(16) |> Base.encode32(case: :lower, padding: false)
+
+  # -- MACs and the KEM key -----------------------------------------------------------
+
+  # Run a MAC'd request with the author's KEM key. `attempt` encapsulates
+  # afresh, so a retry never reuses a key share. A failed verification is
+  # retried once with a re-resolved key, when the caller gave a resolver.
+  defp with_kem(opts, attempt) do
+    with {:ok, kem_key} <- resolve_kem_key(opts, false) do
+      case attempt.(kem_key) do
+        {:error, reason} = error ->
+          if is_function(Keyword.get(opts, :kem_key), 1) and verification_error?(reason) do
+            with {:ok, kem_key} <- resolve_kem_key(opts, true), do: attempt.(kem_key)
+          else
+            error
+          end
+
+        result ->
+          result
+      end
+    end
+  end
+
+  defp resolve_kem_key(opts, refresh?) do
     case Keyword.get(opts, :kem_key) do
-      nil -> {:error, :missing_kem_key}
-      kem_key -> Kem.encapsulate(kem_key)
+      nil ->
+        {:error, :missing_kem_key}
+
+      resolve when is_function(resolve, 1) ->
+        case resolve.(refresh?) do
+          {:ok, key} when is_binary(key) -> {:ok, key}
+          {:error, _} = error -> error
+          _ -> {:error, :invalid_kem_key}
+        end
+
+      key when is_binary(key) ->
+        {:ok, key}
+
+      _ ->
+        {:error, :invalid_kem_key}
     end
   end
 
-  defp want_mac(type, kem),
-    do: [{Mac.want_mac_header_name(), Mac.want_mac_header(type, kem.key_share)}]
+  # What the reference retries with a refreshed KEM key: a MAC that fails, or
+  # a response that fails verification against it.
+  @verification_errors [
+    :invalid_commit,
+    :repo_mismatch,
+    :space_mismatch,
+    :records_do_not_match_commit,
+    :wrong_star_type,
+    :invalid_record,
+    :record_uri_mismatch,
+    :record_cid_mismatch
+  ]
 
-  defp response_mac(headers, type) do
-    headers
-    |> header(Mac.mac_header_name())
-    |> Mac.parse_mac_header(type)
-  end
+  defp verification_error?({:invalid_space_mac, _}), do: true
+  defp verification_error?({:unsupported_commit_version, _}), do: true
+  defp verification_error?({:records_out_of_order, _}), do: true
+  defp verification_error?({:invalid_record_path, _}), do: true
+  defp verification_error?(reason), do: reason in @verification_errors
 
-  defp verify_commit(commit, headers, space_ref, repo_did, kem) do
-    with {:ok, mac} <- response_mac(headers, :commit) do
-      Commit.verify(commit, %{space: space_ref, repo: repo_did}, kem.shared_secret, mac)
-    end
-  end
-
-  defp maybe_verify_commit(nil, _headers, _space, _repo, _kem), do: :ok
-
-  defp maybe_verify_commit(commit, headers, space, repo, kem),
-    do: verify_commit(commit, headers, space, repo, kem)
-
-  defp verify_record(%{"uri" => uri, "cid" => cid_string, "value" => value}, headers, uri, kem)
+  # The reference's order: the record requested, a CID, the MAC over both,
+  # then the value against the CID.
+  defp verify_record(%{"uri" => uri, "cid" => cid_string, "value" => value}, uri, kem, headers)
        when is_binary(cid_string) do
-    with {:ok, mac} <- response_mac(headers, :record),
-         {:ok, cid} <- CID.decode(cid_string),
-         true <-
-           Mac.equal?(Mac.record_mac(kem.shared_secret, uri, CID.to_bytes(cid)), mac) || :mac,
-         {:ok, value_cid} <- value_cid(value),
-         true <- value_cid == cid || :cid do
-      :ok
-    else
-      :mac -> {:error, :invalid_mac}
-      :cid -> {:error, :record_cid_mismatch}
-      {:error, {:invalid_space_mac, _}} = error -> error
-      {:error, _} -> {:error, :invalid_record}
+    with {:ok, cid} <- decode_cid(cid_string),
+         :ok <- Mac.verify_record(uri, cid, kem, headers),
+         {:ok, value_cid} <- value_cid(value) do
+      if value_cid == cid, do: :ok, else: {:error, :record_cid_mismatch}
     end
   end
 
-  defp verify_record(%{"uri" => other}, _headers, uri, _kem) when other != uri,
+  defp verify_record(%{"uri" => other}, uri, _kem, _headers) when other != uri,
     do: {:error, :record_uri_mismatch}
 
   defp verify_record(_, _, _, _), do: {:error, :invalid_record}
+
+  defp decode_cid(string) do
+    case CID.decode(string) do
+      {:ok, cid} -> {:ok, cid}
+      _ -> {:error, :invalid_record}
+    end
+  end
 
   defp record_uri(space_ref, repo_did, collection, rkey) do
     with {:ok, %AtUri{authority: authority, space_type: type, skey: skey}} when is_binary(type) <-
@@ -592,15 +1028,10 @@ defmodule Exosphere.ATProto.Spaces.Sync do
   defp from_json(float) when is_float(float) and float == trunc(float), do: trunc(float)
   defp from_json(other), do: other
 
-  defp header(headers, name) when is_list(headers) do
-    Enum.find_value(headers, fn {k, v} -> if String.downcase(k) == name, do: v end)
-  end
-
-  defp header(_, _), do: nil
-
-  # -- errors -----------------------------------------------------------------
+  # -- errors -------------------------------------------------------------------------
 
   @typed_errors %{
+    "RepoNotFound" => :repo_not_found,
     "RepoTakendown" => :repo_takendown,
     "RepoDeactivated" => :repo_deactivated,
     "RepoSuspended" => :repo_suspended,
@@ -611,10 +1042,7 @@ defmodule Exosphere.ATProto.Spaces.Sync do
   # XRPC error bodies are {"error": code, "message": msg}. The sync-recovery
   # signal is typed rather than left as a bare 400: a caller of list_repo_ops/5
   # gets a named match to route to the full-archive recovery, not a
-  # string-match. The reference PDS does not emit this code — its lexicon
-  # declares no such error and its reader serves the retained window silently
-  # — so this classifies hosts that follow the proposal's "cannot find its
-  # since revision" guidance with an explicit signal.
+  # string-match.
   defp classify_error(%{status: 400, body: %{"error" => "SinceOutOfBounds"} = body}) do
     {:error, {:since_out_of_bounds, floor_from_message(body["message"])}}
   end
@@ -640,33 +1068,112 @@ defmodule Exosphere.ATProto.Spaces.Sync do
 
   defp floor_from_message(_), do: nil
 
-  # -- decoding -------------------------------------------------------------
+  # -- decoding -----------------------------------------------------------------------
 
-  # A defs#commit carries one lexicon `bytes` field, `data`.
-  defp decode_commit(nil), do: {:ok, nil}
-
+  # A defs#commit carries one lexicon `bytes` field, `data`. Every response
+  # that carries one must carry it (listRepoOps on every page since the
+  # November 12 alpha).
   defp decode_commit(%{} = commit) do
     with {:ok, %{"data" => data}} <- decode_fields(commit, ["data"]) do
       {:ok, Map.put(commit, "data", data)}
     end
   end
 
+  defp decode_commit(nil), do: {:error, :missing_commit}
   defp decode_commit(_), do: {:error, :invalid_commit}
 
-  defp require_present(nil, error), do: {:error, error}
-  defp require_present(_, _), do: :ok
+  defp decode_ops(ops) when is_list(ops) do
+    if Enum.all?(ops, &is_map/1), do: {:ok, ops}, else: {:error, :invalid_op}
+  end
 
-  defp require_fields(body, fields) do
-    case Enum.find(fields, &(not Map.has_key?(body, &1))) do
-      nil -> :ok
-      missing -> {:error, {:missing_field, missing}}
+  defp decode_ops(_), do: {:error, :invalid_response}
+
+  defp optional_string(nil), do: {:ok, nil}
+  defp optional_string(value) when is_binary(value), do: {:ok, value}
+  defp optional_string(_), do: {:error, :invalid_response}
+
+  defp decode_writers(repos) when is_list(repos) do
+    repos
+    |> Enum.reduce_while({:ok, []}, fn
+      %{"$type" => type} = entry, {:ok, acc} when type in [@repo_write, @repo_removed] ->
+        case decode_entry(entry) do
+          {:ok, writer} -> {:cont, {:ok, [writer | acc]}}
+          {:error, {:invalid_bytes, _}} = error -> {:halt, error}
+          {:error, _} -> {:halt, {:error, :invalid_writer}}
+        end
+
+      # An open union: a member type this library does not know is skipped.
+      %{"$type" => type}, acc when is_binary(type) ->
+        {:cont, acc}
+
+      _, _ ->
+        {:halt, {:error, :invalid_writer}}
+    end)
+    |> case do
+      {:ok, decoded} -> {:ok, Enum.reverse(decoded)}
+      {:error, _} = error -> error
     end
   end
 
+  defp decode_writers(_), do: {:error, :invalid_response}
+
+  # A defs#repoWrite or defs#repoRemoved, without prevSpaceRev.
+  defp decode_entry(%{"$type" => @repo_write} = entry) do
+    with {:ok, data} <- decode_field(entry, "data"),
+         true <-
+           (did?(entry["repo"]) and tid?(entry["repoRev"]) and tid?(entry["spaceRev"]) and
+              is_binary(data)) || {:error, :invalid} do
+      {:ok,
+       %{
+         type: :repo_write,
+         repo: entry["repo"],
+         repo_rev: entry["repoRev"],
+         data: data,
+         space_rev: entry["spaceRev"]
+       }}
+    end
+  end
+
+  defp decode_entry(%{"$type" => @repo_removed} = entry) do
+    if did?(entry["repo"]) and tid?(entry["spaceRev"]),
+      do: {:ok, %{type: :repo_removed, repo: entry["repo"], space_rev: entry["spaceRev"]}},
+      else: {:error, :invalid}
+  end
+
+  # The wire form of a writer set entry or notifySpaceUpdate update; nil for
+  # anything else.
+  defp encode_entry(
+         %{type: :repo_write, repo: repo, repo_rev: rev, data: data, space_rev: srev} = u
+       )
+       when is_binary(data) do
+    %{
+      "$type" => @repo_write,
+      "repo" => repo,
+      "repoRev" => rev,
+      "data" => encode_bytes(data),
+      "spaceRev" => srev
+    }
+    |> maybe_put("prevSpaceRev", Map.get(u, :prev_space_rev))
+  end
+
+  defp encode_entry(%{type: :repo_removed, repo: repo, space_rev: srev} = u) do
+    %{"$type" => @repo_removed, "repo" => repo, "spaceRev" => srev}
+    |> maybe_put("prevSpaceRev", Map.get(u, :prev_space_rev))
+  end
+
+  defp encode_entry(%{type: :space_deleted}), do: %{"$type" => @space_deleted}
+
+  defp encode_entry(%{type: :registration_expired, space_rev: srev}) when is_binary(srev),
+    do: %{"$type" => @registration_expired, "spaceRev" => srev}
+
+  defp encode_entry(_), do: nil
+
+  # Lexicon `bytes` in JSON: {"$bytes": b64}, standard alphabet, unpadded.
+  defp encode_bytes(binary), do: %{"$bytes" => Base.encode64(binary, padding: false)}
+
   # Lexicon `bytes` travel in JSON as {"$bytes": b64} — the standard RFC 4648
   # §4 alphabet (not URL-safe), `=` padding optional (atproto data model
-  # spec). A bare string stays readable for hosts predating the wrapper;
-  # anything else is an error rather than a silent pass-through, so a
+  # spec). Anything else is an error rather than a silent pass-through, so a
   # malformed value can never pose as a decoded one.
   defp decode_bytes(%{"$bytes" => b64}) when is_binary(b64), do: decode_bytes(b64)
   defp decode_bytes(b64) when is_binary(b64), do: Base.decode64(b64, padding: false)
@@ -695,29 +1202,9 @@ defmodule Exosphere.ATProto.Spaces.Sync do
     end
   end
 
-  defp decode_repos(repos) when is_list(repos) do
-    Enum.reduce_while(repos, {:ok, []}, fn repo, {:ok, acc} ->
-      case decode_field(repo, "data") do
-        {:ok, data} -> {:cont, {:ok, [decode_repo(repo, data) | acc]}}
-        {:error, _} = error -> {:halt, error}
-      end
-    end)
-    |> case do
-      {:ok, decoded} -> {:ok, Enum.reverse(decoded)}
-      {:error, _} = error -> error
-    end
-  end
-
-  defp decode_repos(_), do: {:error, :invalid_response}
-
-  # The current field names only. A host still on the pre-`357c4cee9` lexicon
-  # sends `rev` and no `spaceRev`, and one before 4037310 sends `did` rather
-  # than `repo`; those decode to `nil` here rather than being read across:
-  # guessing that a field means what its successor means is how a client ends
-  # up agreeing with one stale host and nobody else.
-  defp decode_repo(repo, data) do
-    %{repo: repo["repo"], repo_rev: repo["repoRev"], space_rev: repo["spaceRev"], data: data}
-  end
+  defp did?(value), do: is_binary(value) and DID.valid?(value)
+  defp tid?(value), do: is_binary(value) and TID.valid?(value)
+  defp token?(value), do: is_binary(value) and byte_size(value) <= @max_token_bytes
 
   defp maybe_put(map, _key, nil), do: map
   defp maybe_put(map, key, value), do: Map.put(map, key, value)

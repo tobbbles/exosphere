@@ -1,15 +1,15 @@
 defmodule Exosphere.ATProto.Spaces.StructuredFields do
   @moduledoc """
   The subset of RFC 9651 Structured Field Values that space requests use:
-  Dictionaries (the `Signature-Input`/`Signature` headers of RFC 9421, and
-  `Atproto-Space-Want-Mac`/`Atproto-Space-Mac`), Inner Lists, Parameters, and
-  the bare item types Integer, Decimal, String, Token, Byte Sequence and
-  Boolean.
+  Dictionaries (the `Signature-Input`, `Signature` and `Accept-Signature`
+  fields of RFC 9421, and the MAC-covered `Atproto-Space-Commit` and
+  `Atproto-Space-Record` headers), Inner Lists, Parameters, and the bare item
+  types Integer, Decimal, String, Token, Byte Sequence and Boolean.
 
   Values are tagged so the item *type* survives a round trip — a Token and a
   String with the same characters are different values, and the space
-  headers care (`type="atproto-space-repo"` is a String; an unquoted
-  `type=atproto-space-repo` is a Token and does not match):
+  headers care (`tag="atproto-space-commit"` is a String; an unquoted
+  `tag=atproto-space-commit` is a Token and does not select the profile):
 
   | RFC 9651 type | Elixir |
   |---|---|
@@ -28,6 +28,12 @@ defmodule Exosphere.ATProto.Spaces.StructuredFields do
   Parsing follows the RFC's algorithms (§4.2) and fails the whole field on
   any error, as it requires. Dates and Display Strings are not supported and
   fail to parse.
+
+  Serialization is the RFC's canonical form (§4.1): `", "` between members,
+  no optional whitespace, Byte Sequences as padded base64. RFC 9421's `sf`
+  flag signs a field in exactly this form, so `serialize_dictionary/1` of a
+  parsed covered header is what a MAC covers (`Spaces.Mac`). Byte Sequences
+  parse with or without padding, but always re-serialize padded.
   """
 
   @type bare ::
@@ -261,8 +267,7 @@ defmodule Exosphere.ATProto.Spaces.StructuredFields do
   defp serialize_bare(false), do: "?0"
   defp serialize_bare(int) when is_integer(int), do: Integer.to_string(int)
 
-  defp serialize_bare(float) when is_float(float),
-    do: :erlang.float_to_binary(float, [:short]) |> trim_decimal()
+  defp serialize_bare(float) when is_float(float), do: serialize_decimal(float)
 
   defp serialize_bare({:token, token}), do: token
   defp serialize_bare({:bytes, bytes}), do: ":" <> Base.encode64(bytes) <> ":"
@@ -275,8 +280,57 @@ defmodule Exosphere.ATProto.Spaces.StructuredFields do
     end
   end
 
-  defp trim_decimal(str) do
-    if String.contains?(str, "."), do: str, else: str <> ".0"
+  # RFC 9651 §4.1.5: fixed-point, 1-3 fractional digits (rounded half-even),
+  # at most 12 integer digits. Erlang's shortest float form switches to
+  # exponent notation (`1.5e3`), which is not a Decimal and would put a
+  # different signature base on the wire than the reference re-serializes.
+  defp serialize_decimal(float) do
+    thousandths = round_thousandths(float)
+    integer = div(abs(thousandths), 1000)
+    digits = Integer.to_string(integer)
+
+    if byte_size(digits) > 12,
+      do: raise(ArgumentError, "structured field decimals have at most 12 integer digits")
+
+    fraction =
+      abs(thousandths)
+      |> rem(1000)
+      |> Integer.to_string()
+      |> String.pad_leading(3, "0")
+      |> String.trim_trailing("0")
+
+    sign = if thousandths < 0, do: "-", else: ""
+    sign <> digits <> "." <> if(fraction == "", do: "0", else: fraction)
+  end
+
+  # The float times 1000, rounded half-even to an integer, computed from its
+  # exact binary value so no intermediate float arithmetic can misround.
+  defp round_thousandths(float) do
+    <<sign::1, exponent::11, mantissa::52>> = <<float::float-64>>
+
+    {significand, power} =
+      if exponent == 0,
+        do: {mantissa, -1074},
+        else: {mantissa + Bitwise.bsl(1, 52), exponent - 1075}
+
+    scaled = significand * 1000
+
+    magnitude =
+      if power >= 0 do
+        Bitwise.bsl(scaled, power)
+      else
+        divisor = Bitwise.bsl(1, -power)
+        quotient = div(scaled, divisor)
+        twice_remainder = 2 * rem(scaled, divisor)
+
+        cond do
+          twice_remainder > divisor -> quotient + 1
+          twice_remainder == divisor and rem(quotient, 2) == 1 -> quotient + 1
+          true -> quotient
+        end
+      end
+
+    if sign == 1, do: -magnitude, else: magnitude
   end
 
   # -- lookups ----------------------------------------------------------------

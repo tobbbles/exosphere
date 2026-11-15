@@ -13,11 +13,14 @@ defmodule Exosphere.ATProto.Spaces.Repo do
     record's DRISL encoding, in **strict lexicographic order of the key
     bytes**, no duplicates; an empty repo has no pairs.
 
-  The commit's MAC travels in the response's `Atproto-Space-Mac` header, not
-  in the archive. `verify/4` runs the consumer pipeline the proposal lays
-  out, rejecting the whole archive on any failure: validate the metadata
-  (type, version, and that `repo`/`space` are the ones requested), verify
-  the commit MAC, then fold every record's
+  The commit's MAC travels in the response headers, not in the archive: an
+  `Atproto-Space-Commit` header describing the commit and an RFC 9421
+  `hmac-sha256` signature over it (`Spaces.Mac`, the commit profile). The
+  archive is served as `application/vnd.dasl.star`. `verify/4` runs the
+  consumer pipeline the proposal lays out, rejecting the whole archive on
+  any failure: validate the metadata (type, version, and that `repo`/`space`
+  are the ones requested), verify the commit MAC and that its covered header
+  matches the archive's commit, then fold every record's
   `{collection}/{rkey}/{record_cid}` into a fresh set hash and require its
   digest to equal the commit's `data` — only that match shows the repo was
   received complete. `read/1` does the same without a MAC, for a host
@@ -34,7 +37,7 @@ defmodule Exosphere.ATProto.Spaces.Repo do
   alias Exosphere.ATProto.CBOR, as: DagCbor
   alias Exosphere.ATProto.CID
   alias Exosphere.ATProto.{NSID, RecordKey, Star}
-  alias Exosphere.ATProto.Spaces.{Commit, Lthash}
+  alias Exosphere.ATProto.Spaces.{Commit, HttpSignature, Kem, Lthash}
 
   @star_type "atproto-space-repo"
   @limits [max_meta_length: 64 * 1024, max_key_length: 4 * 1024, max_value_length: 1024 * 1024]
@@ -88,15 +91,24 @@ defmodule Exosphere.ATProto.Spaces.Repo do
 
   @doc """
   Verify a repo archive served for `ctx` (`%{space:, repo:}`, the request)
-  against the commit MAC from its response header, end to end. On success
-  the returned set hash is the authenticated running hash to continue
-  syncing from.
+  end to end, against the commit MAC in its response `headers` under the
+  `encapsulation` the request was made with (`Spaces.Kem.encapsulate/2`). On
+  success the returned set hash is the authenticated running hash to
+  continue syncing from.
+
+  Errors: the archive's (`Star.decode/2`, `:wrong_star_type`,
+  `{:unsupported_commit_version, ver}`, `:invalid_commit`), the commit's
+  (`:repo_mismatch`, `:space_mismatch`, `{:invalid_space_mac, reason}`; see
+  `Spaces.Commit.verify/4`), and the records' (`{:records_out_of_order, key}`,
+  `{:invalid_record_path, key}`, `:invalid_record`,
+  `:records_do_not_match_commit`).
   """
-  @spec verify(binary(), Commit.ctx(), binary(), binary()) :: {:ok, verified()} | {:error, term()}
-  def verify(star, %{space: _, repo: _} = ctx, shared_secret, mac) when is_binary(star) do
+  @spec verify(binary(), Commit.ctx(), Kem.encapsulation(), HttpSignature.headers()) ::
+          {:ok, verified()} | {:error, term()}
+  def verify(star, %{space: _, repo: _} = ctx, encapsulation, headers) when is_binary(star) do
     with {:ok, %{meta: meta, pairs: pairs}} <- Star.decode(star, @limits),
          {:ok, commit} <- commit_from_meta(meta),
-         :ok <- Commit.verify(commit, ctx, shared_secret, mac) do
+         :ok <- Commit.verify(commit, ctx, encapsulation, headers) do
       verify_records(commit, pairs)
     end
   end

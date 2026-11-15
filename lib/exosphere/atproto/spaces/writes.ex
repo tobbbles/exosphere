@@ -147,11 +147,11 @@ defmodule Exosphere.ATProto.Spaces.Writes do
   (`Spaces.Space.import_space_meta/4`). Blobs are uploaded separately.
   Requires a `create` grant for every collection in the archive.
 
-  The archive is sent as `application/vnd.dasl.star` (it was
-  `application/octet-stream` until atproto `atproto-spaces-cleanup`
-  4037310). A malformed archive is `{:error, :invalid_repo_file}` and one
-  whose commit names another account `{:error, :repo_mismatch}` (the
-  `InvalidRepoFile` / `RepoMismatch` errors that branch declares).
+  The archive is sent as `application/vnd.dasl.star`
+  (`Spaces.Space.star_content_type/0`; it was `application/octet-stream`
+  before the November 12 alpha). A malformed archive is
+  `{:error, :invalid_repo_file}` and one whose commit names another account
+  `{:error, :repo_mismatch}` (`InvalidRepoFile` / `RepoMismatch`).
   """
   @spec import_repo(String.t(), binary(), auth(), keyword()) :: :ok | {:error, term()}
   def import_repo(pds, star, auth, opts \\ []) when is_binary(star) do

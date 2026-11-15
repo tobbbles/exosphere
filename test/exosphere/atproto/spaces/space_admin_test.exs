@@ -75,16 +75,70 @@ defmodule Exosphere.ATProto.Spaces.SpaceAdminTest do
                  publish_members: false
                }}} = Policy.decode(Policy.member(public_read: true))
 
-      assert {:ok, {:managed, %{managing_app: "did:web:x", publish_policy: false}}} =
-               Policy.decode(Policy.managed("did:web:x"))
+      assert {:ok, {:managed, %{managing_app: "did:web:x#forum", publish_policy: false}}} =
+               Policy.decode(Policy.managed("did:web:x#forum"))
 
       custom = %{"$type" => "com.example.gatedspace.policy", "tier" => "gold"}
       assert {:ok, {:unknown, ^custom}} = Policy.decode(custom)
+      assert :ok = Policy.validate(custom)
 
-      assert {:error, :invalid_policy} =
+      assert {:error, :invalid_managing_app} =
                Policy.decode(%{"$type" => "com.atproto.managedspace.policy"})
 
       assert {:error, :invalid_policy} = Policy.decode("nope")
+    end
+
+    # November 12: managingApp must be a did#serviceId reference — a bare DID
+    # is refused by createSpace/updateSpace.
+    test "a managingApp that is not a did#serviceId reference is refused" do
+      for bad <- [
+            "did:web:app.example.com",
+            "did:plc:abc",
+            "did:web:app.example.com#",
+            "did:web:app.example.com#a#b",
+            "did:example:app#forum",
+            "https://app.example.com#forum",
+            "did:web:app.example.com#for um",
+            # atproto did:web forbids a path component, and a port except on
+            # localhost (the reference's isAtprotoDidWeb).
+            "did:web:app.example.com:path#forum",
+            "did:web:app.example.com%3A8080#forum",
+            "did:web:localhost:path#forum"
+          ] do
+        assert_raise ArgumentError, fn -> Policy.managed(bad) end
+
+        assert {:error, :invalid_managing_app} =
+                 Policy.decode(%{
+                   "$type" => "com.atproto.managedspace.policy",
+                   "managingApp" => bad
+                 })
+      end
+
+      for good <- [
+            "did:web:app.example.com#forum",
+            "did:plc:abc123#atproto_managing_app",
+            "did:web:localhost#forum",
+            "did:web:localhost%3A2583#forum"
+          ] do
+        assert %{"managingApp" => ^good} = Policy.managed(good)
+        assert :ok = Policy.validate(Policy.managed(good))
+      end
+    end
+
+    # November 12 (2c): allowedApps items are lexicon URIs.
+    test "allowedApps entries must be URIs" do
+      for bad <- [["not a uri"], ["app.example.com"], [""], "https://x.example", [42]] do
+        assert_raise ArgumentError, fn -> Policy.member(allowed_apps: bad) end
+
+        assert {:error, :invalid_allowed_apps} =
+                 Policy.decode(%{
+                   "$type" => "com.atproto.memberspace.policy",
+                   "allowedApps" => bad
+                 })
+      end
+
+      assert {:ok, {:member, %{allowed_apps: [@client_id, "http://localhost"]}}} =
+               Policy.decode(Policy.member(allowed_apps: [@client_id, "http://localhost"]))
     end
   end
 
@@ -127,6 +181,19 @@ defmodule Exosphere.ATProto.Spaces.SpaceAdminTest do
 
       {_url, opts} = Process.get({:post, self()})
       refute Map.has_key?(opts[:json], "skey")
+    end
+
+    test "create_space and update_space refuse a malformed policy before sending" do
+      bare = %{"$type" => "com.atproto.managedspace.policy", "managingApp" => "did:web:app"}
+      bad_apps = %{"$type" => "com.atproto.memberspace.policy", "allowedApps" => ["nope"]}
+
+      assert {:error, :invalid_managing_app} =
+               Space.create_space(@pds, "com.example.group", bare, @headers, http: SpaceHTTP)
+
+      assert {:error, :invalid_allowed_apps} =
+               Space.update_space(@pds, @space, bad_apps, @headers, http: SpaceHTTP)
+
+      refute Process.get({:post, self()})
     end
 
     test "update_space replaces the policy wholesale" do
@@ -192,7 +259,7 @@ defmodule Exosphere.ATProto.Spaces.SpaceAdminTest do
       refute url =~ "cursor="
     end
 
-    test "the 4037310 error names are typed" do
+    test "the November 12 error names are typed" do
       for {code, expected} <- [
             {"NotAuthorized", :not_authorized},
             {"InvalidCursor", :invalid_cursor}
@@ -300,6 +367,7 @@ defmodule Exosphere.ATProto.Spaces.SpaceAdminTest do
       assert url == @pds <> "/xrpc/com.atproto.space.importSpaceMeta"
       assert opts[:body] == star
       assert opts[:content_type] == "application/vnd.dasl.star"
+      assert Space.star_content_type() == "application/vnd.dasl.star"
 
       Process.put(
         :post_response,
@@ -427,7 +495,119 @@ defmodule Exosphere.ATProto.Spaces.SpaceAdminTest do
     end
   end
 
+  describe "Memberspace host side" do
+    test "decode_put_members validates and keeps each DID's last entry" do
+      body = %{
+        "space" => @space,
+        "members" => [
+          Memberspace.member("did:plc:a", true, true),
+          Memberspace.member("did:plc:b", true, false),
+          Memberspace.member("did:plc:a", false, false)
+        ]
+      }
+
+      # First position, last value — as the reference's Map keyed by DID.
+      assert {:ok,
+              %{
+                space: @space,
+                members: [
+                  %{did: "did:plc:a", read: false, write: false},
+                  %{did: "did:plc:b", read: true, write: false}
+                ]
+              }} = Memberspace.decode_put_members(body)
+
+      # The lexicon has no minimum.
+      assert {:ok, %{members: []}} =
+               Memberspace.decode_put_members(%{"space" => @space, "members" => []})
+
+      too_many = for i <- 1..101, do: Memberspace.member("did:plc:m#{i}", true, true)
+
+      for bad <- [
+            %{"space" => @space, "members" => too_many},
+            %{"space" => @space, "members" => [%{"did" => "did:plc:a", "read" => true}]},
+            %{"space" => @space, "members" => [Memberspace.member("nope", true, true)]},
+            %{"space" => "at://did:plc:owner/com.example.post/1", "members" => []},
+            %{"members" => []}
+          ] do
+        assert {:error, :invalid_request} = Memberspace.decode_put_members(bad)
+      end
+    end
+
+    test "decode_remove_members validates and deduplicates" do
+      assert {:ok, %{space: @space, dids: ["did:plc:a", "did:plc:b"]}} =
+               Memberspace.decode_remove_members(%{
+                 "space" => @space,
+                 "dids" => ["did:plc:a", "did:plc:b", "did:plc:a"]
+               })
+
+      too_many = for i <- 1..101, do: "did:plc:m#{i}"
+
+      for bad <- [
+            %{"space" => @space, "dids" => too_many},
+            %{"space" => @space, "dids" => ["nope"]},
+            %{"space" => @space}
+          ] do
+        assert {:error, :invalid_request} = Memberspace.decode_remove_members(bad)
+      end
+    end
+  end
+
+  describe "Managedspace managing-app side" do
+    test "lxm is the checkAccess NSID" do
+      assert Managedspace.lxm() == "com.atproto.managedspace.checkAccess"
+    end
+
+    test "decode_check_access reads space, optional repo and clientId" do
+      assert {:ok, %{space: @space, repo: nil, client_id: nil}} =
+               Managedspace.decode_check_access(%{"space" => @space})
+
+      assert {:ok, %{space: @space, repo: "did:plc:user", client_id: @client_id}} =
+               Managedspace.decode_check_access(%{
+                 "space" => @space,
+                 "repo" => "did:plc:user",
+                 "clientId" => @client_id
+               })
+
+      for bad <- [
+            %{},
+            %{"space" => "nope"},
+            %{"space" => @space, "repo" => "alice.example.com"},
+            %{"space" => @space, "clientId" => "not a uri"}
+          ] do
+        assert {:error, :invalid_request} = Managedspace.decode_check_access(bad)
+      end
+    end
+
+    test "check_access_response is the wire answer" do
+      assert Managedspace.check_access_response(true, false) == %{
+               "read" => true,
+               "write" => false
+             }
+    end
+  end
+
   describe "Managedspace" do
+    test "check_access bounds the call at 10 seconds unless told otherwise" do
+      Process.put(:get_response, ok(%{"read" => true, "write" => true}))
+
+      assert {:ok, _} =
+               Managedspace.check_access("https://app.example.com", @space, @headers,
+                 http: SpaceHTTP
+               )
+
+      {_url, opts} = Process.get({:get, self()})
+      assert opts[:timeout] == 10_000
+
+      assert {:ok, _} =
+               Managedspace.check_access("https://app.example.com", @space, @headers,
+                 http: SpaceHTTP,
+                 timeout: 2_000
+               )
+
+      {_url, opts} = Process.get({:get, self()})
+      assert opts[:timeout] == 2_000
+    end
+
     test "check_access sends repo and client, returns read and write" do
       Process.put(:get_response, ok(%{"read" => true, "write" => false}))
 

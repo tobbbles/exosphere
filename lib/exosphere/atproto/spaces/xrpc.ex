@@ -17,14 +17,28 @@ defmodule Exosphere.ATProto.Spaces.XRPC do
   # XRPC error bodies (`{"error": name, "message": ...}`) surface as
   # `{:error, {:http_error, status, name}}`; bodiless failures as
   # `{:error, {:http_error, status}}`. The error names introduced or renamed
-  # by atproto `atproto-spaces-lexicon-review` / `atproto-spaces-cleanup`
-  # (4037310) are typed instead (see `@typed_errors`).
+  # by the November 12 alpha (atproto d4def6e) are typed instead (see
+  # `@typed_errors`).
+  #
+  # It also holds the small lexicon-format checks the request decoders of
+  # `Spaces.Credential`, `Spaces.Memberspace`, `Spaces.Managedspace` and
+  # `Spaces.Policy` share (`space_ref?/1`, `uri?/1`, `did_service_ref?/1`).
 
+  alias Exosphere.ATProto.AtUri
   alias Exosphere.ATProto.HTTP
+  alias Exosphere.ATProto.Identity.DID
   alias Exosphere.ATProto.OAuth.{Request, Session}
   alias Exosphere.ATProto.XRPC.ServiceAuth
 
   @star_content_type "application/vnd.dasl.star"
+
+  @doc false
+  # The content type of every STAR body in the space namespace: getRepo and
+  # exportSpaceMeta output, importRepo and importSpaceMeta input (it was
+  # `application/octet-stream` before the November 12 alpha). Public as
+  # `Spaces.Space.star_content_type/0`.
+  @spec star_content_type() :: String.t()
+  def star_content_type, do: @star_content_type
 
   @type auth ::
           [headers: [{String.t(), String.t()}]]
@@ -82,11 +96,12 @@ defmodule Exosphere.ATProto.Spaces.XRPC do
     end
   end
 
-  # The error names upstream introduced or renamed at 4037310, typed so callers
-  # match an atom rather than a string: `NotAuthorized` (was `NotSpaceOwner`),
-  # `InvalidCursor` (was `MalformedCursor`, and newly declared on the listing
-  # methods), and the import refusals `InvalidSpaceMeta`, `InvalidRepoFile`
-  # and `RepoMismatch`.
+  # The error names the November 12 alpha introduced or renamed, typed so
+  # callers match an atom rather than a string: `NotAuthorized` (was
+  # `NotSpaceOwner`), `InvalidCursor` (was `MalformedCursor`, and newly
+  # declared on the listing methods), and the import refusals
+  # `InvalidSpaceMeta`, `InvalidRepoFile` and `RepoMismatch`. The pre-rename
+  # names are not mapped: a Nov 5 host is not a supported peer.
   @typed_errors %{
     "NotAuthorized" => :not_authorized,
     "InvalidCursor" => :invalid_cursor,
@@ -148,6 +163,62 @@ defmodule Exosphere.ATProto.Spaces.XRPC do
   end
 
   defp service_auth_headers(_, _), do: {:error, :invalid_auth}
+
+  @doc false
+  # A lexicon `space-ref`: `at://{did}/space/{spaceType}/{skey}`, with no
+  # record segments and no fragment.
+  @spec space_ref?(term()) :: boolean()
+  def space_ref?(value) when is_binary(value) do
+    match?(
+      {:ok, %AtUri{space_type: type, author: nil, fragment: nil}} when is_binary(type),
+      AtUri.parse(value)
+    )
+  end
+
+  def space_ref?(_), do: false
+
+  @doc false
+  # A lexicon `uri`: any RFC 3986 URI with a scheme, at most 8 KiB, no
+  # whitespace — the shape the reference lexicon validator accepts.
+  @spec uri?(term()) :: boolean()
+  def uri?(value) when is_binary(value) and byte_size(value) <= 8192,
+    do: Regex.match?(~r/\A[a-zA-Z][a-zA-Z0-9+.\-]*:[^\s]+\z/, value)
+
+  def uri?(_), do: false
+
+  @doc false
+  # An atproto absolute DID reference, `did#serviceId` — the form a
+  # managedspace `managingApp` must take (the reference's
+  # `isAtprotoDidRefAbsolute`): a `did:plc` or atproto `did:web` DID, then
+  # exactly one `#` and a non-empty RFC 3986 fragment.
+  @spec did_service_ref?(term()) :: boolean()
+  def did_service_ref?(value) when is_binary(value) do
+    case String.split(value, "#") do
+      [did, fragment] when fragment != "" ->
+        DID.valid?(did) and atproto_did_method?(did) and
+          Regex.match?(~r/\A(?:[A-Za-z0-9\-._~!$&'()*+,;=:@\/?]|%[0-9A-Fa-f]{2})+\z/, fragment)
+
+      _ ->
+        false
+    end
+  end
+
+  def did_service_ref?(_), do: false
+
+  # atproto blesses did:plc and a restricted did:web (the reference's
+  # `isAtprotoDidWeb`): no path component (`isDidWebWithPath`), and no
+  # encoded port except on localhost (`isDidWebWithHttpsPort`). A host built
+  # on the reference refuses anything else, so neither side should send or
+  # accept it.
+  defp atproto_did_method?("did:plc:" <> _), do: true
+
+  defp atproto_did_method?("did:web:" <> host) do
+    not String.contains?(host, ":") and
+      (host == "localhost" or String.starts_with?(host, "localhost%3A") or
+         not String.contains?(host, "%3A"))
+  end
+
+  defp atproto_did_method?(_), do: false
 
   defp url(host, nsid), do: "#{String.trim_trailing(host, "/")}/xrpc/#{nsid}"
 

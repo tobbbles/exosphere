@@ -2,12 +2,12 @@ defmodule Exosphere.SpecPinsTest do
   @moduledoc """
   Re-verify the Spaces spec pins against the alpha lexicons.
 
-  The `spaces/alpha` branch pins its cross-checks to a point in a moving alpha
-  spec, and "re-verify the pins before promoting anything" has been a manual
-  checklist item. This makes it runnable: it fetches the space lexicons from
-  the atproto repository and checks, mechanically, that every method this
-  library calls still exists and that every parameter it sends is still a
-  property that method accepts.
+  The Spaces branches pin their cross-checks to a point in a moving spec, and
+  "re-verify the pins before promoting anything" has been a manual checklist
+  item. This makes it runnable: it fetches the space lexicons from the atproto
+  repository and checks, mechanically, that the space namespaces hold exactly
+  the methods this library knows, that every method it calls still exists,
+  and that every parameter it sends is still a property that method accepts.
 
   By default it reads the pinned commit, so a pass means the client matches
   what it claims to follow. Set `EXOSPHERE_SPEC_PINS_REF` to a branch (e.g.
@@ -25,24 +25,52 @@ defmodule Exosphere.SpecPinsTest do
   use ExUnit.Case, async: true
 
   alias Exosphere.ATProto.HTTP
+  alias Exosphere.ATProto.Spaces.Policy
 
   @moduletag :external
   @moduletag timeout: 120_000
 
-  # What `spaces/alpha` follows: atproto branch `atproto-spaces-cleanup` at
-  # 4037310, which carries `atproto-spaces-lexicon-review` (7089c42). Its
-  # lexicons are `permissioned-data` 98ef3a6's plus that branch's changes
-  # (`permissioned-data` has not touched lexicons since the fork point).
-  @pinned_commit "4037310976201ee057f1b06aeef04a3cdc080258"
-  @pinned_branch "atproto-spaces-cleanup"
+  # What `spaces/beta` follows: the November 12 alpha, the surface the Spaces
+  # public beta launches on. atproto branch `permissioned-data` at d4def6e,
+  # the merged implementation the November 12 migration notes name as the
+  # reference (the branch's later commits up to 16bfeba, 2026-11-13, leave
+  # the lexicons untouched).
+  @pinned_commit "d4def6e9f521896ed8222f576d54923d00b5fbeb"
+  @pinned_branch "permissioned-data"
+
+  # The complete lexicon set of the space namespaces at the pin: every method
+  # (and the defs, policy and record documents beside them). A method added
+  # or removed upstream fails `the space namespaces hold exactly …` below.
+  @namespaces %{
+    "com.atproto.space" =>
+      ~w(applyWrites authorizeSpaceSync clearRecords confirmRegistration createRecord
+         createSpace deleteRecord deleteSpace exportSpaceMeta getBlob getDelegationToken
+         getLatestCommit getRecord getRepo getSpace importRepo importSpaceMeta listBlobs
+         listRecords listRepoOps listSpaces listWriters notifyCredentialsRevoked
+         notifyRepoUpdate notifySpaceUpdate putRecord removeWriter updateSpace),
+    "com.atproto.memberspace" => ~w(listMembers putMembers removeMembers),
+    "com.atproto.managedspace" => ~w(checkAccess),
+    "com.atproto.personalspace" => []
+  }
+
+  # The non-method documents in those namespaces.
+  @documents %{
+    "com.atproto.space" => ~w(defs policy),
+    "com.atproto.memberspace" => ~w(defs member policy),
+    "com.atproto.managedspace" => ~w(policy),
+    "com.atproto.personalspace" => ~w(policy)
+  }
 
   # Every space method this library calls, with the parameters it sends. Kept
   # here by hand rather than derived from the source: the point is to state
   # what we believe the wire contract to be, and have the lexicon disagree.
+  # The notification methods are called by hosts: notifyRepoUpdate by a repo
+  # host, confirmRegistration and notifySpaceUpdate by a space host on a
+  # syncer, notifyCredentialsRevoked by a space host on a repo host.
   @calls [
     {"com.atproto.space.getDelegationToken", :query, ["space"]},
-    {"com.atproto.space.getSpaceCredential", :procedure,
-     ["space", "credentialKey", "delegationToken", "clientAttestation"]},
+    {"com.atproto.space.authorizeSpaceSync", :procedure,
+     ["space", "credentialKey", "delegationToken", "clientAttestation", "notify"]},
     {"com.atproto.space.listWriters", :query, ["space", "limit", "cursor"]},
     {"com.atproto.space.getLatestCommit", :query, ["space", "repo"]},
     {"com.atproto.space.listRepoOps", :query,
@@ -51,8 +79,9 @@ defmodule Exosphere.SpecPinsTest do
      ["space", "repo", "collection", "cursor", "limit", "excludeValues"]},
     {"com.atproto.space.getRecord", :query, ["space", "repo", "collection", "rkey"]},
     {"com.atproto.space.getRepo", :query, ["space", "repo"]},
-    {"com.atproto.space.registerNotify", :procedure, ["space", "service"]},
-    {"com.atproto.space.unregisterNotify", :procedure, ["space", "service"]},
+    {"com.atproto.space.notifyRepoUpdate", :procedure, ["space", "repo", "repoRev", "data"]},
+    {"com.atproto.space.confirmRegistration", :procedure, ["space", "token", "challenge"]},
+    {"com.atproto.space.notifySpaceUpdate", :procedure, ["space", "token", "update"]},
     {"com.atproto.space.notifyCredentialsRevoked", :procedure, ["space", "credentials"]},
     {"com.atproto.space.createRecord", :procedure, ["space", "collection", "rkey", "record"]},
     {"com.atproto.space.putRecord", :procedure, ["space", "collection", "rkey", "record"]},
@@ -74,11 +103,13 @@ defmodule Exosphere.SpecPinsTest do
     {"com.atproto.managedspace.checkAccess", :query, ["space", "repo", "clientId"]}
   ]
 
-  # Methods whose bodies this library decodes (it receives them, it does not
-  # call them), with the fields it reads.
+  # Methods whose bodies this library decodes (a host or syncer receives
+  # them), with the fields it requires.
   @received [
     {"com.atproto.space.notifyRepoUpdate", ["space", "repo", "repoRev", "data"]},
-    {"com.atproto.space.notifySpaceStatus", ["space", "status"]},
+    {"com.atproto.space.notifySpaceUpdate", ["space", "token", "update"]},
+    {"com.atproto.space.confirmRegistration", ["space", "token", "challenge"]},
+    {"com.atproto.space.authorizeSpaceSync", ["space", "credentialKey"]},
     {"com.atproto.space.notifyCredentialsRevoked", ["space", "credentials"]}
   ]
 
@@ -112,25 +143,53 @@ defmodule Exosphere.SpecPinsTest do
            """
   end
 
-  test "the listWriters fields this library reads are still the ones the lexicon returns" do
-    # The parameter check above only sees what we *send*. `Sync.list_writers/4`
-    # also *reads* named fields off each entry, and a rename there is silent on
-    # our side — the old name simply decodes to nil. It has happened three
-    # times (`rev` → `repoRev` + `spaceRev`, atproto 357c4cee9; `hash` →
-    # `data`, 5791385; `did` → `repo`, atproto-spaces-lexicon-review), so it
-    # is checked.
-    assert {:ok, lexicon} = fetch_lexicon("com.atproto.space.listWriters")
-    repo = get_in(lexicon, ["defs", "repo"])
+  test "the space namespaces hold exactly the methods this library knows" do
+    drift =
+      Enum.flat_map(@namespaces, fn {namespace, methods} ->
+        expected = Enum.sort(methods ++ Map.fetch!(@documents, namespace))
 
-    for field <- ["repo", "repoRev", "spaceRev", "data"] do
-      assert field in repo["required"],
-             "com.atproto.space.listWriters#repo no longer requires `#{field}`, which list_writers/4 reads"
-    end
+        case list_namespace(namespace) do
+          {:ok, ^expected} ->
+            []
 
-    assert repo["properties"]["data"]["type"] == "bytes"
+          {:ok, actual} ->
+            added = actual -- expected
+            removed = expected -- actual
+            ["#{namespace}: added #{inspect(added)}, removed #{inspect(removed)}"]
+
+          {:error, reason} ->
+            ["#{namespace}: could not list (#{inspect(reason)})"]
+        end
+      end)
+
+    assert drift == [], "The space namespaces changed:\n" <> Enum.join(drift, "\n")
   end
 
-  test "the notification bodies this library decodes still require what it reads" do
+  test "the writer set entries this library reads are still defs#repoWrite and defs#repoRemoved" do
+    # The parameter check only sees what we *send*. `Sync.list_writers/4` and
+    # `Sync.decode_space_update/1` also *read* named fields, and a rename there
+    # is silent on our side. It has happened four times (`rev` → `repoRev` +
+    # `spaceRev`, `hash` → `data`, `did` → `repo`, and the entry becoming a
+    # `$type`d union), so it is checked.
+    assert {:ok, defs} = fetch_lexicon("com.atproto.space.defs")
+    write = get_in(defs, ["defs", "repoWrite"])
+    removed = get_in(defs, ["defs", "repoRemoved"])
+
+    assert Enum.sort(write["required"]) == ~w(data repo repoRev spaceRev)
+    assert write["properties"]["data"]["type"] == "bytes"
+    assert Map.has_key?(write["properties"], "prevSpaceRev")
+    assert Enum.sort(removed["required"]) == ~w(repo spaceRev)
+    assert Map.has_key?(removed["properties"], "prevSpaceRev")
+
+    assert {:ok, list} = fetch_lexicon("com.atproto.space.listWriters")
+    items = get_in(list, ["defs", "main", "output", "schema", "properties", "repos", "items"])
+    assert items["type"] == "union"
+
+    assert Enum.sort(items["refs"]) ==
+             ["com.atproto.space.defs#repoRemoved", "com.atproto.space.defs#repoWrite"]
+  end
+
+  test "the bodies this library decodes still require what it reads" do
     for {nsid, fields} <- @received do
       assert {:ok, lexicon} = fetch_lexicon(nsid)
       required = get_in(lexicon, ["defs", "main", "input", "schema", "required"]) || []
@@ -139,18 +198,45 @@ defmodule Exosphere.SpecPinsTest do
         assert field in required, "#{nsid} no longer requires `#{field}`, which we decode"
       end
     end
+  end
 
-    assert {:ok, status} = fetch_lexicon("com.atproto.space.notifySpaceStatus")
+  test "notifySpaceUpdate's updates are the four this library matches, by full $type" do
+    assert {:ok, lexicon} = fetch_lexicon("com.atproto.space.notifySpaceUpdate")
+    update = get_in(lexicon, ["defs", "main", "input", "schema", "properties", "update"])
 
-    assert "deleted" in get_in(status, [
-             "defs",
-             "main",
-             "input",
-             "schema",
-             "properties",
-             "status",
-             "knownValues"
-           ])
+    assert Enum.sort(update["refs"]) ==
+             Enum.sort([
+               "com.atproto.space.defs#repoWrite",
+               "com.atproto.space.defs#repoRemoved",
+               "#spaceDeleted",
+               "#registrationExpired"
+             ])
+
+    assert get_in(lexicon, ["defs", "registrationExpired", "required"]) == ["spaceRev"]
+    assert get_in(lexicon, ["defs", "spaceDeleted", "properties"]) == %{}
+  end
+
+  test "confirmRegistration echoes the challenge" do
+    assert {:ok, lexicon} = fetch_lexicon("com.atproto.space.confirmRegistration")
+    assert get_in(lexicon, ["defs", "main", "output", "schema", "required"]) == ["challenge"]
+  end
+
+  test "listRepoOps returns a commit on every page, and RepoNotFound for a never-written repo" do
+    assert {:ok, lexicon} = fetch_lexicon("com.atproto.space.listRepoOps")
+    main = get_in(lexicon, ["defs", "main"])
+    assert "commit" in get_in(main, ["output", "schema", "required"])
+
+    errors = Enum.map(main["errors"], & &1["name"])
+    assert "RepoNotFound" in errors
+    assert "InvalidSpaceMac" in errors
+  end
+
+  test "the MAC'd methods declare InvalidSpaceMac" do
+    for nsid <- ~w(getLatestCommit getRecord getRepo listRepoOps) do
+      assert {:ok, lexicon} = fetch_lexicon("com.atproto.space." <> nsid)
+      errors = Enum.map(get_in(lexicon, ["defs", "main", "errors"]), & &1["name"])
+      assert "InvalidSpaceMac" in errors, "#{nsid} no longer declares InvalidSpaceMac"
+    end
   end
 
   test "checkAccess still answers read and write, and putMembers takes defs#member" do
@@ -177,14 +263,14 @@ defmodule Exosphere.SpecPinsTest do
              "com.atproto.memberspace.defs#member"
   end
 
-  test "unregisterNotify is service-authed, registerNotify credential-authed" do
+  test "notifyRepoUpdate is service-authed, listWriters credential-authed" do
     # Auth lives in prose, not schema: the descriptions are what upstream
     # publishes about it.
-    assert {:ok, unregister} = fetch_lexicon("com.atproto.space.unregisterNotify")
-    assert get_in(unregister, ["defs", "main", "description"]) =~ "service auth"
+    assert {:ok, notify} = fetch_lexicon("com.atproto.space.notifyRepoUpdate")
+    assert get_in(notify, ["defs", "main", "description"]) =~ "service auth"
 
-    assert {:ok, register} = fetch_lexicon("com.atproto.space.registerNotify")
-    assert get_in(register, ["defs", "main", "description"]) =~ "space credential"
+    assert {:ok, list} = fetch_lexicon("com.atproto.space.listWriters")
+    assert get_in(list, ["defs", "main", "description"]) =~ "space credential"
   end
 
   test "STAR archives travel as application/vnd.dasl.star" do
@@ -211,7 +297,7 @@ defmodule Exosphere.SpecPinsTest do
     assert {:ok, lexicon} = fetch_lexicon("com.atproto.space.createSpace")
     refs = get_in(lexicon, ["defs", "main", "input", "schema", "properties", "policy", "refs"])
 
-    assert Enum.sort(refs) == Enum.sort(Exosphere.ATProto.Spaces.Policy.baseline_types())
+    assert Enum.sort(refs) == Enum.sort(Policy.baseline_types())
   end
 
   test "the LtHash parameters in the proposal still match the implementation" do
@@ -228,6 +314,31 @@ defmodule Exosphere.SpecPinsTest do
 
     assert readme =~ ~r/sha256\(state\)/,
            "the commit digest is no longer sha256 over the lane state"
+  end
+
+  # The lexicon documents in a namespace directory at the ref, by name, from
+  # the GitHub contents API.
+  defp list_namespace(namespace) do
+    path = namespace |> String.split(".") |> Enum.join("/")
+
+    url =
+      "https://api.github.com/repos/bluesky-social/atproto/contents/lexicons/#{path}?ref=#{ref()}"
+
+    case HTTP.get(url) do
+      {:ok, %{status: 200, body: entries}} when is_list(entries) ->
+        {:ok,
+         entries
+         |> Enum.map(& &1["name"])
+         |> Enum.filter(&String.ends_with?(&1, ".json"))
+         |> Enum.map(&String.trim_trailing(&1, ".json"))
+         |> Enum.sort()}
+
+      {:ok, %{status: status}} ->
+        {:error, {:http, status}}
+
+      {:error, reason} ->
+        {:error, reason}
+    end
   end
 
   defp fetch_lexicon(nsid) do
