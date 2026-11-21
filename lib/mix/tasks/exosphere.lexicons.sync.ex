@@ -12,6 +12,12 @@ defmodule Mix.Tasks.Exosphere.Lexicons.Sync do
     github.com/bluesky-social/atproto at the latest `main` commit (the
     resolved commit is recorded). Every upstream lexicon file is vendored,
     so new schemas appear on the next sync.
+  - `com/atproto/{space,memberspace,managedspace,personalspace}/**`: the
+    Spaces namespaces, which are not on atproto `main` yet. They come from
+    branch `permissioned-data` at `@spaces_pin` (the commit the Spaces code
+    and its spec pins follow), never from `main`, so a sync cannot move
+    them by accident. Moving the pin is a deliberate edit here and in
+    `test/exosphere/e2e/spec_pins_test.exs`.
   - `community/**`: full corpus. The file list comes from the GitHub
     mirror (lexicon-community/lexicon); every file downloads from Tangled,
     the canonical source. New community lexicons appear on the next sync.
@@ -27,12 +33,18 @@ defmodule Mix.Tasks.Exosphere.Lexicons.Sync do
   @lexicon_dir "priv/lexicons"
   # atproto-repo subtrees vendored in full
   @atproto_prefixes ["app/bsky", "com/atproto"]
+  # The Spaces namespaces, vendored from @spaces_pin (permissioned-data, the
+  # November 12 alpha) rather than main.
+  @spaces_pin "d4def6e9f521896ed8222f576d54923d00b5fbeb"
+  @spaces_prefixes ~w(com/atproto/space com/atproto/memberspace com/atproto/managedspace
+                      com/atproto/personalspace)
 
   @impl Mix.Task
   def run(_args) do
     Mix.Task.run("app.start")
 
     {commit, counts} = sync_atproto()
+    spaces_count = sync_spaces()
 
     _ = sync_community()
 
@@ -40,7 +52,7 @@ defmodule Mix.Tasks.Exosphere.Lexicons.Sync do
     # (Tangled occasionally rate-limits bursts; failures leave files intact)
     community_count = count_vendored("community/**/*.json")
     synced_at = Date.utc_today()
-    write_sources_md(commit, synced_at, counts, community_count)
+    write_sources_md(commit, synced_at, counts, spaces_count, community_count)
 
     Mix.shell().info("""
     Synced lexicons.
@@ -69,7 +81,8 @@ defmodule Mix.Tasks.Exosphere.Lexicons.Sync do
         path = entry["path"]
 
         String.ends_with?(path, ".json") and
-          Enum.any?(@atproto_prefixes, &String.starts_with?(path, "lexicons/#{&1}/"))
+          Enum.any?(@atproto_prefixes, &String.starts_with?(path, "lexicons/#{&1}/")) and
+          not spaces_path?(path)
       end)
       |> Enum.map(fn entry ->
         rel = String.trim_leading(entry["path"], "lexicons/")
@@ -91,6 +104,36 @@ defmodule Mix.Tasks.Exosphere.Lexicons.Sync do
     end
 
     {pin, counts}
+  end
+
+  defp spaces_path?(path),
+    do: Enum.any?(@spaces_prefixes, &String.starts_with?(path, "lexicons/#{&1}/"))
+
+  # Replaces each Spaces namespace directory wholesale, so a lexicon removed
+  # at the pin is removed here too.
+  defp sync_spaces do
+    tree =
+      @atproto_repo
+      |> gh("git/trees/#{@spaces_pin}?recursive=1")
+      |> Map.fetch!("tree")
+
+    paths =
+      Enum.filter(tree, fn entry ->
+        String.ends_with?(entry["path"], ".json") and spaces_path?(entry["path"])
+      end)
+
+    for prefix <- @spaces_prefixes, do: File.rm_rf!(Path.join(@lexicon_dir, prefix))
+
+    for entry <- paths do
+      rel = String.trim_leading(entry["path"], "lexicons/")
+      dest = Path.join(@lexicon_dir, rel)
+      File.mkdir_p!(Path.dirname(dest))
+      File.write!(dest, gh_raw("bluesky-social/atproto/#{@spaces_pin}/#{entry["path"]}"))
+    end
+
+    pin = String.slice(@spaces_pin, 0, 12)
+    Mix.shell().info("atproto: #{length(paths)} Spaces lexicon files at #{pin}")
+    length(paths)
   end
 
   # Tangled raw endpoints serve individual files (no listing over raw), so
@@ -129,7 +172,7 @@ defmodule Mix.Tasks.Exosphere.Lexicons.Sync do
     length(files)
   end
 
-  defp write_sources_md(commit, date, counts, community_count) do
+  defp write_sources_md(commit, date, counts, spaces_count, community_count) do
     File.write!(Path.join(@lexicon_dir, "SOURCES.md"), """
     # Lexicon sources
 
@@ -145,6 +188,7 @@ defmodule Mix.Tasks.Exosphere.Lexicons.Sync do
     |-------------|-------------|----------------|----------|-----|
     | `app.bsky.*` (#{counts["app/bsky"]} files) | `app/bsky/**` | `lib/exosphere/bsky` | https://github.com/bluesky-social/atproto/tree/main/lexicons | #{commit} |
     | `com.atproto.*` (#{counts["com/atproto"]} files) | `com/atproto/**` | `lib/exosphere/atproto` | same atproto repo as above | #{commit} |
+    | `com.atproto.{space,memberspace,managedspace,personalspace}.*` (#{spaces_count} files) | `com/atproto/{space,memberspace,managedspace,personalspace}/**` | `lib/exosphere/atproto` (records only; the methods are hand-written in `Exosphere.ATProto.Spaces`) | same atproto repo, branch `permissioned-data` (the Spaces November 12 alpha), not `main` | #{String.slice(@spaces_pin, 0, 12)} |
     | `community.lexicon.*` (#{community_count} files) | `community/**` | `lib/exosphere/community` | https://tangled.org/lexicon.community/lexicons/tree/main/community (canonical; github.com/lexicon-community/lexicon is a mirror) | synced #{date} |
     """)
   end

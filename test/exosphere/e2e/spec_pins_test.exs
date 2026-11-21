@@ -4,22 +4,27 @@ defmodule Exosphere.SpecPinsTest do
 
   The Spaces branches pin their cross-checks to a point in a moving spec, and
   "re-verify the pins before promoting anything" has been a manual checklist
-  item. This makes it runnable: it fetches the space lexicons from the atproto
-  repository and checks, mechanically, that the space namespaces hold exactly
-  the methods this library knows, that every method it calls still exists,
-  and that every parameter it sends is still a property that method accepts.
+  item. This makes it runnable: it reads the space lexicons and checks,
+  mechanically, that the space namespaces hold exactly the methods this
+  library knows, that every method it calls still exists, and that every
+  parameter it sends is still a property that method accepts.
 
-  By default it reads the pinned commit, so a pass means the client matches
-  what it claims to follow. Set `EXOSPHERE_SPEC_PINS_REF` to a branch (e.g.
-  `permissioned-data`) to see how far the client is from where that branch is
-  now.
+  By default it reads the vendored copy under `priv/lexicons/com/atproto/
+  {space,memberspace,managedspace,personalspace}` — a snapshot of the pinned
+  commit — so it runs offline in the default suite and a pass means the
+  client matches what it claims to follow. The `:external` test below checks
+  that snapshot byte for byte against the pinned commit.
 
-  Excluded from the default run (it needs the network). Opt in with:
+  Set `EXOSPHERE_SPEC_PINS_REF` to a branch (e.g. `permissioned-data`) to
+  read upstream at that ref instead (network) and see how far the client is
+  from where the branch is now:
 
-      mix test --only external
+      EXOSPHERE_SPEC_PINS_REF=permissioned-data mix test --only spec_pins
 
-  A failure here is information, not a bug: the alpha moved, and the client
-  needs to move with it. Read the diff before changing code.
+  A failure against a moved branch is information, not a bug: the alpha
+  moved, and the client needs to move with it. Read the diff before changing
+  code. To move the pin, change `@pinned_commit`, re-vendor with
+  `mix exosphere.lexicons.sync` (its `@spaces_pin`), and regenerate.
   """
 
   use ExUnit.Case, async: true
@@ -27,8 +32,10 @@ defmodule Exosphere.SpecPinsTest do
   alias Exosphere.ATProto.HTTP
   alias Exosphere.ATProto.Spaces.Policy
 
-  @moduletag :external
+  @moduletag :spec_pins
   @moduletag timeout: 120_000
+
+  @vendored Path.expand("../../../priv/lexicons", __DIR__)
 
   # What `spaces/beta` follows: the November 12 alpha, the surface the Spaces
   # public beta launches on. atproto branch `permissioned-data` at d4def6e,
@@ -121,8 +128,45 @@ defmodule Exosphere.SpecPinsTest do
     {"com.atproto.space.importSpaceMeta", "input"}
   ]
 
-  defp ref, do: System.get_env("EXOSPHERE_SPEC_PINS_REF") || @pinned_commit
-  defp raw, do: "https://raw.githubusercontent.com/bluesky-social/atproto/#{ref()}/lexicons"
+  # nil: read the vendored snapshot of @pinned_commit.
+  defp override_ref, do: System.get_env("EXOSPHERE_SPEC_PINS_REF")
+  defp ref, do: override_ref() || @pinned_commit
+  defp raw(ref), do: "https://raw.githubusercontent.com/bluesky-social/atproto/#{ref}/lexicons"
+
+  @tag :external
+  test "the vendored space lexicons are the pinned commit's, byte for byte" do
+    drift =
+      Enum.flat_map(@namespaces, fn {namespace, _methods} ->
+        path = namespace |> String.split(".") |> Enum.join("/")
+
+        upstream =
+          case list_upstream(namespace, @pinned_commit) do
+            {:ok, names} -> names
+            {:error, reason} -> flunk("#{namespace}: could not list (#{inspect(reason)})")
+          end
+
+        {:ok, vendored} = list_vendored(namespace)
+
+        listing =
+          if upstream == vendored,
+            do: [],
+            else: ["#{namespace}: vendored #{inspect(vendored)}, upstream #{inspect(upstream)}"]
+
+        # raw.githubusercontent.com answers text/plain, so the body stays bytes.
+        bytes =
+          for name <- upstream,
+              name in vendored,
+              {:ok, %{status: 200, body: body}} =
+                HTTP.get("#{raw(@pinned_commit)}/#{path}/#{name}.json"),
+              File.read!(Path.join([@vendored, path, name <> ".json"])) != body,
+              do: "#{namespace}.#{name}: vendored copy differs"
+
+        listing ++ bytes
+      end)
+
+    assert drift == [],
+           "Re-vendor with `mix exosphere.lexicons.sync`:\n" <> Enum.join(drift, "\n")
+  end
 
   test "every space method this library calls still exists, with the parameters it sends" do
     drift =
@@ -300,6 +344,7 @@ defmodule Exosphere.SpecPinsTest do
     assert Enum.sort(refs) == Enum.sort(Policy.baseline_types())
   end
 
+  @tag :external
   test "the LtHash parameters in the proposal still match the implementation" do
     # `Spaces.Lthash` hard-codes 1024 little-endian u16 lanes and a 2048-byte
     # BLAKE3 expansion per element. Those numbers live in prose, not a lexicon,
@@ -316,13 +361,32 @@ defmodule Exosphere.SpecPinsTest do
            "the commit digest is no longer sha256 over the lane state"
   end
 
-  # The lexicon documents in a namespace directory at the ref, by name, from
-  # the GitHub contents API.
+  # The lexicon documents in a namespace directory, by name: the vendored
+  # snapshot, or upstream at EXOSPHERE_SPEC_PINS_REF.
   defp list_namespace(namespace) do
+    case override_ref() do
+      nil -> list_vendored(namespace)
+      ref -> list_upstream(namespace, ref)
+    end
+  end
+
+  defp list_vendored(namespace) do
+    path = namespace |> String.split(".") |> Enum.join("/")
+
+    {:ok,
+     [@vendored, path, "*.json"]
+     |> Path.join()
+     |> Path.wildcard()
+     |> Enum.map(&Path.basename(&1, ".json"))
+     |> Enum.sort()}
+  end
+
+  # From the GitHub contents API.
+  defp list_upstream(namespace, ref) do
     path = namespace |> String.split(".") |> Enum.join("/")
 
     url =
-      "https://api.github.com/repos/bluesky-social/atproto/contents/lexicons/#{path}?ref=#{ref()}"
+      "https://api.github.com/repos/bluesky-social/atproto/contents/lexicons/#{path}?ref=#{ref}"
 
     case HTTP.get(url) do
       {:ok, %{status: 200, body: entries}} when is_list(entries) ->
@@ -344,7 +408,20 @@ defmodule Exosphere.SpecPinsTest do
   defp fetch_lexicon(nsid) do
     path = nsid |> String.split(".") |> Enum.join("/")
 
-    case HTTP.get("#{raw()}/#{path}.json") do
+    case override_ref() do
+      nil ->
+        case File.read(Path.join(@vendored, path <> ".json")) do
+          {:ok, body} -> Jason.decode(body)
+          {:error, reason} -> {:error, reason}
+        end
+
+      ref ->
+        fetch_upstream(path, ref)
+    end
+  end
+
+  defp fetch_upstream(path, ref) do
+    case HTTP.get("#{raw(ref)}/#{path}.json") do
       {:ok, %{status: 200, body: body}} when is_map(body) -> {:ok, body}
       {:ok, %{status: 200, body: body}} when is_binary(body) -> Jason.decode(body)
       {:ok, %{status: status}} -> {:error, {:http, status}}

@@ -182,7 +182,12 @@ tree.
 | Normative November 5 → 12 delta | `alpha-migrations/prompt-11-12-26.md` at that commit |
 | Proposal text | bluesky-social/proposals `main` at `0634c26`, with proposals#143 (README at `b54ec68`) carrying the November 12 changes |
 
-The `:external` spec-pins suite reads the lexicons at `d4def6e` and checks
+The space lexicons at `d4def6e` are vendored under
+`priv/lexicons/com/atproto/{space,memberspace,managedspace,personalspace}`
+(refreshed from that pin, never `main`, by `mix exosphere.lexicons.sync`), so
+`Lexicon.Registry.load_vendored/0` registers them. The spec-pins suite reads
+that copy offline in the default run (an `:external` test checks it byte for
+byte against `d4def6e`) and checks
 that the space namespaces hold exactly the methods exosphere knows, that every
 method it calls still exists with the parameters it sends, and the shapes it
 reads (`defs#repoWrite`/`#repoRemoved`, the `notifySpaceUpdate` union,
