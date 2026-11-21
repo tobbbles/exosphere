@@ -119,6 +119,34 @@ defmodule Exosphere.ATProto.CryptoTest do
       high_sig = <<r::binary, high_s::unsigned-big-integer-size(256)>>
       assert {:error, :invalid_signature} = Crypto.verify(data, high_sig, pub, :p256)
     end
+
+    test "to_low_s/2 folds the high-S twin back, and low_s?/2 tells them apart" do
+      for {curve, order} <- [secp256k1: @secp256k1_order, p256: @p256_order] do
+        {:ok, %{private_key: priv, public_key: pub}} = Crypto.generate_keypair(curve)
+        {:ok, <<r::binary-32, s::binary-32>> = low} = Crypto.sign("fold", priv, curve)
+        high = <<r::binary, order - :binary.decode_unsigned(s)::unsigned-big-integer-size(256)>>
+
+        assert Crypto.low_s?(low, curve)
+        refute Crypto.low_s?(high, curve)
+        assert Crypto.to_low_s(high, curve) == low
+        assert Crypto.to_low_s(low, curve) == low
+        assert :ok = Crypto.verify("fold", Crypto.to_low_s(high, curve), pub, curve)
+        # The twin is a valid signature; only the strict check refuses it.
+        assert :ok = Crypto.verify("fold", high, pub, curve, allow_high_s: true)
+      end
+    end
+
+    test "to_low_s/2 pads a small folded S to 32 bytes" do
+      # S = n - 1 folds to 1, which must stay a 64-byte signature.
+      r = :binary.copy(<<1>>, 32)
+      high = <<r::binary, @p256_order - 1::unsigned-big-integer-size(256)>>
+      assert Crypto.to_low_s(high, :p256) == <<r::binary, 1::unsigned-big-integer-size(256)>>
+    end
+
+    test "to_low_s/2 and low_s?/2 leave anything but a 64-byte signature alone" do
+      assert Crypto.to_low_s(<<1, 2, 3>>, :p256) == <<1, 2, 3>>
+      refute Crypto.low_s?(<<1, 2, 3>>, :secp256k1)
+    end
   end
 
   describe "to_did_key/2 + from_did_key/1 round-trip" do

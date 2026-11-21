@@ -14,6 +14,7 @@ defmodule Exosphere.ATProto.OAuth.JWS do
       {:ok, %{"sub" => "did:plc:abc"}} = Exosphere.ATProto.OAuth.JWS.verify(Exosphere.ATProto.OAuth.JWK.to_public(jwk), jwt, ["ES256"])
   """
 
+  alias Exosphere.ATProto.Crypto
   alias Exosphere.ATProto.OAuth.JWK
 
   @type alg :: :ES256 | :ES256K
@@ -23,6 +24,14 @@ defmodule Exosphere.ATProto.OAuth.JWS do
 
   `headers` must include `"alg"`; it overrides JOSE's defaults so that
   non-standard JOSE headers (`typ: dpop+jwt`, `jwk`, …) round-trip.
+
+  The signature is always low-S. JOSE's ECDSA signer leaves S wherever it
+  falls, so about half its output is the upper-half twin that the atproto
+  cryptography spec forbids and strict verifiers (`Crypto.verify/4`,
+  `@atproto/crypto`) refuse. The JWS ES256/ES256K encoding is raw
+  `r || s`, so S is folded with `Crypto.to_low_s/2` after signing. Service
+  auth, space credentials and delegation tokens, DPoP proofs and client
+  assertions all sign here.
   """
   @spec sign(JWK.t(), map(), map()) :: {:ok, binary()} | {:error, term()}
   def sign(private_jwk, headers, claims)
@@ -32,7 +41,7 @@ defmodule Exosphere.ATProto.OAuth.JWS do
     if alg in ["ES256", "ES256K"] do
       signer = JOSE.JWK.from_map(private_jwk)
       {_, jwt} = JOSE.JWT.sign(signer, headers, claims) |> JOSE.JWS.compact()
-      {:ok, jwt}
+      {:ok, to_low_s(jwt, curve(private_jwk))}
     else
       {:error, :unsupported_alg}
     end
@@ -41,6 +50,18 @@ defmodule Exosphere.ATProto.OAuth.JWS do
   end
 
   def sign(_, _, _), do: {:error, :not_a_private_key}
+
+  defp curve(%{"crv" => "secp256k1"}), do: :secp256k1
+  defp curve(%{"crv" => "P-256"}), do: :p256
+
+  # JOSE always emits `header.payload.signature` with a 64-byte `r || s`
+  # for these algorithms; a match failure is a bug and lands in `rescue`.
+  defp to_low_s(jwt, curve) do
+    [header, payload, signature] = String.split(jwt, ".")
+    {:ok, <<_::binary-64>> = raw} = Base.url_decode64(signature, padding: false)
+    folded = Crypto.to_low_s(raw, curve)
+    header <> "." <> payload <> "." <> Base.url_encode64(folded, padding: false)
+  end
 
   @doc """
   Verify a compact JWS against a public JWK, restricting `algs` per RFC 8725

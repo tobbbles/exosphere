@@ -142,8 +142,7 @@ defmodule Exosphere.ATProto.Crypto do
 
     case ExSecp256k1.sign_compact(hash, private_key) do
       {:ok, {signature, _recovery_id}} ->
-        # Ensure low-S form
-        {:ok, ensure_low_s_secp256k1(signature)}
+        {:ok, to_low_s(signature, :secp256k1)}
 
       {:error, _} = error ->
         error
@@ -156,7 +155,7 @@ defmodule Exosphere.ATProto.Crypto do
     signature_der = :crypto.sign(:ecdsa, :sha256, {:digest, hash}, [private_key, :secp256r1])
     # Convert from DER to raw (r, s) format
     raw_sig = der_to_raw_signature(signature_der)
-    {:ok, ensure_low_s_p256(raw_sig)}
+    {:ok, to_low_s(raw_sig, :p256)}
   end
 
   @doc """
@@ -444,44 +443,53 @@ defmodule Exosphere.ATProto.Crypto do
   # P-256 order / 2
   @p256_half_order 0x7FFFFFFF800000007FFFFFFFFFFFFFFFDE737D56D38BCF4279DCE5617E3192A8
 
-  # Whether a raw (r, s) signature is in canonical "low-S" form for the curve.
-  # atproto requires low-S; high-S signatures are malleable and must be rejected.
-  defp low_s?(<<_r::binary-32, s::binary-32>>, :secp256k1),
-    do: :binary.decode_unsigned(s) <= @secp256k1_half_order
-
-  defp low_s?(<<_r::binary-32, s::binary-32>>, :p256),
-    do: :binary.decode_unsigned(s) <= @p256_half_order
-
   # secp256k1 curve order
   @secp256k1_order 0xFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFEBAAEDCE6AF48A03BBFD25E8CD0364141
   # P-256 curve order
   @p256_order 0xFFFFFFFF00000000FFFFFFFFFFFFFFFFBCE6FAADA7179E84F3B9CAC2FC632551
 
-  # Ensure "low-S" form for secp256k1 (BIP-62)
-  defp ensure_low_s_secp256k1(<<r::binary-32, s::binary-32>>) do
-    s_int = :binary.decode_unsigned(s)
+  @doc """
+  Whether a raw 64-byte `r || s` signature is in canonical "low-S" form for
+  `curve` (S at most half the group order).
 
-    if s_int > @secp256k1_half_order do
-      new_s = @secp256k1_order - s_int
-      new_s_bytes = :binary.encode_unsigned(new_s) |> pad_to_32()
-      <<r::binary, new_s_bytes::binary>>
+  atproto requires low-S on both curves; the upper-half twin of a signature
+  is malleable and strict verifiers (`verify/4`, `@atproto/crypto`) refuse
+  it. Anything that is not a 64-byte signature is not low-S.
+  """
+  @spec low_s?(signature(), curve()) :: boolean()
+  def low_s?(<<_r::binary-32, s::binary-32>>, :secp256k1),
+    do: :binary.decode_unsigned(s) <= @secp256k1_half_order
+
+  def low_s?(<<_r::binary-32, s::binary-32>>, :p256),
+    do: :binary.decode_unsigned(s) <= @p256_half_order
+
+  def low_s?(_signature, _curve), do: false
+
+  @doc """
+  Fold a raw 64-byte `r || s` signature into canonical "low-S" form for
+  `curve` (BIP-62 for secp256k1; the same rule on P-256).
+
+  `(r, n - s)` is the same ECDSA signature over the same input, so this
+  never changes what verifies — only which of the two encodings is sent.
+  A signature already low-S is returned unchanged; so is anything that is
+  not a 64-byte signature. `sign/3` and `OAuth.JWS.sign/3` call it, so
+  callers only need it for signatures produced elsewhere.
+  """
+  @spec to_low_s(signature(), curve()) :: signature()
+  def to_low_s(<<r::binary-32, s::binary-32>> = signature, curve)
+      when curve in [:secp256k1, :p256] do
+    if low_s?(signature, curve) do
+      signature
     else
-      <<r::binary, s::binary>>
+      high = :binary.decode_unsigned(s)
+      <<r::binary, pad_to_32(:binary.encode_unsigned(order(curve) - high))::binary>>
     end
   end
 
-  # Ensure "low-S" form for P-256
-  defp ensure_low_s_p256(<<r::binary-32, s::binary-32>>) do
-    s_int = :binary.decode_unsigned(s)
+  def to_low_s(signature, _curve), do: signature
 
-    if s_int > @p256_half_order do
-      new_s = @p256_order - s_int
-      new_s_bytes = :binary.encode_unsigned(new_s) |> pad_to_32()
-      <<r::binary, new_s_bytes::binary>>
-    else
-      <<r::binary, s::binary>>
-    end
-  end
+  defp order(:secp256k1), do: @secp256k1_order
+  defp order(:p256), do: @p256_order
 
   # Convert DER signature to raw (r, s) format
   defp der_to_raw_signature(
