@@ -33,9 +33,10 @@ defmodule Exosphere.ATProto.CBOR do
   # CBOR tag for CID links per DAG-CBOR spec
   @cid_tag 42
 
-  # `:floats_not_allowed` is thrown for floats (DAG-CBOR forbids them); any
-  # other failure is a rescued exception.
-  @type encode_error :: {:error, :floats_not_allowed | Exception.t()}
+  # `:floats_not_allowed` is thrown for floats (DAG-CBOR forbids them) and
+  # `:integer_out_of_range` for integers outside int64; any other failure is
+  # a rescued exception.
+  @type encode_error :: {:error, :floats_not_allowed | :integer_out_of_range | Exception.t()}
 
   # `:invalid_cbor` comes from this module; the remaining atoms are propagated
   # from the underlying `:cbor` library.
@@ -140,6 +141,14 @@ defmodule Exosphere.ATProto.CBOR do
     throw({:error, :floats_not_allowed})
   end
 
+  # The data model's integers are signed 64-bit. Past that range the `:cbor`
+  # library would emit a tag-2/3 bignum, which DAG-CBOR forbids; refuse
+  # instead (so would a uint64 above 2^63-1, which no int64 reader can take).
+  defp encode_value(term, _acc)
+       when is_integer(term) and (term > 0x7FFFFFFFFFFFFFFF or term < -0x8000000000000000) do
+    throw({:error, :integer_out_of_range})
+  end
+
   defp encode_value(%CID{} = cid, acc) do
     # CID links: CBOR tag 42 wrapping a byte string of 0x00 ++ binary CID.
     cid_bytes = <<0x00>> <> CID.to_bytes(cid)
@@ -207,6 +216,29 @@ defmodule Exosphere.ATProto.CBOR do
 
   def transform_links(%CBOR.Tag{value: value}), do: value
   def transform_links(term), do: term
+
+  @doc """
+  Like `transform_links/1`, but byte strings stay byte strings.
+
+  Only tag 42 is mapped (to a `CID`); a CBOR byte string is kept as
+  `%CBOR.Tag{tag: :bytes, value: binary}` — the form `encode/1` writes back
+  as a byte string. `transform_links/1` flattens it to a plain binary, which
+  re-encodes as a *text* string: a different block, a different CID. Use
+  this wherever a decoded record may be re-encoded (or its CID recomputed),
+  e.g. a repo export being imported elsewhere.
+  """
+  @spec decode_links(term()) :: term()
+  def decode_links(%CBOR.Tag{tag: @cid_tag} = tag), do: transform_links(tag)
+
+  def decode_links(%CBOR.Tag{tag: :bytes, value: bytes} = tag) when is_binary(bytes), do: tag
+
+  def decode_links(term) when is_map(term) and not is_struct(term) do
+    Map.new(term, fn {k, v} -> {k, decode_links(v)} end)
+  end
+
+  def decode_links(term) when is_list(term), do: Enum.map(term, &decode_links/1)
+  def decode_links(%CBOR.Tag{value: value}), do: value
+  def decode_links(term), do: term
 
   # Tag-42 values are byte strings, which the :cbor library decodes either as a
   # nested `%CBOR.Tag{tag: :bytes}` or (for our own legacy text-string output) a

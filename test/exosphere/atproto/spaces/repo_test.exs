@@ -187,4 +187,37 @@ defmodule Exosphere.ATProto.Spaces.RepoTest do
     assert {:ok, %{records: records}} = Repo.read(star)
     assert length(records) == 3
   end
+
+  test "byte strings survive export -> import -> re-export with the same CID" do
+    link = CID.create!(%{"x" => 1})
+    raw = <<0, 159, 146, 150, 255>>
+
+    record = %{
+      "$type" => "com.example.blob",
+      "raw" => %CBOR.Tag{tag: :bytes, value: raw},
+      "nested" => [%{"b" => %CBOR.Tag{tag: :bytes, value: "text-looking bytes"}}],
+      "ref" => link
+    }
+
+    records = [{"com.example.blob", "self", record}]
+    star = Repo.serialize(commit_for(records), records)
+
+    assert {:ok, %{records: [imported], commit: commit}} = Repo.read(star)
+
+    # Bytes stay bytes, links become CIDs.
+    assert imported.record["raw"] == %CBOR.Tag{tag: :bytes, value: raw}
+    assert [%{"b" => %CBOR.Tag{tag: :bytes}}] = imported.record["nested"]
+    assert imported.record["ref"] == link
+
+    # The re-encoding is the archived block, so the CID is unchanged ...
+    assert DagCbor.encode!(imported.record) == DagCbor.encode!(record)
+    assert CID.encode(CID.create!(imported.record)) == CID.encode(imported.cid)
+
+    # ... and a re-export of the imported repo verifies against the same commit.
+    reexported =
+      Repo.serialize(commit, [{imported.collection, imported.rkey, imported.record}])
+
+    assert {:ok, %{records: [again]}} = Repo.read(reexported)
+    assert again.cid == imported.cid
+  end
 end

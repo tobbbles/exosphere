@@ -31,14 +31,20 @@ defmodule Exosphere.ATProto.Identity.DID.Web do
     (default: `Exosphere.ATProto.HTTP`; useful for testing)
   """
   @spec resolve(String.t(), resolve_opts()) :: {:ok, Document.t()} | {:error, term()}
-  def resolve("did:web:" <> domain, opts \\ []) do
+  def resolve("did:web:" <> host = did, opts \\ []) do
     timeout = Keyword.get(opts, :timeout, 10_000)
     http = Keyword.get(opts, :http_client, HTTP)
 
-    with {:ok, url} <- build_url(domain) do
+    with {:ok, url} <- build_url(host) do
       case http.get(url, timeout: timeout) do
         {:ok, %{status: 200, body: body}} when is_map(body) ->
-          Document.parse(body)
+          Document.parse(body, did)
+
+        {:ok, %{status: 200, body: body}} when is_binary(body) ->
+          case Jason.decode(body) do
+            {:ok, parsed} when is_map(parsed) -> Document.parse(parsed, did)
+            _ -> {:error, {:invalid_response, :not_a_map}}
+          end
 
         {:ok, %{status: 404}} ->
           {:error, :not_found}
@@ -52,40 +58,53 @@ defmodule Exosphere.ATProto.Identity.DID.Web do
     end
   end
 
-  defp build_url(domain) do
-    # Decode percent-encoded characters (e.g., %3A for :)
-    decoded = URI.decode(domain)
+  @hostname ~r/\A[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?(?:\.[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?)*\z/
 
-    # Check for path components (not allowed in Exosphere.ATProto)
-    if String.contains?(decoded, "/") do
-      {:error, :path_not_allowed}
-    else
-      # Handle port numbers (only for localhost)
-      {host, port} = parse_host_port(decoded)
+  # Loopback hosts, fetched over plain http and allowed a port.
+  @loopback ["localhost", "127.0.0.1"]
 
-      scheme =
-        if host in ["localhost", "127.0.0.1"] do
-          "http"
-        else
-          "https"
-        end
-
-      url =
-        if port do
-          "#{scheme}://#{host}:#{port}/.well-known/did.json"
-        else
-          "#{scheme}://#{host}/.well-known/did.json"
-        end
-
-      {:ok, url}
+  @doc """
+  Whether the method-specific part of a `did:web` (still percent-encoded)
+  is one atproto accepts: a lowercase hostname, no path, no port — except
+  on loopback (`localhost%3A<port>`, or `127.0.0.1%3A<port>`), for
+  development and tests. Any other `:` (raw or encoded) is refused, so
+  `did:web:example.com:user` (a W3C path DID) never turns into a request to
+  `https://example.com:user/`.
+  """
+  @spec valid_host?(String.t()) :: boolean()
+  def valid_host?(host) when is_binary(host) do
+    case String.split(host, "%3A") do
+      [hostname] -> hostname?(hostname)
+      [loopback, port] when loopback in @loopback -> Regex.match?(~r/\A[0-9]{1,5}\z/, port)
+      _ -> false
     end
   end
 
-  defp parse_host_port(domain) do
-    case String.split(domain, ":") do
-      [host] -> {host, nil}
-      [host, port] -> {host, port}
-      _ -> {domain, nil}
+  def valid_host?(_), do: false
+
+  defp hostname?(hostname) do
+    byte_size(hostname) <= 253 and Regex.match?(@hostname, hostname)
+  end
+
+  defp build_url(host) do
+    cond do
+      String.contains?(URI.decode(host), "/") ->
+        {:error, :path_not_allowed}
+
+      not valid_host?(host) ->
+        {:error, :invalid_did_format}
+
+      true ->
+        case String.split(host, "%3A") do
+          [loopback, port] ->
+            {:ok, "http://#{loopback}:#{port}/.well-known/did.json"}
+
+          [hostname] when hostname in @loopback ->
+            {:ok, "http://#{hostname}/.well-known/did.json"}
+
+          [hostname] ->
+            {:ok, "https://#{hostname}/.well-known/did.json"}
+        end
     end
   end
 end

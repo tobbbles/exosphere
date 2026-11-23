@@ -182,10 +182,14 @@ defmodule Exosphere.ATProto.Spaces.Repo do
   end
 
   # The whole value must be one CBOR item (no trailing bytes) and a map.
+  # Byte strings stay `%CBOR.Tag{tag: :bytes}` (`DagCbor.decode_links/1`):
+  # flattening them to binaries would re-encode them as text strings, so a
+  # record carrying bytes would come out of an import with a different CID
+  # than the one the archive (and the commit's set hash) vouched for.
   defp decode_record(bytes) do
     case CBOR.decode(bytes) do
       {:ok, raw, ""} ->
-        case DagCbor.transform_links(raw) do
+        case DagCbor.decode_links(raw) do
           %{} = record when not is_struct(record) -> {:ok, record}
           _ -> {:error, :invalid_record}
         end

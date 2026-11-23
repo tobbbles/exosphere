@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed (breaking — protocol strictness)
+- **DID resolution checks the document `id`.** `DID.resolve/2`, `PLC.resolve/2` and `Web.resolve/2` answer `{:error, :did_mismatch}` when the served document is for another DID (new `Document.parse/2`).
+- **Resolution refuses non-atproto DIDs** before fetching (`{:error, :invalid_did_format}`). New `DID.atproto_valid?/1`: `did:plc:` + 24 chars of `[a-z2-7]`, or `did:web:` + a lowercase hostname with no path and no port except on loopback (`localhost%3A<port>`, `127.0.0.1%3A<port>`) (new `Web.valid_host?/1`). `DID.valid?/1` stays the generic syntax check (lexicon `did` format). `did:web:example.com:user` no longer becomes `https://example.com:user/`.
+- **PLC tombstones**: a 410 from the directory is `{:error, :tombstoned}` (was `{:http_error, 410}`) in `PLC.resolve/2` and `get_data/2`.
+- **Handle resolution**: the DID from DNS or HTTPS must be `DID.atproto_valid?/1`; several `did=` TXT records naming different DIDs fail (`:multiple_dids`); multi-chunk TXT records are joined. New `Handle.parse_txt_records/1`.
+- **Handle aliases are case-insensitive**: `Document.get_handle/1` returns the first syntactically valid handle alias, lowercased; new `Document.claims_handle?/2`.
+- **Data model**: `DataModel.validate/1` rejects integers outside int64 (`:integer_out_of_range`), empty map keys (`:empty_map_key`) and nesting deeper than 32 (`:max_depth_exceeded`). `CBOR.encode/1` returns `{:error, :integer_out_of_range}` instead of emitting a bignum. Unknown `$` keys stay ignored, as the spec asks.
+- **Space repo bytes**: `Spaces.Repo.read/1` / `verify/4` keep byte strings as `%CBOR.Tag{tag: :bytes}` (new `CBOR.decode_links/1`), so an exported record re-encodes to the same CID.
+- **Lexicon validator**: a union variant from another lexicon is checked in that lexicon's context (local `#refs` inside it resolve correctly); blob `accept` supports `type/*` and `*/*`; blob `maxSize` is enforced.
+
 ### Changed (breaking — follows the Spaces November 12 alpha at atproto `d4def6e`, `permissioned-data`; the public beta surface)
 The lexicons, PDS behaviour and `@atproto/space` followed are bluesky-social/atproto branch `permissioned-data` at `d4def6e` (`0.0.0-spaces-alpha-20261112204144`). This section supersedes the `4037310` entries below where they overlap. The November 5 wire formats are not kept: the proposal says the old and new MAC and secret formats must not both be supported, and November 5 peers are not supported at all.
 - **The KEM secret is an HPKE export** (section 6a). New `Exosphere.ATProto.Crypto.HPKE` (RFC 9180 base mode, DHKEM(P-256, HKDF-SHA256), HKDF-SHA256, Export-only AEAD: `send_export_base/5`, `receive_export_base/5`, `encap/2`, `decap/2`, `key_schedule_base/2`, `export/3`) and `Crypto.hkdf_extract_sha256/2` / `hkdf_expand_sha256/3`. `Spaces.Kem.encapsulate/2` / `decapsulate/2` keep their shapes but derive the export with `info` `"atproto-mac"`, which differs from the November 5 secret for the same keys. `Kem.derive_shared_secret/3` and `hkdf_sha256/4` are removed.

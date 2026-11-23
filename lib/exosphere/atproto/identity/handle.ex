@@ -19,6 +19,7 @@ defmodule Exosphere.ATProto.Identity.Handle do
   """
 
   alias Exosphere.ATProto.HTTP
+  alias Exosphere.ATProto.Identity.DID
 
   require Logger
 
@@ -79,35 +80,56 @@ defmodule Exosphere.ATProto.Identity.Handle do
   @doc """
   Resolve a handle via DNS TXT record.
 
-  Queries `_atproto.<handle>` for a TXT record containing the DID.
+  Queries `_atproto.<handle>` for a TXT record containing the DID; see
+  `parse_txt_records/1` for how the answer is judged.
   """
   @spec resolve_dns(String.t()) :: {:ok, String.t()} | {:error, term()}
   def resolve_dns(handle) do
     query = ~c"_atproto.#{handle}"
-    Logger.info("Resolving DNS TXT record for #{query}")
+    Logger.debug("Resolving DNS TXT record for #{query}")
 
     case :inet_res.lookup(query, :in, :txt) do
       [] ->
-        Logger.error("No DNS TXT record found for #{query}")
+        Logger.debug("No DNS TXT record found for #{query}")
         {:error, :no_txt_record}
 
       records ->
-        # Find a record that looks like a DID
-        records
-        |> Enum.flat_map(& &1)
-        |> Enum.map(&to_string/1)
-        |> Enum.find(&String.starts_with?(&1, "did="))
-        |> case do
-          "did=" <> did ->
-            Logger.info("Found DID in DNS TXT record: #{did}")
-            {:ok, did}
-
-          nil ->
-            {:error, :no_did_in_record}
-        end
+        parse_txt_records(records)
     end
   rescue
     _ -> {:error, :dns_lookup_failed}
+  end
+
+  @doc """
+  Pick the DID out of the `_atproto` TXT records of a handle, as
+  `:inet_res.lookup/3` returns them (each record a list of character-string
+  chunks, which are concatenated).
+
+  Per the handle spec: records not starting with `did=` are ignored; "only
+  a single valid record should exist … If multiple valid records with
+  different DIDs are present, resolution should fail"
+  (`{:error, :multiple_dids}`). The DID itself must be a strictly valid
+  atproto DID (`DID.atproto_valid?/1`), otherwise `{:error, :invalid_did}`.
+  No `did=` record at all is `{:error, :no_did_in_record}`.
+  """
+  @spec parse_txt_records([[charlist() | String.t()]]) :: {:ok, String.t()} | {:error, term()}
+  def parse_txt_records(records) when is_list(records) do
+    records
+    |> Enum.map(fn chunks -> chunks |> List.wrap() |> Enum.map_join("", &to_string/1) end)
+    |> Enum.flat_map(fn
+      "did=" <> did -> [did]
+      _ -> []
+    end)
+    |> Enum.uniq()
+    |> case do
+      [] -> {:error, :no_did_in_record}
+      [did] -> check_did(did)
+      _many -> {:error, :multiple_dids}
+    end
+  end
+
+  defp check_did(did) do
+    if DID.atproto_valid?(did), do: {:ok, did}, else: {:error, :invalid_did}
   end
 
   @doc """
@@ -132,7 +154,7 @@ defmodule Exosphere.ATProto.Identity.Handle do
             _ -> nil
           end
 
-        if did && String.starts_with?(did, "did:") do
+        if is_binary(did) and DID.atproto_valid?(did) do
           {:ok, did}
         else
           {:error, :invalid_response}

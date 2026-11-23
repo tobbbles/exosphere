@@ -23,7 +23,19 @@ defmodule Exosphere.ATProto.DataModel do
   - A blob is `{"$type": "blob", "ref": {"$link": …}, "mimeType": string,
     "size": non-negative integer}` with exactly those keys.
   - `$type`, where present, must be a non-empty string (blobs require it).
+  - Integers are signed 64-bit: outside `-2^63..2^63-1` is
+    `:integer_out_of_range` (DAG-CBOR could carry them only as tag-2/3
+    bignums, which the data model does not have).
+  - Map keys must be non-empty strings (`:empty_map_key`).
+  - Nesting (maps and lists, the top level counting as 1) is at most 32
+    deep (`:max_depth_exceeded`), so a hostile record cannot push recursive
+    consumers into unbounded recursion.
   - Lists and maps validate recursively.
+
+  Unknown `$`-prefixed keys are *not* rejected: the spec reserves them for
+  the protocol but says "implementations should ignore unknown `$` fields
+  (to allow protocol evolution)". The three defined ones (`$type`, `$link`,
+  `$bytes`) are checked as above.
 
   ## Examples
 
@@ -35,6 +47,10 @@ defmodule Exosphere.ATProto.DataModel do
   """
 
   alias Exosphere.ATProto.CID
+
+  @max_depth 32
+  @int_min -0x8000000000000000
+  @int_max 0x7FFFFFFFFFFFFFFF
 
   @type value ::
           nil
@@ -50,7 +66,7 @@ defmodule Exosphere.ATProto.DataModel do
   object.
   """
   @spec validate_record(term()) :: :ok | {:error, {path :: String.t(), reason :: atom()}}
-  def validate_record(v) when is_map(v), do: validate(v, "")
+  def validate_record(v) when is_map(v), do: validate(v, "", 0)
   def validate_record(_v), do: {:error, {"", :top_level_not_object}}
 
   @doc """
@@ -60,27 +76,42 @@ defmodule Exosphere.ATProto.DataModel do
   `{:error, {"rcrd.a", :non_integral_float}}`.
   """
   @spec validate(term()) :: :ok | {:error, {path :: String.t(), reason :: atom()}}
-  def validate(value), do: validate(value, "")
+  def validate(value), do: validate(value, "", 0)
 
-  defp validate(nil, _path), do: :ok
-  defp validate(v, _path) when is_boolean(v), do: :ok
-  defp validate(v, _path) when is_integer(v), do: :ok
-  defp validate(v, _path) when is_binary(v), do: :ok
+  @doc "The maximum container nesting depth `validate/1` accepts."
+  @spec max_depth() :: pos_integer()
+  def max_depth, do: @max_depth
 
-  defp validate(%CBOR.Tag{tag: :bytes, value: bytes}, _path) when is_binary(bytes),
+  @doc "Whether `n` fits the data model's signed 64-bit integer range."
+  @spec int64?(term()) :: boolean()
+  def int64?(n), do: is_integer(n) and n >= @int_min and n <= @int_max
+
+  defp validate(nil, _path, _depth), do: :ok
+  defp validate(v, _path, _depth) when is_boolean(v), do: :ok
+
+  defp validate(v, path, _depth) when is_integer(v) do
+    if int64?(v), do: :ok, else: {:error, {path, :integer_out_of_range}}
+  end
+
+  defp validate(v, _path, _depth) when is_binary(v), do: :ok
+
+  defp validate(%CBOR.Tag{tag: :bytes, value: bytes}, _path, _depth) when is_binary(bytes),
     do: :ok
 
-  defp validate(%CID{} = _link, _path), do: :ok
+  defp validate(%CID{} = _link, _path, _depth), do: :ok
 
-  defp validate(v, path) when is_float(v) do
+  defp validate(v, path, _depth) when is_float(v) do
     if trunc(v) == v, do: :ok, else: {:error, {path, :non_integral_float}}
   end
 
-  defp validate(v, path) when is_list(v) do
+  defp validate(v, path, depth) when (is_list(v) or is_map(v)) and depth >= @max_depth,
+    do: {:error, {path, :max_depth_exceeded}}
+
+  defp validate(v, path, depth) when is_list(v) do
     v
     |> Enum.with_index()
     |> Enum.find_value(fn {item, i} ->
-      case validate(item, "#{path}[#{i}]") do
+      case validate(item, "#{path}[#{i}]", depth + 1) do
         :ok -> nil
         {:error, _} = error -> error
       end
@@ -88,28 +119,30 @@ defmodule Exosphere.ATProto.DataModel do
     |> Kernel.||(:ok)
   end
 
-  defp validate(v, path) when is_map(v) do
+  defp validate(v, path, depth) when is_map(v) do
     with :ok <- validate_keys(v, path) do
-      validate_map(v, path)
+      validate_map(v, path, depth + 1)
     end
   end
 
-  defp validate(_v, path), do: {:error, {path, :unsupported_type}}
+  defp validate(_v, path, _depth), do: {:error, {path, :unsupported_type}}
 
   defp validate_keys(v, path) do
-    if Enum.all?(Map.keys(v), &is_binary/1) do
-      :ok
-    else
-      {:error, {path, :non_string_map_key}}
+    keys = Map.keys(v)
+
+    cond do
+      not Enum.all?(keys, &is_binary/1) -> {:error, {path, :non_string_map_key}}
+      "" in keys -> {:error, {path, :empty_map_key}}
+      true -> :ok
     end
   end
 
   # The JSON-representation wrappers, checked before generic map recursion.
-  defp validate_map(v, path) do
+  defp validate_map(v, path, depth) do
     cond do
       Map.has_key?(v, "$link") -> validate_wrapper(v, "$link", path, &validate_link/2)
       Map.has_key?(v, "$bytes") -> validate_wrapper(v, "$bytes", path, &validate_bytes/2)
-      true -> validate_object(v, path)
+      true -> validate_object(v, path, depth)
     end
   end
 
@@ -149,12 +182,12 @@ defmodule Exosphere.ATProto.DataModel do
     end
   end
 
-  defp validate_object(v, path) do
+  defp validate_object(v, path, depth) do
     with :ok <- validate_type_field(v, path),
          :ok <- maybe_validate_blob(v, path) do
       v
       |> Enum.find_value(fn {k, value} ->
-        case validate(value, join(path, k)) do
+        case validate(value, join(path, k), depth) do
           :ok -> nil
           {:error, _} = error -> error
         end
