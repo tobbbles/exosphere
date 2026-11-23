@@ -60,18 +60,22 @@ defmodule Exosphere.ATProto.Identity.DID.Web do
 
   @hostname ~r/\A[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?(?:\.[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?)*\z/
 
+  # Loopback hosts, fetched over plain http and allowed a port.
+  @loopback ["localhost", "127.0.0.1"]
+
   @doc """
   Whether the method-specific part of a `did:web` (still percent-encoded)
   is one atproto accepts: a lowercase hostname, no path, no port — except
-  `localhost%3A<port>` for development. Any other `:` (raw or encoded) is
-  refused, so `did:web:example.com:user` (a W3C path DID) never turns into
-  a request to `https://example.com:user/`.
+  on loopback (`localhost%3A<port>`, or `127.0.0.1%3A<port>`), for
+  development and tests. Any other `:` (raw or encoded) is refused, so
+  `did:web:example.com:user` (a W3C path DID) never turns into a request to
+  `https://example.com:user/`.
   """
   @spec valid_host?(String.t()) :: boolean()
   def valid_host?(host) when is_binary(host) do
     case String.split(host, "%3A") do
       [hostname] -> hostname?(hostname)
-      ["localhost", port] -> Regex.match?(~r/\A[0-9]{1,5}\z/, port)
+      [loopback, port] when loopback in @loopback -> Regex.match?(~r/\A[0-9]{1,5}\z/, port)
       _ -> false
     end
   end
@@ -92,10 +96,10 @@ defmodule Exosphere.ATProto.Identity.DID.Web do
 
       true ->
         case String.split(host, "%3A") do
-          ["localhost", port] ->
-            {:ok, "http://localhost:#{port}/.well-known/did.json"}
+          [loopback, port] ->
+            {:ok, "http://#{loopback}:#{port}/.well-known/did.json"}
 
-          [hostname] when hostname in ["localhost", "127.0.0.1"] ->
+          [hostname] when hostname in @loopback ->
             {:ok, "http://#{hostname}/.well-known/did.json"}
 
           [hostname] ->

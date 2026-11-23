@@ -62,9 +62,10 @@ defmodule Exosphere.Test.MockPDS do
   def issuer(%__MODULE__{origin: origin}), do: origin
 
   @doc """
-  The did:web DID hosted by this server (`did:web:127.0.0.1:PORT`).
+  The did:web DID hosted by this server (`did:web:127.0.0.1%3APORT`: the
+  port percent-encoded, as did:web requires, and allowed only on loopback).
   """
-  def did(%__MODULE__{port: port}), do: "did:web:127.0.0.1:#{port}"
+  def did(%__MODULE__{port: port}), do: "did:web:127.0.0.1%3A#{port}"
 
   # -- GenServer ------------------------------------------------------------
 
@@ -128,7 +129,7 @@ defmodule Exosphere.Test.MockPDS do
   # -- Routing --------------------------------------------------------------
 
   defp route("GET", "/.well-known/did.json", _, _, _, state) do
-    did = "did:web:127.0.0.1:#{state.port}"
+    did = "did:web:127.0.0.1%3A#{state.port}"
 
     json(
       200,
@@ -206,7 +207,7 @@ defmodule Exosphere.Test.MockPDS do
       # With a login_hint the account was chosen up-front (identity flow);
       # without one the "user logged in at the AS" and got this server's
       # own account (server flow).
-      sub = par.form["login_hint"] || "did:web:127.0.0.1:#{state.port}"
+      sub = par.form["login_hint"] || "did:web:127.0.0.1%3A#{state.port}"
 
       state =
         put_in(state, [:codes, code], %{
