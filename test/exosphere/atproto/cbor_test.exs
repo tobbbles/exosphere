@@ -60,4 +60,43 @@ defmodule Exosphere.ATProto.CBORTest do
     assert {:ok, %{"ref" => decoded}} = CBOR.decode(real)
     assert decoded == cid
   end
+
+  describe "int64 range" do
+    test "encodes the int64 bounds as plain major-type 0/1 integers" do
+      assert {:ok, <<0x1B, 0x7F, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF>>} =
+               CBOR.encode(9_223_372_036_854_775_807)
+
+      assert {:ok, <<0x3B, 0x7F, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF>>} =
+               CBOR.encode(-9_223_372_036_854_775_808)
+    end
+
+    test "refuses integers outside int64 instead of emitting a bignum" do
+      for n <- [2 ** 63, 2 ** 64, 2 ** 100, -(2 ** 63) - 1, -(2 ** 100)] do
+        assert {:error, :integer_out_of_range} = CBOR.encode(n)
+        assert {:error, :integer_out_of_range} = CBOR.encode(%{"a" => [n]})
+      end
+    end
+
+    test "encode!/1 raises for them (encode/1 is the non-raising path)" do
+      assert_raise ArgumentError, fn -> CBOR.encode!(2 ** 64) end
+    end
+  end
+
+  describe "decode_links/1" do
+    test "keeps byte strings as byte strings so re-encoding is identical" do
+      cid = CID.decode!("bafyreidykglsfhoixmivffc5uwhcgshx4j465xwqntbmu43nb2dzqwfvae")
+      value = %{"b" => %Elixir.CBOR.Tag{tag: :bytes, value: "hello"}, "l" => cid}
+      {:ok, bin} = CBOR.encode(value)
+      {:ok, raw, ""} = Elixir.CBOR.decode(bin)
+
+      kept = CBOR.decode_links(raw)
+      assert kept == value
+      assert {:ok, ^bin} = CBOR.encode(kept)
+
+      # transform_links/1 flattens bytes, which re-encode as a text string.
+      flattened = CBOR.transform_links(raw)
+      assert flattened["b"] == "hello"
+      refute CBOR.encode!(flattened) == bin
+    end
+  end
 end

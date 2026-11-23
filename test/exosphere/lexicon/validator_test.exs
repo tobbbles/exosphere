@@ -358,6 +358,115 @@ defmodule Exosphere.Lexicon.ValidatorTest do
     assert Enum.any?(errors, fn {_path, msg} -> msg =~ "invalid tid" end)
   end
 
+  describe "an app.bsky.feed.post with an image embed (vendored lexicons)" do
+    defp vendored(nsid) do
+      path =
+        Application.app_dir(
+          :exosphere,
+          Path.join(["priv", "lexicons" | String.split(nsid, ".")]) <> ".json"
+        )
+
+      path |> File.read!() |> Jason.decode!() |> lexicon!()
+    end
+
+    setup do
+      ids = ~w(app.bsky.feed.post app.bsky.embed.images app.bsky.embed.defs)
+      registry = Map.new(ids, &{&1, vendored(&1)})
+      %{registry: registry, post: registry["app.bsky.feed.post"]}
+    end
+
+    defp blob(mime, size \\ 12_345) do
+      %{
+        "$type" => "blob",
+        "ref" => %{"$link" => "bafkreiccldh766hwcnuxnf2wh6jgzepf2nlu2lvcllt63eww5p6chi4ity"},
+        "mimeType" => mime,
+        "size" => size
+      }
+    end
+
+    defp image_post(image) do
+      %{
+        "$type" => "app.bsky.feed.post",
+        "text" => "look",
+        "createdAt" => "2026-11-23T12:00:00.000Z",
+        "embed" => %{"$type" => "app.bsky.embed.images", "images" => [image]}
+      }
+    end
+
+    test "a real image post validates (image/* accepts image/jpeg)", ctx do
+      post = image_post(%{"image" => blob("image/jpeg"), "alt" => "a cat"})
+
+      assert :ok = Validator.validate_record(post, ctx.post, registry: ctx.registry)
+      assert :ok = Validator.validate_record(post, ctx.post, registry: ctx.registry, strict: true)
+    end
+
+    test "the variant's local #image ref is checked in its own lexicon", ctx do
+      # `alt` is required by app.bsky.embed.images#image; before the variant
+      # kept its lexicon context the `#image` ref resolved against
+      # app.bsky.feed.post (which has no #image) and was skipped.
+      post = image_post(%{"image" => blob("image/png")})
+
+      assert {:error, errors} = Validator.validate_record(post, ctx.post, registry: ctx.registry)
+      assert {"embed.images[0].alt", "missing required field"} in errors
+    end
+
+    test "the accept wildcard still rejects a non-image and maxSize applies", ctx do
+      not_image = image_post(%{"image" => blob("video/mp4"), "alt" => ""})
+
+      assert {:error, [{"embed.images[0].image", "mimeType not in accept list"}]} =
+               Validator.validate_record(not_image, ctx.post, registry: ctx.registry)
+
+      too_big = image_post(%{"image" => blob("image/png", 2_000_001), "alt" => ""})
+
+      assert {:error, [{"embed.images[0].image", "larger than maxSize 2000000"}]} =
+               Validator.validate_record(too_big, ctx.post, registry: ctx.registry)
+    end
+  end
+
+  test "blob accept patterns: exact, type/*, */*, and no partial globs" do
+    lexicon =
+      lexicon!(%{
+        "lexicon" => 1,
+        "id" => "com.example.blobs",
+        "defs" => %{
+          "main" => %{
+            "type" => "object",
+            "properties" => %{
+              "exact" => %{"type" => "blob", "accept" => ["image/png"]},
+              "family" => %{"type" => "blob", "accept" => ["image/*", "text/plain"]},
+              "any" => %{"type" => "blob", "accept" => ["*/*"]},
+              "partial" => %{"type" => "blob", "accept" => ["text/ht*"]}
+            }
+          }
+        }
+      })
+
+    blob = fn mime ->
+      %{
+        "$type" => "blob",
+        "ref" => %{"$link" => "bafkreiccldh766hwcnuxnf2wh6jgzepf2nlu2lvcllt63eww5p6chi4ity"},
+        "mimeType" => mime,
+        "size" => 1
+      }
+    end
+
+    ok = fn field, mime -> Validator.validate(%{field => blob.(mime)}, lexicon) == :ok end
+
+    assert ok.("exact", "image/png")
+    assert ok.("exact", "IMAGE/PNG")
+    refute ok.("exact", "image/jpeg")
+
+    assert ok.("family", "image/webp")
+    assert ok.("family", "text/plain")
+    refute ok.("family", "text/html")
+    refute ok.("family", "imagex/png")
+    refute ok.("family", "image")
+
+    assert ok.("any", "application/octet-stream")
+
+    refute ok.("partial", "text/html")
+  end
+
   test "unknown string formats are not checked" do
     # The validator stays permissive on format names it does not know
     # (mix exosphere.lint.lexicons warns about them instead)

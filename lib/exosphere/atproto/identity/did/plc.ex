@@ -63,9 +63,29 @@ defmodule Exosphere.ATProto.Identity.DID.PLC do
   - `:plc_directory` - PLC directory URL (default: "https://plc.directory")
   - `:http_client` - HTTP client module implementing `HTTP.Behaviour`
     (default: `Exosphere.ATProto.HTTP`; useful for testing)
+
+  ## Errors
+
+  - `{:error, :invalid_did_format}` - not a strictly valid did:plc
+    (`DID.atproto_valid?/1`); nothing is fetched
+  - `{:error, :did_mismatch}` - the directory served a document whose `id`
+    is not the requested DID
+  - `{:error, :tombstoned}` - the directory answered 410 Gone: the DID was
+    deactivated by a tombstone operation and has no current document
+  - `{:error, :not_found}` - 404
   """
   @spec resolve(String.t(), resolve_opts()) :: {:ok, Document.t()} | {:error, term()}
-  def resolve("did:plc:" <> _ = did, opts \\ []) do
+  def resolve(did, opts \\ [])
+
+  def resolve("did:plc:" <> id = did, opts) do
+    if Regex.match?(~r/\A[a-z2-7]{24}\z/, id),
+      do: do_resolve(did, opts),
+      else: {:error, :invalid_did_format}
+  end
+
+  def resolve(_did, _opts), do: {:error, :invalid_did_format}
+
+  defp do_resolve(did, opts) do
     timeout = Keyword.get(opts, :timeout, 10_000)
     directory = Keyword.get(opts, :plc_directory, @plc_directory)
     http = Keyword.get(opts, :http_client, HTTP)
@@ -76,7 +96,7 @@ defmodule Exosphere.ATProto.Identity.DID.PLC do
     case http.get(url, timeout: timeout) do
       {:ok, %{status: 200, body: body}} when is_map(body) ->
         Logger.debug("[DID.PLC] Received DID document for #{did}")
-        Document.parse(body)
+        Document.parse(body, did)
 
       {:ok, %{status: 200, body: body}} when is_binary(body) ->
         # Body wasn't decoded as JSON - try to parse it manually
@@ -84,7 +104,7 @@ defmodule Exosphere.ATProto.Identity.DID.PLC do
 
         case Jason.decode(body) do
           {:ok, parsed} when is_map(parsed) ->
-            Document.parse(parsed)
+            Document.parse(parsed, did)
 
           {:ok, _other} ->
             Logger.error("[DID.PLC] Decoded JSON is not a map: #{inspect(body, limit: 200)}")
@@ -103,6 +123,10 @@ defmodule Exosphere.ATProto.Identity.DID.PLC do
       {:ok, %{status: 404}} ->
         Logger.debug("[DID.PLC] DID not found: #{did}")
         {:error, :not_found}
+
+      {:ok, %{status: 410}} ->
+        Logger.debug("[DID.PLC] DID tombstoned: #{did}")
+        {:error, :tombstoned}
 
       {:ok, %{status: status, body: body}} ->
         Logger.error("[DID.PLC] HTTP #{status} for #{did}: #{inspect(body, limit: 200)}")
@@ -171,6 +195,9 @@ defmodule Exosphere.ATProto.Identity.DID.PLC do
 
       {:ok, %{status: 404}} ->
         {:error, :not_found}
+
+      {:ok, %{status: 410}} ->
+        {:error, :tombstoned}
 
       {:ok, %{status: status}} ->
         {:error, {:http_error, status}}

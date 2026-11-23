@@ -11,6 +11,7 @@ defmodule Exosphere.ATProto.Identity.Document do
 
   alias Exosphere.ATProto.AtUri
   alias Exosphere.ATProto.Base58
+  alias Exosphere.ATProto.Identity.Handle
 
   @enforce_keys [:id]
   defstruct [
@@ -61,6 +62,27 @@ defmodule Exosphere.ATProto.Identity.Document do
   end
 
   def parse(_), do: {:error, :invalid_document}
+
+  @doc """
+  Parse a DID Document fetched for `expected_did`, refusing one that
+  describes some other DID.
+
+  "The DID declared in the document (in the `id` field) should always be
+  verified against what was expected" (atproto DID spec): a resolver (or a
+  hostile PLC mirror / did:web host) answering with another account's
+  document must not be able to substitute that account's keys and PDS.
+  The comparison is exact — DIDs are case-sensitive.
+
+  Returns `{:error, :did_mismatch}` when `id` differs.
+  """
+  @spec parse(map(), String.t()) :: {:ok, t()} | {:error, term()}
+  def parse(raw, expected_did) when is_binary(expected_did) do
+    case parse(raw) do
+      {:ok, %__MODULE__{id: ^expected_did}} = ok -> ok
+      {:ok, %__MODULE__{}} -> {:error, :did_mismatch}
+      {:error, _} = error -> error
+    end
+  end
 
   defp parse_verification_methods(methods) when is_list(methods) do
     Enum.map(methods, fn method ->
@@ -270,19 +292,44 @@ defmodule Exosphere.ATProto.Identity.Document do
   @doc """
   Get the handle from a DID Document.
 
-  Returns the first `at://` URI from alsoKnownAs, extracting just the handle.
+  Returns the first `at://` URI from alsoKnownAs, extracting just the handle,
+  normalised to lowercase: handles are case-insensitive and "should be
+  normalized to lowercase" (atproto handle spec), so an alias published as
+  `at://Alice.Example.COM` compares equal to the handle `alice.example.com`.
+
+  Only an alias whose authority is a syntactically valid handle counts (the
+  spec's "first syntactically valid handle"); a DID authority or a bare
+  `at://` URI is skipped.
   """
   @spec get_handle(t()) :: {:ok, String.t()} | {:error, :not_found}
   def get_handle(%__MODULE__{also_known_as: aliases}) when is_list(aliases) do
     aliases
     |> Enum.filter(&is_binary/1)
     |> Enum.find_value({:error, :not_found}, fn aka ->
-      case AtUri.parse(aka) do
-        {:ok, %{authority: authority}} -> {:ok, authority}
-        {:error, _} -> nil
+      with "at://" <> _ <- aka,
+           {:ok, %{authority: authority}} <- AtUri.parse(aka),
+           true <- Handle.valid?(authority) do
+        {:ok, Handle.normalize(authority)}
+      else
+        _ -> nil
       end
     end)
   end
+
+  @doc """
+  Whether the document claims `handle` in its `alsoKnownAs` — compared
+  case-insensitively, as handles are. Use this for the DID → handle leg of
+  bidirectional verification rather than comparing strings by hand.
+  """
+  @spec claims_handle?(t(), String.t()) :: boolean()
+  def claims_handle?(%__MODULE__{} = doc, handle) when is_binary(handle) do
+    case get_handle(doc) do
+      {:ok, claimed} -> claimed == Handle.normalize(handle)
+      _ -> false
+    end
+  end
+
+  def claims_handle?(_doc, _handle), do: false
 
   def get_handle(_), do: {:error, :not_found}
 end

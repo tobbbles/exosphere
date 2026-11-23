@@ -220,11 +220,20 @@ defmodule Exosphere.Lexicon.Validator do
   defp check(value, %{kind: :blob} = node, path, _ctx) do
     case value do
       %{"$type" => "blob"} ->
-        accept = node[:accept] || node.accept
+        accept = opt(node, :accept)
+        max_size = opt(node, :max_size)
+        size = value["size"]
 
-        if is_list(accept) and accept != [] and value["mimeType"] not in accept,
-          do: [err(path, "", "mimeType not in accept list")],
-          else: []
+        cond do
+          is_list(accept) and accept != [] and not mime_accepted?(value["mimeType"], accept) ->
+            [err(path, "", "mimeType not in accept list")]
+
+          is_integer(max_size) and is_integer(size) and size > max_size ->
+            [err(path, "", "larger than maxSize #{max_size}")]
+
+          true ->
+            []
+        end
 
       _ ->
         [err(path, "", "expected a blob")]
@@ -280,7 +289,11 @@ defmodule Exosphere.Lexicon.Validator do
 
         cond do
           type in variants ->
-            check(value, resolve_variant(type, node, ctx), path, ctx)
+            # The variant is checked in *its* lexicon's context, so local
+            # `#refs` inside it (app.bsky.embed.images's `#image`) resolve
+            # against that lexicon, not the one holding the union.
+            {target, variant_ctx} = resolve_variant(type, node, ctx)
+            check(value, target, path, variant_ctx)
 
           node.closed ->
             [
@@ -319,6 +332,33 @@ defmodule Exosphere.Lexicon.Validator do
 
   # --- Helpers ---------------------------------------------------------------------
 
+  # Blob `accept` patterns (lexicon spec): an exact MIME type, or one ending
+  # in `*` as a glob — `image/*`, or `*/*` for anything. Partial globs
+  # (`text/ht*`) and a stand-alone `*` are not supported, so they match only
+  # themselves. MIME types compare case-insensitively.
+  defp mime_accepted?(mime, accept) when is_binary(mime) do
+    mime = String.downcase(mime)
+    Enum.any?(accept, &mime_matches?(mime, &1))
+  end
+
+  defp mime_accepted?(_mime, _accept), do: false
+
+  defp mime_matches?(_mime, "*/*"), do: true
+
+  defp mime_matches?(mime, pattern) when is_binary(pattern) do
+    pattern = String.downcase(pattern)
+
+    case String.split(pattern, "/", parts: 2) do
+      [type, "*"] when type != "*" and type != "" ->
+        match?([^type, sub] when sub != "", String.split(mime, "/", parts: 2))
+
+      _ ->
+        mime == pattern
+    end
+  end
+
+  defp mime_matches?(_mime, _pattern), do: false
+
   defp resolve_variant(type, node, ctx) do
     ref =
       Enum.find(node.refs, fn ref ->
@@ -326,8 +366,8 @@ defmodule Exosphere.Lexicon.Validator do
       end) || ""
 
     case resolve_ref(ref, ctx) do
-      {:ok, target, _ctx} -> target
-      :error -> %{kind: :unknown}
+      {:ok, target, target_ctx} -> {target, target_ctx}
+      :error -> {%{kind: :unknown}, ctx}
     end
   end
 

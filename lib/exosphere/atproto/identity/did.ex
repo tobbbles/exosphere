@@ -70,7 +70,12 @@ defmodule Exosphere.ATProto.Identity.DID do
   end
 
   @doc """
-  Validate DID syntax according to Exosphere.ATProto rules.
+  Validate *generic* DID syntax (the atproto DID syntax rules, method
+  agnostic): the form a lexicon `did` string format accepts.
+
+  This is deliberately permissive — `did:plc:abc` and `did:example:FOO`
+  pass. Anything that intends to resolve a DID, store it as an account
+  identifier, or trust it as an issuer wants `atproto_valid?/1`.
 
   ## Examples
 
@@ -87,6 +92,35 @@ defmodule Exosphere.ATProto.Identity.DID do
   end
 
   def valid?(_), do: false
+
+  @doc """
+  Validate a DID against the two methods atproto blesses, strictly.
+
+  - `did:plc` — exactly 24 characters of lowercase base32 (`[a-z2-7]`)
+    after the prefix.
+  - `did:web` — a lowercase hostname with no path. A port (percent-encoded
+    as `%3A`) is allowed only on `localhost`, for development and tests
+    (the reference's `isAtprotoDidWeb`).
+
+  DIDs are case-sensitive and "protocol implementations should reject DIDs
+  with invalid casing" (atproto DID spec), so no normalisation is applied:
+  `did:plc:Z72I…` is invalid, not equal to its lowercase form.
+
+  ## Examples
+
+      iex> Exosphere.ATProto.Identity.DID.atproto_valid?("did:plc:z72i7hdynmk6r22z27h6tvur")
+      true
+
+      iex> Exosphere.ATProto.Identity.DID.atproto_valid?("did:plc:abc")
+      false
+
+      iex> Exosphere.ATProto.Identity.DID.atproto_valid?("did:web:example.com%3A8443")
+      false
+  """
+  @spec atproto_valid?(term()) :: boolean()
+  def atproto_valid?("did:plc:" <> id), do: Regex.match?(~r/\A[a-z2-7]{24}\z/, id)
+  def atproto_valid?("did:web:" <> host), do: Web.valid_host?(host)
+  def atproto_valid?(_), do: false
 
   @doc """
   Parse the DID method from a DID string.

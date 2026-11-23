@@ -40,6 +40,54 @@ defmodule Exosphere.ATProto.Identity.DocumentTest do
     assert key == compressed_pubkey
   end
 
+  describe "parse/2" do
+    test "accepts a document whose id is the expected DID" do
+      raw = %{"id" => "did:plc:z72i7hdynmk6r22z27h6tvur"}
+      assert {:ok, %Document{}} = Document.parse(raw, "did:plc:z72i7hdynmk6r22z27h6tvur")
+    end
+
+    test "refuses a document for another DID" do
+      raw = %{"id" => "did:plc:ewvi7nxzyoun6zhxrhs64oiz"}
+
+      assert {:error, :did_mismatch} =
+               Document.parse(raw, "did:plc:z72i7hdynmk6r22z27h6tvur")
+    end
+
+    test "still refuses a malformed document" do
+      assert {:error, :invalid_document} = Document.parse(%{}, "did:plc:z72i7hdynmk6r22z27h6tvur")
+    end
+  end
+
+  describe "handle aliases" do
+    defp with_aliases(aliases),
+      do: %Document{id: "did:plc:z72i7hdynmk6r22z27h6tvur", also_known_as: aliases}
+
+    test "get_handle/1 lowercases the claimed handle" do
+      assert {:ok, "alice.example.com"} =
+               Document.get_handle(with_aliases(["at://Alice.Example.COM"]))
+    end
+
+    test "get_handle/1 takes the first syntactically valid handle alias" do
+      doc =
+        with_aliases([
+          "https://alice.example.com",
+          "at://did:plc:ewvi7nxzyoun6zhxrhs64oiz",
+          "at://not_a_handle",
+          "at://Bob.Example.com"
+        ])
+
+      assert {:ok, "bob.example.com"} = Document.get_handle(doc)
+    end
+
+    test "claims_handle?/2 compares case-insensitively" do
+      doc = with_aliases(["at://Alice.Example.COM"])
+      assert Document.claims_handle?(doc, "alice.example.com")
+      assert Document.claims_handle?(doc, "ALICE.example.com")
+      refute Document.claims_handle?(doc, "bob.example.com")
+      refute Document.claims_handle?(with_aliases([]), "alice.example.com")
+    end
+  end
+
   test "helpers return :not_found when required fields are missing" do
     doc = %Document{id: "did:plc:abc123", also_known_as: [], verification_method: [], service: []}
 
