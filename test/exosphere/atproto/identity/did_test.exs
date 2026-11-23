@@ -54,6 +54,8 @@ defmodule Exosphere.ATProto.Identity.DIDTest do
       assert DID.atproto_valid?("did:web:pds.sub.example-host.com")
       assert DID.atproto_valid?("did:web:localhost")
       assert DID.atproto_valid?("did:web:localhost%3A4000")
+      assert DID.atproto_valid?("did:web:127.0.0.1%3A4000")
+      assert DID.atproto_valid?("did:web:pds")
 
       refute DID.atproto_valid?("did:web:Example.com")
       refute DID.atproto_valid?("did:web:example.com%3A8443")

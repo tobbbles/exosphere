@@ -9,7 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed (breaking — protocol strictness)
 - **DID resolution checks the document `id`.** `DID.resolve/2`, `PLC.resolve/2` and `Web.resolve/2` answer `{:error, :did_mismatch}` when the served document is for another DID (new `Document.parse/2`).
-- **Resolution refuses non-atproto DIDs** before fetching (`{:error, :invalid_did_format}`). New `DID.atproto_valid?/1`: `did:plc:` + 24 chars of `[a-z2-7]`, or `did:web:` + a lowercase hostname with no path and no port except `localhost%3A<port>` (new `Web.valid_host?/1`). `DID.valid?/1` stays the generic syntax check (lexicon `did` format). `did:web:example.com:user` no longer becomes `https://example.com:user/`.
+- **Resolution refuses non-atproto DIDs** before fetching (`{:error, :invalid_did_format}`). New `DID.atproto_valid?/1`: `did:plc:` + 24 chars of `[a-z2-7]`, or `did:web:` + a lowercase hostname with no path and no port except on loopback (`localhost%3A<port>`, `127.0.0.1%3A<port>`) (new `Web.valid_host?/1`). `DID.valid?/1` stays the generic syntax check (lexicon `did` format). `did:web:example.com:user` no longer becomes `https://example.com:user/`.
 - **PLC tombstones**: a 410 from the directory is `{:error, :tombstoned}` (was `{:http_error, 410}`) in `PLC.resolve/2` and `get_data/2`.
 - **Handle resolution**: the DID from DNS or HTTPS must be `DID.atproto_valid?/1`; several `did=` TXT records naming different DIDs fail (`:multiple_dids`); multi-chunk TXT records are joined. New `Handle.parse_txt_records/1`.
 - **Handle aliases are case-insensitive**: `Document.get_handle/1` returns the first syntactically valid handle alias, lowercased; new `Document.claims_handle?/2`.
