@@ -62,7 +62,7 @@ defmodule Exosphere.ATProto.Identity.DIDTest do
       refute DID.atproto_valid?("did:web:example.com%2Fpath")
       refute DID.atproto_valid?("did:web:localhost%3Aabc")
       refute DID.atproto_valid?("did:web:-bad.example.com")
-      refute DID.atproto_valid?("did:web:nodot")
+      refute DID.atproto_valid?("did:web:bad..example.com")
       refute DID.atproto_valid?("did:web:")
     end
 

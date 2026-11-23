@@ -79,8 +79,7 @@ defmodule Exosphere.ATProto.Identity.DID.Web do
   def valid_host?(_), do: false
 
   defp hostname?(hostname) do
-    byte_size(hostname) <= 253 and Regex.match?(@hostname, hostname) and
-      (hostname == "localhost" or String.contains?(hostname, "."))
+    byte_size(hostname) <= 253 and Regex.match?(@hostname, hostname)
   end
 
   defp build_url(host) do
