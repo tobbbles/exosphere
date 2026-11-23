@@ -316,6 +316,8 @@ defmodule Exosphere.ATProto.Identity.Document do
     end)
   end
 
+  def get_handle(_), do: {:error, :not_found}
+
   @doc """
   Whether the document claims `handle` in its `alsoKnownAs` — compared
   case-insensitively, as handles are. Use this for the DID → handle leg of
@@ -330,6 +332,4 @@ defmodule Exosphere.ATProto.Identity.Document do
   end
 
   def claims_handle?(_doc, _handle), do: false
-
-  def get_handle(_), do: {:error, :not_found}
 end
